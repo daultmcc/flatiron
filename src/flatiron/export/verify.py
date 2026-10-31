@@ -42,13 +42,14 @@ def cfg_controls(cfg_text: str) -> dict[str, float]:
     return out
 
 
-def lsp_response_db(cfg_text: str, fs: int = 48_000, nfft: int = 32768) -> tuple[np.ndarray, np.ndarray]:
-    """Measured magnitude response (freqs, (n, 2) dB) of LSP loaded with the .cfg."""
+def lsp_response_db(controls: dict[str, float], fs: int = 48_000, nfft: int = 32768
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """Measured magnitude response (freqs, (n, 2) dB) of LSP with these controls."""
     plugin = Plugin(LSP_LADSPA, LSP_LABEL)
     x = np.zeros((fs * 2, 2), np.float32)
     i0 = fs  # well after any parameter smoothing at start-up
     x[i0, :] = 0.5
-    y = plugin.run(cfg_controls(cfg_text), x, fs)
+    y = plugin.run(controls, x, fs)
     seg = y[i0 - 256:i0 - 256 + nfft].astype(float)
     h = np.fft.rfft(seg, axis=0) / 0.5
     return np.fft.rfftfreq(nfft, 1 / fs), 20 * np.log10(np.abs(h) + 1e-12)
@@ -56,7 +57,11 @@ def lsp_response_db(cfg_text: str, fs: int = 48_000, nfft: int = 32768) -> tuple
 
 def check_lsp(cfg_text: str, plan: ExportPlan, f_lo=1000.0, f_hi=14000.0) -> dict[str, float]:
     """Max |measured − predicted| (dB) per channel over [f_lo, f_hi], preamp included."""
-    f, h = lsp_response_db(cfg_text)
+    return _check(cfg_controls(cfg_text), plan, f_lo, f_hi)
+
+
+def _check(controls, plan, f_lo, f_hi):
+    f, h = lsp_response_db(controls)
     sel = (f >= f_lo) & (f <= f_hi)
     return {e: float(np.abs(h[sel, c] - (response_db(plan.channels[e], f[sel]) + plan.preamp_db)).max())
             for c, e in enumerate(("L", "R"))}
@@ -64,3 +69,32 @@ def check_lsp(cfg_text: str, plan: ExportPlan, f_lo=1000.0, f_hi=14000.0) -> dic
 
 def available() -> bool:
     return Path(LSP_LADSPA).exists()
+
+
+EE_TYPES = {"Off": 0, "Bell": 1, "Hi-pass": 2, "Hi-shelf": 3, "Lo-pass": 4, "Lo-shelf": 5}
+EE_MODES = ["RLC (BT)", "RLC (MT)", "BWC (BT)", "BWC (MT)", "LRX (BT)", "LRX (MT)", "APO (DR)"]
+
+
+def easyeffects_controls(preset_text: str) -> dict[str, float]:
+    """EasyEffects preset → LSP LADSPA controls (EasyEffects runs the same filters)."""
+    import json
+
+    eq = json.loads(preset_text)["output"]["equalizer#0"]
+    out = {"Input gain (G)": 10 ** (eq["input-gain"] / 20), "Output gain (G)": 10 ** (eq["output-gain"] / 20),
+           "Bypass": float(eq["bypass"]), "Shift gain (G)": 1.0}
+    for side, name in (("left", "Left"), ("right", "Right")):
+        for i in range(eq["num-bands"]):
+            b = eq[side][f"band{i}"]
+            out.update({
+                f"Filter type {name} {i}": EE_TYPES[b["type"]], f"Filter mode {name} {i}": EE_MODES.index(b["mode"]),
+                f"Filter slope {name} {i}": int(b["slope"][1:]) - 1, f"Frequency {name} {i} (Hz)": b["frequency"],
+                f"Gain {name} {i} (G)": 10 ** (b["gain"] / 20), f"Quality factor {name} {i}": b["q"],
+                f"Filter Width {name} {i} (oct)": b["width"], f"Filter mute {name} {i}": float(b["mute"]),
+                f"Filter solo {name} {i}": float(b["solo"]),
+            })
+    return out
+
+
+def check_easyeffects(preset_text: str, plan: ExportPlan, f_lo=1000.0, f_hi=14000.0) -> dict[str, float]:
+    """As check_lsp, for an EasyEffects preset (what EasyEffects on Linux would do with it)."""
+    return _check(easyeffects_controls(preset_text), plan, f_lo, f_hi)

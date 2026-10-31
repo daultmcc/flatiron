@@ -4,11 +4,12 @@ import numpy as np
 import pytest
 
 from flatiron.apo import ApoFilter, parse_apo
-from flatiron.export import apo, lsp
+from flatiron.export import apo, easyeffects, lsp
 from flatiron.export.plan import ExportPlan, build_plan, response_db
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LSP_GOLDEN = FIXTURES / "lsp" / "para_equalizer_x32_lr-1.2.35.cfg"
+EE_GOLDEN = FIXTURES / "easyeffects" / "preset-split.json"
 
 
 def fit_entry(left, right, preamp=-0.5):
@@ -110,3 +111,44 @@ def test_lsp_truth_check_against_real_plugin():
     assert max(err.values()) < 0.3, err  # DESIGN.md tolerance
     # The fixture's mode (RLC BT) would miss: the check has teeth.
     assert max(check_lsp(lsp.write(plan, mode=0), plan).values()) > 0.3
+
+
+def test_easyeffects_golden_file_byte_for_byte():
+    """Exported from EasyEffects 7 with split channels. Writing its own 32 bands
+    (mode RLC BT, as exported) into the template reproduces it exactly."""
+    import json
+
+    eq = json.loads(EE_GOLDEN.read_text())["output"]["equalizer#0"]
+    chans = {e: [ApoFilter("PK", b["frequency"], b["gain"], b["q"])
+                 for b in (eq[side][f"band{i}"] for i in range(32))]
+             for e, side in (("L", "left"), ("R", "right"))}
+    plan = ExportPlan(chans, 0.0, False, "x")
+    assert easyeffects.write(plan, mode="RLC (BT)") == EE_GOLDEN.read_text()
+
+
+def test_easyeffects_preset_fields():
+    import json
+
+    plan = ExportPlan({"L": [ApoFilter("LS", 105, 5.5, 0.7), ApoFilter("PK", 6150, -4.2, 6.5)],
+                       "R": [ApoFilter("PK", 7020, -3.1, 8.0)]}, -6.2, True, "x")
+    eq = json.loads(easyeffects.write(plan))["output"]["equalizer#0"]
+    assert eq["split-channels"] is True and eq["num-bands"] == 2 and eq["input-gain"] == -6.2
+    assert eq["left"]["band0"]["type"] == "Lo-shelf"
+    assert (eq["left"]["band1"]["type"], eq["left"]["band1"]["mode"], eq["left"]["band1"]["frequency"],
+            eq["left"]["band1"]["gain"], eq["left"]["band1"]["q"]) == ("Bell", "APO (DR)", 6150, -4.2, 6.5)
+    assert eq["right"]["band1"]["type"] == "Off"  # right uses one band; num-bands covers the longer side
+    # The template carries no gains of its own.
+    tpl = easyeffects.template()["output"]["equalizer#0"]
+    assert all(b["gain"] == 0 for side in ("left", "right") for b in tpl[side].values())
+
+
+@pytest.mark.skipif(not __import__("flatiron.export.verify", fromlist=["x"]).available(),
+                    reason="LSP LADSPA build not installed")
+def test_easyeffects_truth_check_against_real_plugin():
+    from flatiron.export.verify import check_easyeffects
+
+    plan = ExportPlan({"L": [ApoFilter("LS", 105, 5.5, 0.7), ApoFilter("PK", 6150, -4.2, 6.5),
+                             ApoFilter("PK", 11000, 6, 12)],
+                       "R": [ApoFilter("PK", 7020, -3.1, 8.0)]}, -6.5, True, "x")
+    assert max(check_easyeffects(easyeffects.write(plan), plan).values()) < 0.3
+    assert max(check_easyeffects(easyeffects.write(plan, mode="RLC (BT)"), plan).values()) > 0.3

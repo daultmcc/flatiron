@@ -268,7 +268,7 @@ def cmd_export(args):
     from pathlib import Path
 
     from flatiron.apo import parse_apo
-    from flatiron.export import apo, lsp
+    from flatiron.export import apo, easyeffects, lsp
     from flatiron.export.plan import build_plan
 
     prof = _profile(args)
@@ -291,7 +291,7 @@ def cmd_export(args):
             print(e)
             return 1
     plan = build_plan(fit, pref)
-    ext = {"apo": ".txt", "lsp": ".cfg"}[args.target]
+    ext = {"apo": ".txt", "lsp": ".cfg", "easyeffects": ".json"}[args.target]
     out = Path(args.output) if args.output else Path(
         f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
     if not out.suffix:
@@ -307,12 +307,15 @@ def cmd_export(args):
                 path = out.with_name(f"{out.stem}_{e}{out.suffix}")
                 path.write_text(text)
                 written.append(path)
-        elif args.target == "lsp":
+        else:
             from flatiron.export import verify
 
-            text = lsp.write(plan)
+            if args.target == "lsp":
+                text, check = lsp.write(plan), verify.check_lsp
+            else:
+                text, check = easyeffects.write(plan), verify.check_easyeffects
             if verify.available():
-                err = verify.check_lsp(text, plan)
+                err = check(text, plan)
                 worst = max(err.values())
                 print(f"Checked against LSP's own filters: max error {worst:.3f} dB (tolerance 0.3)")
                 if worst > 0.3:
@@ -425,9 +428,10 @@ def main(argv=None):
 
     s = sub.add_parser("export", help="write the last fit's correction for an EQ host")
     s.add_argument("-p", "--profile", help="default: the only profile")
-    s.add_argument("-t", "--target", choices=("apo", "lsp"), required=True,
+    s.add_argument("-t", "--target", choices=("apo", "lsp", "easyeffects"), required=True,
                    help="apo: Equalizer APO / AutoEQ text per channel (also PipeWire param_eq files); "
-                        "lsp: LSP Parametric Equalizer x32 LeftRight settings")
+                        "lsp: LSP Parametric Equalizer x32 LeftRight settings; "
+                        "easyeffects: EasyEffects preset, the format Equaliser (macOS) imports")
     s.add_argument("-m", "--merge", metavar="APO_TXT", help="preference preset to merge in front, both channels")
     s.add_argument("--merge-left", metavar="APO_TXT")
     s.add_argument("--merge-right", metavar="APO_TXT")
