@@ -13,12 +13,12 @@ criteria (see `flatiron simulate` and `src/flatiron/sim/validate.py`).
 uv sync
 uv run flatiron devices                          # list outputs, flag Bluetooth/mono/rate issues
 uv run flatiron profiles                         # list headphone profiles
-uv run flatiron run --profile "HD 600" --sweep   # first session: coarse sweep, then trials
-uv run flatiron run --profile "HD 600"           # later sessions (reseat in between)
-uv run flatiron sessions --profile "HD 600"      # trial counts, catch accuracy, fast answers
-uv run flatiron sessions --profile "HD 600" --delete <id>   # e.g. a session left open by a crash
-uv run flatiron fit --profile "HD 600"           # filters per ear + an HTML report
-uv run flatiron export --profile "HD 600" --target lsp   # or --target apo; --merge preset.txt
+uv run flatiron run -p "HD 600" --sweep          # first session: coarse sweep, then trials
+uv run flatiron run                              # later sessions (-p can go when there's one profile)
+uv run flatiron sessions                         # trial counts, catch accuracy, fast answers
+uv run flatiron sessions --delete <id>           # e.g. a session left open by a crash
+uv run flatiron fit --open                       # filters per ear; opens report.html
+uv run flatiron export -t lsp -o sundara.cfg     # or -t apo (FILE_L.txt, FILE_R.txt); -m preset.txt
 uv run flatiron probe                            # hunt by hand: a band at a chosen freq/ear
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run pytest
@@ -46,7 +46,8 @@ cached): `--width` (max feature width W, octaves), `--reference iso226|diffuse|n
 The design's default diffuse-field reference needs the ISO 389-7 table, which
 isn't sourced yet, so `iso226` (free field) is the default for now.
 
-Exports go to the profile's `exports/` folder. LSP exports use filter mode
+`export` uses the last `fit` (its filters are saved in the profile), so refit
+with different settings before exporting if you want them. LSP exports use filter mode
 "APO (DR)", which matches Flatiron's filters exactly; when LSP's LADSPA build is
 installed, every LSP export is checked against the real plugin before it's
 written. `--merge` puts an Equalizer APO / AutoEQ preset (your preference EQ)

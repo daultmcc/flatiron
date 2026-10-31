@@ -184,10 +184,13 @@ def test_fit_cli_writes_profile_and_report(tmp_path, monkeypatch, capsys):
     prof = Profile.open("Sim")
     simulate_profile(prof, {e: design_example(e) for e in "LR"}, sessions=2, trials_per_ear=80, seed=2,
                      config=SchedulerConfig(min_trials_noise_fit=10_000))
-    assert main(["fit", "--profile", "Sim"]) == 0
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    assert main(["fit", "--open"]) == 0  # the only profile
     out = capsys.readouterr().out
     assert "L ear: 160 trials" in out and "preamp" in out
-    report = next((prof.dir / "reports").glob("fit-*.html"))
+    report = prof.dir / "report.html"
+    assert opened == [report.as_uri()]
     html = report.read_text()
     assert html.count("<picture>") == 2 and "Left ear" in html and "Settings" in html
     saved = prof.read()["fit"]

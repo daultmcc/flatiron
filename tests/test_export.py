@@ -71,19 +71,29 @@ def test_export_cli(tmp_path, monkeypatch, capsys):
     from flatiron.cli import main
     from flatiron.session.store import Profile
 
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
     prof = Profile.open("HD 600")
-    assert main(["export", "--profile", "HD 600", "--target", "apo"]) == 1
+    assert main(["export", "-t", "apo"]) == 1  # the only profile, but no fit yet
     assert "flatiron fit" in capsys.readouterr().out
     prof.update(fit=fit_entry([(6150, -4.2, 6.5)], [(7020, -3.1, 8.0)], -0.5))
-    assert main(["export", "--profile", "HD 600", "--target", "lsp"]) == 0
-    assert main(["export", "--profile", "HD 600", "--target", "apo"]) == 0
-    files = sorted(p.name for p in (prof.dir / "exports").iterdir())
-    assert len(files) == 3 and any(f.endswith("-lsp.cfg") for f in files)
+    # -o names the file; APO gets one per channel.
+    capsys.readouterr()
+    assert main(["export", "-t", "lsp", "-o", "out/hd600.cfg"]) == 1  # no such folder: say so, don't create it
+    assert "the folder out doesn't exist" in capsys.readouterr().out and not (tmp_path / "out").exists()
+    (tmp_path / "out").mkdir()
+    assert main(["export", "-t", "lsp", "-o", "out/hd600.cfg"]) == 0
+    assert main(["export", "-p", "HD 600", "-t", "apo", "-o", "out/hd600"]) == 0
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["hd600.cfg", "hd600_L.txt", "hd600_R.txt"]
+    # Default: a descriptive name in the current directory, not a hidden data folder.
+    assert main(["export", "-t", "lsp"]) == 0
+    assert len(list(tmp_path.glob("hd-600-*.cfg"))) == 1
+    assert not (prof.dir / "exports").exists()
     pref = tmp_path / "pref.txt"
     pref.write_text("Preamp: -6 dB\nFilter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.7\n")
-    assert main(["export", "--profile", "HD 600", "--target", "lsp", "--merge", str(pref)]) == 0
+    capsys.readouterr()
+    assert main(["export", "-t", "lsp", "-m", str(pref), "-o", "merged.cfg"]) == 0
     assert "Merged export, bands L 2 / R 2" in capsys.readouterr().out
 
 

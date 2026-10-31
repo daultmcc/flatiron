@@ -62,7 +62,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     st = corr.settings
     label = profile.read()["label"]
     now = datetime.now()
-    path = path or profile.dir / "reports" / f"fit-{now:%Y%m%d-%H%M%S}.html"
+    path = path or profile.dir / "report.html"  # the latest fit; overwritten each time
     path.parent.mkdir(parents=True, exist_ok=True)
 
     notes = []

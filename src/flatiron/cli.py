@@ -5,11 +5,31 @@ import sys
 
 import numpy as np
 
-from flatiron import EARS, FS
+from flatiron import EARS
 from flatiron.audio.limiter import DEFAULT_LEVEL_DB
 from flatiron.audio.stimulus import KINDS, StimulusSpec, make_stimulus
 
 STEP_OCT = 1 / 24
+
+
+def _profile(args, create: bool = False):
+    """The profile named by -p, or the only one there is. None (after
+    printing why) if that doesn't identify one."""
+    from flatiron.session.store import Profile
+
+    if args.profile:
+        prof = Profile.open(args.profile) if create else Profile.existing(args.profile)
+        if prof is None:
+            print(f"No profile {args.profile!r}. See: flatiron profiles")
+        return prof
+    profiles = Profile.all()
+    if len(profiles) == 1:
+        return profiles[0]
+    if not profiles:
+        print("No profiles yet. Start one with: flatiron run -p 'Headphone name'")
+    else:
+        print("Several profiles; pick one with -p: " + ", ".join(p.read()["label"] for p in profiles))
+    return None
 
 
 def cmd_devices(args):
@@ -102,10 +122,11 @@ def _settings(args, profile):
 
 def _launch(args, sweep: bool):
     from flatiron.session.runner import TrialRunner
-    from flatiron.session.store import Profile
     from flatiron.ui.app import FlatironApp
 
-    profile = Profile.open(args.profile)
+    profile = _profile(args, create=True)
+    if profile is None:
+        return 1
     _settings(args, profile)  # validate options before the UI starts
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
@@ -158,17 +179,14 @@ def cmd_profiles(args):
 
 
 def cmd_sessions(args):
-    from flatiron.session.store import Profile
-
-    prof = Profile.existing(args.profile)
+    prof = _profile(args)
     if prof is None:
-        print(f"No profile {args.profile!r}. See: flatiron profiles")
         return 1
     sessions = prof.sessions()
     if args.delete:
         match = [s for s in sessions if s.id == args.delete]
         if not match:
-            print(f"No session {args.delete!r} in {args.profile!r}.")
+            print(f"No session {args.delete!r} in {prof.read()['label']!r}.")
             return 1
         s = match[0]
         if _confirm(f"Delete session {s.id} ({len(s.trials)} trials)? This can't be undone.", args.yes):
@@ -178,7 +196,7 @@ def cmd_sessions(args):
             print("Not deleted.")
         return 0
     if not sessions:
-        print(f"No sessions for {args.profile!r} yet.")
+        print(f"No sessions for {prof.read()['label']!r} yet.")
         return
     for s in sessions:
         n = {e: sum(t.ear == e for t in s.trials) for e in EARS}
@@ -198,11 +216,9 @@ def cmd_sessions(args):
 def cmd_fit(args):
     from flatiron.fit.pipeline import CorrectionSettings
     from flatiron.fit.run import fit_profile
-    from flatiron.session.store import Profile
 
-    prof = Profile.existing(args.profile)
+    prof = _profile(args)
     if prof is None:
-        print(f"No profile {args.profile!r}. See: flatiron profiles")
         return 1
     try:
         settings = CorrectionSettings(
@@ -236,10 +252,15 @@ def cmd_fit(args):
     print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")
     if settings.reference == "iso226":
         print("reference: ISO 226 free field (the diffuse-field table isn't sourced yet)")
-    if not args.no_report:
+    if args.open or not args.no_report:
+        import webbrowser
+
         from flatiron.report.html import write_report
 
-        print(f"report: {write_report(prof, pf)}")
+        path = write_report(prof, pf)
+        print(f"report: {path}")
+        if args.open:
+            webbrowser.open(path.as_uri())
     return 0
 
 
@@ -249,15 +270,13 @@ def cmd_export(args):
     from flatiron.apo import parse_apo
     from flatiron.export import apo, lsp
     from flatiron.export.plan import build_plan
-    from flatiron.session.store import Profile
 
-    prof = Profile.existing(args.profile)
+    prof = _profile(args)
     if prof is None:
-        print(f"No profile {args.profile!r}. See: flatiron profiles")
         return 1
     fit = prof.read().get("fit")
     if not fit:
-        print(f"No fit yet. Run: flatiron fit --profile {args.profile!r}")
+        print(f"No fit yet. Run: flatiron fit -p {prof.read()['label']!r}")
         return 1
     pref = None
     if args.merge or args.merge_left or args.merge_right:
@@ -272,14 +291,20 @@ def cmd_export(args):
             print(e)
             return 1
     plan = build_plan(fit, pref)
-    out = Path(args.out) if args.out else prof.dir / "exports"
-    out.mkdir(parents=True, exist_ok=True)
-    stem = f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}"
+    ext = {"apo": ".txt", "lsp": ".cfg"}[args.target]
+    out = Path(args.output) if args.output else Path(
+        f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
+    if not out.suffix:
+        out = out.with_suffix(ext)
+    if not out.parent.is_dir():
+        print(f"Can't write {out}: the folder {out.parent} doesn't exist.")
+        return 1
     written = []
     try:
         if args.target == "apo":
+            # One file per channel: name_L.txt, name_R.txt.
             for e, text in apo.write(plan).items():
-                path = out / f"{stem}_{e}.txt"
+                path = out.with_name(f"{out.stem}_{e}{out.suffix}")
                 path.write_text(text)
                 written.append(path)
         elif args.target == "lsp":
@@ -293,9 +318,8 @@ def cmd_export(args):
                 if worst > 0.3:
                     print("Not writing it: the export doesn't match Flatiron's prediction.")
                     return 1
-            path = out / f"{stem}-lsp.cfg"
-            path.write_text(text)
-            written.append(path)
+            out.write_text(text)
+            written.append(out)
     except ValueError as e:
         print(e)
         return 1
@@ -341,29 +365,29 @@ def main(argv=None):
     s.set_defaults(func=cmd_devices)
 
     s = sub.add_parser("probe", help="manual probe: play a band at a chosen frequency and ear")
-    s.add_argument("--device", type=int)
-    s.add_argument("--freq", type=float, default=4000.0)
-    s.add_argument("--ear", choices=EARS, default="L")
+    s.add_argument("-d", "--device", type=int)
+    s.add_argument("-f", "--freq", type=float, default=4000.0)
+    s.add_argument("-e", "--ear", choices=EARS, default="L")
     s.add_argument("--type", choices=KINDS, default="noise")
     s.add_argument("--level", type=float, default=DEFAULT_LEVEL_DB, help="dBFS RMS")
     s.add_argument("--duration", type=float, default=0.4)
     s.set_defaults(func=cmd_probe)
 
     def session_args(s):
-        s.add_argument("--profile", required=True, help="headphone label, e.g. 'HD 600'")
-        s.add_argument("--device", type=int)
-        s.add_argument("--minutes", type=float, default=12.0, help="session length, at most 15")
+        s.add_argument("-p", "--profile", help="headphone label, e.g. 'HD 600' (default: the only profile)")
+        s.add_argument("-d", "--device", type=int)
+        s.add_argument("-m", "--minutes", type=float, default=12.0, help="session length, at most 15")
         s.add_argument("--stimulus", choices=KINDS, default="noise")
         s.add_argument("--bands-per-octave", type=int, choices=(12, 24), default=12,
                        help="noise bandwidth: 1/12 or 1/24 octave")
         s.add_argument("--active-eq", metavar="APO_TXT",
                        help="system EQ in effect while measuring (Equalizer APO / AutoEQ text)")
         s.add_argument("--eq-note", help="free-text note on the EQ context")
-        s.add_argument("--dry-run", action="store_true", help="no audio; for trying the UI")
+        s.add_argument("-n", "--dry-run", action="store_true", help="no audio; for trying the UI")
 
     s = sub.add_parser("run", help="run forced-choice sessions")
     session_args(s)
-    s.add_argument("--sweep", action="store_true", help="start with the coarse sweep (phase 0)")
+    s.add_argument("-s", "--sweep", action="store_true", help="start with the coarse sweep (phase 0)")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("sweep", help="coarse sweep (phase 0), then trials")
@@ -374,20 +398,21 @@ def main(argv=None):
     s.set_defaults(func=cmd_profiles)
 
     s = sub.add_parser("sessions", help="list a profile's sessions, or delete one")
-    s.add_argument("--profile", required=True)
+    s.add_argument("-p", "--profile", help="default: the only profile")
     s.add_argument("--delete", metavar="SESSION_ID", help="delete a session (e.g. one left open by a crash)")
-    s.add_argument("--yes", action="store_true", help="don't ask for confirmation")
+    s.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     s.set_defaults(func=cmd_sessions)
 
     s = sub.add_parser("fit", help="fit correction filters from a profile's sessions")
-    s.add_argument("--profile", required=True)
-    s.add_argument("--width", type=float, default=1.0, help="max feature width W in octaves (1/3 to 2)")
-    s.add_argument("--reference", default="iso226", help="iso226, diffuse, none, or a CSV of freq_hz,db")
+    s.add_argument("-p", "--profile", help="default: the only profile")
+    s.add_argument("--open", action="store_true", help="open the report in a browser")
+    s.add_argument("-w", "--width", type=float, default=1.0, help="max feature width W in octaves (1/3 to 2)")
+    s.add_argument("-r", "--reference", default="iso226", help="iso226, diffuse, none, or a CSV of freq_hz,db")
     s.add_argument("--phon", type=float, default=60.0, help="listening level assumed by the reference")
-    s.add_argument("--k", type=float, default=2.0, help="significance for narrow features (SDs)")
+    s.add_argument("-k", "--k", type=float, default=2.0, help="significance for narrow features (SDs)")
     s.add_argument("--k-broad", type=float, default=2.5, help="significance for broad features (SDs)")
-    s.add_argument("--strength", type=float, default=100, help="broad-feature strength, 0 to 100%%")
-    s.add_argument("--bands", type=int, default=10, help="correction bands per channel")
+    s.add_argument("-s", "--strength", type=float, default=100, help="broad-feature strength, 0 to 100%%")
+    s.add_argument("-b", "--bands", type=int, default=10, help="correction bands per channel")
     s.add_argument("--boost-narrow", type=float, default=4.0, help="max boost for narrow features (dB)")
     s.add_argument("--boost-broad", type=float, default=6.0, help="max boost for broad features (dB)")
     s.add_argument("--max-cut", type=float, default=12.0, help="max cut (dB)")
@@ -395,18 +420,20 @@ def main(argv=None):
     s.add_argument("--f-hi", type=float, default=13000.0, help="upper correction limit (Hz)")
     s.add_argument("--sessions", help="comma-separated session ids to use (default: all)")
     s.add_argument("--no-consistency", action="store_true", help="skip the reseat consistency check")
-    s.add_argument("--no-report", action="store_true")
+    s.add_argument("--no-report", action="store_true", help="don't write report.html")
     s.set_defaults(func=cmd_fit)
 
-    s = sub.add_parser("export", help="write the fitted correction for an EQ host")
-    s.add_argument("--profile", required=True)
-    s.add_argument("--target", choices=("apo", "lsp"), required=True,
+    s = sub.add_parser("export", help="write the last fit's correction for an EQ host")
+    s.add_argument("-p", "--profile", help="default: the only profile")
+    s.add_argument("-t", "--target", choices=("apo", "lsp"), required=True,
                    help="apo: Equalizer APO / AutoEQ text per channel (also PipeWire param_eq files); "
                         "lsp: LSP Parametric Equalizer x32 LeftRight settings")
-    s.add_argument("--merge", metavar="APO_TXT", help="preference preset to merge in front, both channels")
+    s.add_argument("-m", "--merge", metavar="APO_TXT", help="preference preset to merge in front, both channels")
     s.add_argument("--merge-left", metavar="APO_TXT")
     s.add_argument("--merge-right", metavar="APO_TXT")
-    s.add_argument("--out", help="output directory (default: the profile's exports folder)")
+    s.add_argument("-o", "--output", metavar="FILE",
+                   help="output file (apo: FILE_L.txt and FILE_R.txt); default: <profile>-<fit>.cfg/.txt "
+                        "in the current directory")
     s.set_defaults(func=cmd_export)
 
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")

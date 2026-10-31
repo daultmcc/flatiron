@@ -2,7 +2,7 @@
 
 profiles/<slug>/profile.json
 profiles/<slug>/sessions/<timestamp>.json   every trial, written after each one
-profiles/<slug>/exports/
+profiles/<slug>/report.html                 the latest fit's report
 """
 
 import json

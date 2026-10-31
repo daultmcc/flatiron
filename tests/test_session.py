@@ -205,9 +205,13 @@ def test_cli_profiles_and_session_delete(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda q: "n")
     main(["sessions", "--profile", "HD 600", "--delete", r.session.id])
     assert len(prof.sessions()) == 1
-    main(["sessions", "--profile", "HD 600", "--delete", r.session.id, "--yes"])
+    main(["sessions", "-p", "HD 600", "--delete", r.session.id, "-y"])
     assert prof.sessions() == []
     assert main(["sessions", "--profile", "nope"]) == 1
+    Profile.open("Sundara")
+    capsys.readouterr()
+    assert main(["sessions"]) == 1  # two profiles now: must pick one
+    assert "pick one with -p" in capsys.readouterr().out
 
 
 def test_undo_withdraws_from_fit_and_scheduler(tmp_path):
