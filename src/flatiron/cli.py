@@ -87,30 +87,28 @@ def cmd_probe(args):
 
 
 def cmd_simulate(args):
-    from flatiron.model.grid import log_grid
-    from flatiron.model.probit import Priors, Trials, fit_probit
-    from flatiron.sim.design import uniform_design
+    from flatiron.session.scheduler import SchedulerConfig
     from flatiron.sim.listener import SimulatedListener, design_example
+    from flatiron.sim.run import feature_depth, run, score, EVAL_GRID
 
-    grid = log_grid()
     lis = SimulatedListener({e: design_example(e) for e in EARS}, sigma0=args.sigma0,
                             lapse=args.lapse, seed=args.seed)
-    rng = np.random.default_rng(args.seed + 1)
+    cfg = SchedulerConfig(adaptive=args.design == "adaptive")
+    sch, fits = run(lis, args.trials, cfg, seed=args.seed + 1)
     for ear in EARS:
-        f_a, f_b, off, catch = uniform_design(grid, args.trials, rng)
-        y = lis.respond(ear, f_a, f_b, off)
-        fit = fit_probit(Trials(f_a, f_b, off, y), grid, Priors(smooth_sd_db=args.smooth))
-        truth = lis.ears[ear].level(grid)
-        truth -= truth.mean()
-        err = fit.L - truth
-        print(f"ear {ear}: {args.trials} trials ({catch.sum()} catch), converged={fit.converged}")
+        fit, sc = fits[ear], score(lis, ear, fits[ear])
+        n_catch = sum(1 for a, b in zip(sch.ears[ear].f_a, sch.ears[ear].f_b) if a == b)
+        print(f"ear {ear}: {args.trials} trials ({n_catch} catch, {args.design}), "
+              f"{fit.grid.size} grid points, converged={fit.converged}")
         print(f"  sigma0 {fit.sigma0:.2f} (true {args.sigma0}), d0 {fit.d0:.2f} (true 0.5), "
               f"lapse {fit.lapse:.3f} (true {args.lapse})")
-        print(f"  RMS error {np.sqrt(np.mean(err**2)):.2f} dB, max {np.abs(err).max():.2f} dB, "
-              f"mean SD {fit.sd.mean():.2f} dB, within 2 SD {np.mean(np.abs(err) < 2 * fit.sd):.0%}")
+        print(f"  RMS error {sc.rmse:.2f} dB, max {sc.max_err:.2f} dB on a 1/96-oct grid, "
+              f"within 2 SD {sc.coverage:.0%}")
+        L, sd = fit.at(EVAL_GRID)
+        truth = lis.ears[ear].level(EVAL_GRID)
         for feat in lis.ears[ear].features:
-            k = int(np.argmin(np.abs(grid - feat.fc)))
-            print(f"  {feat.fc:7.0f} Hz  true {truth[k]:+6.2f}  fit {fit.L[k]:+6.2f} ± {fit.sd[k]:.2f}")
+            print(f"  {feat.fc:7.0f} Hz  depth vs flanks: true {feature_depth(EVAL_GRID, truth, feat.fc):+6.2f}"
+                  f"  fit {feature_depth(EVAL_GRID, L, feat.fc):+6.2f}")
 
 
 def main(argv=None):
@@ -136,11 +134,11 @@ def main(argv=None):
     s.set_defaults(func=cmd_probe)
 
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")
-    s.add_argument("--trials", type=int, default=1200, help="per ear")
+    s.add_argument("--trials", type=int, default=600, help="per ear")
     s.add_argument("--seed", type=int, default=0)
     s.add_argument("--sigma0", type=float, default=1.0)
     s.add_argument("--lapse", type=float, default=0.03)
-    s.add_argument("--smooth", type=float, default=1.0, help="smoothness prior SD (dB)")
+    s.add_argument("--design", choices=("adaptive", "uniform"), default="adaptive")
     s.set_defaults(func=cmd_simulate)
 
     args = p.parse_args(argv)

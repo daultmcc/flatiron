@@ -45,6 +45,9 @@ class Priors:
     # SD of the second difference of L at 1/24-octave spacing (dB). Expressed
     # internally as a grid-independent curvature penalty.
     smooth_sd_db: float = 1.0
+    # Very weak prior on each level, so the fit is well-posed with few or no
+    # trials (the smoothness prior alone leaves a linear trend unconstrained).
+    level_sd_db: float = 100.0
     sigma0: float = 1.0
     sigma0_log_sd: float = 0.5
     d0: float = 0.5
@@ -98,7 +101,7 @@ class _Problem:
         self.p = priors
         d2, w = second_difference(grid)
         tau = priors.smooth_sd_db * 24**1.5
-        self.K = d2.T @ (w[:, None] * d2) / tau**2
+        self.K = d2.T @ (w[:, None] * d2) / tau**2 + np.eye(self.n) / priors.level_sd_db**2
         self.mu = np.array([np.log(priors.sigma0), np.log(priors.d0), logit(priors.lapse)])
         self.prec = 1.0 / np.array([priors.sigma0_log_sd, priors.d0_log_sd,
                                     priors.lapse_logit_sd]) ** 2
@@ -167,6 +170,15 @@ def _neg_log_evidence(prob: _Problem, h: np.ndarray, L0: np.ndarray):
     return val + 0.5 * logdet, L, ok
 
 
+def _simplex(start, lo, hi, step=0.3):
+    pts = [start]
+    for k in range(start.size):
+        p = start.copy()
+        p[k] = p[k] + step if p[k] + step <= hi[k] else p[k] - step
+        pts.append(p)
+    return np.array(pts)
+
+
 def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
                init: ProbitFit | None = None, fit_hyper: bool = True) -> ProbitFit:
     """Fit perceived level L with Laplace error bars.
@@ -191,19 +203,28 @@ def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
 
     converged = True
     if fit_hyper:
-        cache = {"L": L0}
+        # Search from the prior means and from the warm start, and keep the
+        # better optimum: the Laplace evidence has a spurious basin at small
+        # sigma0 / large lapse (few trials near threshold, so the information
+        # term vanishes), and a warm start from an early, noisy estimate can
+        # stay trapped in it.
+        best = None
+        for start in {tuple(prob.mu.clip(lo, hi)), tuple(h0)}:
+            cache = {"L": L0}
 
-        def outer(h):
-            h = np.clip(h, lo, hi)
-            v, L, _ = _neg_log_evidence(prob, h, cache["L"])
-            cache["L"] = L
-            return v
+            def outer(h):
+                v, L, _ = _neg_log_evidence(prob, h, cache["L"])
+                cache["L"] = L
+                return v
 
-        res = optimize.minimize(outer, h0, method="Nelder-Mead",
-                                options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 400,
-                                         "initial_simplex": h0 + np.vstack([np.zeros(3), 0.3 * np.eye(3)])})
-        h = np.clip(res.x, lo, hi)
-        L0 = cache["L"]
+            start = np.array(start)
+            res = optimize.minimize(outer, start, method="Nelder-Mead", bounds=list(zip(lo, hi)),
+                                    options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 400,
+                                             "initial_simplex": _simplex(start, lo, hi)})
+            if best is None or res.fun < best[0].fun:
+                best = (res, cache["L"])
+        res, L0 = best
+        h = res.x
         converged = bool(res.success)
     else:
         h = h0
