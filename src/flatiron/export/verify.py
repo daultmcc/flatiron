@@ -98,3 +98,94 @@ def easyeffects_controls(preset_text: str) -> dict[str, float]:
 def check_easyeffects(preset_text: str, plan: ExportPlan, f_lo=1000.0, f_hi=14000.0) -> dict[str, float]:
     """As check_lsp, for an EasyEffects preset (what EasyEffects on Linux would do with it)."""
     return _check(easyeffects_controls(preset_text), plan, f_lo, f_hi)
+
+
+# -- PipeWire --------------------------------------------------------------
+
+def _pipewire_test_conf(plan: ExportPlan, tag: str) -> str:
+    """A standalone filter-chain with the plan's param_eq between a virtual
+    sink and a virtual source, so nothing reaches a real device."""
+    from flatiron.export.pipewire import filter_chain_args
+
+    args = filter_chain_args(
+        plan, f"flatiron check {tag}", f"flatiron_check_{tag}",
+        "media.class = Audio/Sink audio.rate = 48000 priority.session = 0 priority.driver = 0",
+        "media.class = Audio/Source audio.rate = 48000 priority.session = 0 priority.driver = 0")
+    return f"""context.properties = {{ log.level = 0 }}
+context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert
+                      support.* = support/libspa-support }}
+context.modules = [
+  {{ name = libpipewire-module-rt flags = [ ifexists nofail ] }}
+  {{ name = libpipewire-module-protocol-native }}
+  {{ name = libpipewire-module-client-node }}
+  {{ name = libpipewire-module-adapter }}
+  {{ name = libpipewire-module-filter-chain
+{args}
+  }}
+]
+"""
+
+
+def pipewire_available() -> bool:
+    import shutil
+    import subprocess
+
+    if not all(shutil.which(b) for b in ("pipewire", "pw-play", "pw-record")):
+        return False
+    return subprocess.run(["pw-cli", "info", "0"], capture_output=True, timeout=5).returncode == 0
+
+
+def check_pipewire(plan: ExportPlan, workdir, f_lo=1000.0, f_hi=14000.0, fs=48_000) -> dict[str, float]:
+    """Run the plan's param_eq in a private filter-chain on the running
+    PipeWire, play noise through it and record the result. Returns max
+    |measured − predicted| (dB, preamp included) per channel."""
+    import os
+    import subprocess
+    import time
+    import warnings
+    from pathlib import Path
+
+    from scipy import signal
+    from scipy.io import wavfile
+
+    d = Path(workdir)
+    tag = f"{os.getpid()}"
+    conf = d / "check.conf"
+    conf.write_text(_pipewire_test_conf(plan, tag))
+    rng = np.random.default_rng(0)
+    x = (rng.standard_normal((fs * 3, 2)) * 0.05).astype(np.float32)
+    x[: fs // 4] = 0
+    x[-fs // 4:] = 0
+    wavfile.write(d / "in.wav", fs, x)
+    out = d / "out.wav"
+    chain = subprocess.Popen(["pipewire", "-c", str(conf)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(1.5)
+        rec = subprocess.Popen(["pw-record", "--target", f"effect_output.flatiron_check_{tag}", "--rate", str(fs),
+                                "--channels", "2", "--format", "f32", str(out)], stderr=subprocess.DEVNULL)
+        time.sleep(0.8)
+        subprocess.run(["pw-play", "--target", f"effect_input.flatiron_check_{tag}", str(d / "in.wav")],
+                       check=True, timeout=30, stderr=subprocess.DEVNULL)
+        time.sleep(0.8)
+        rec.terminate()
+        rec.wait(5)
+    finally:
+        chain.terminate()
+        chain.wait(5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _, y = wavfile.read(out)
+    y = y.astype(float)
+    if y.ndim != 2 or len(y) < len(x) // 2 or not np.any(y):
+        raise RuntimeError("recorded nothing from the test filter-chain")
+    lag = int(np.argmax(signal.correlate(y[:, 0], x[:, 0], mode="full", method="fft")) - (len(x) - 1))
+    y = y[lag:lag + len(x)]
+    n = min(len(y), len(x))
+    err = {}
+    for c, e in enumerate(("L", "R")):
+        f, pxy = signal.csd(x[:n, c], y[:n, c], fs, nperseg=8192)
+        _, pxx = signal.welch(x[:n, c], fs, nperseg=8192)
+        sel = (f >= f_lo) & (f <= f_hi)
+        h = 20 * np.log10(np.abs(pxy[sel]) / pxx[sel])
+        err[e] = float(np.abs(h - (response_db(plan.channels[e], f[sel]) + plan.preamp_db)).max())
+    return err

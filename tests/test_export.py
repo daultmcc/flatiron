@@ -152,3 +152,47 @@ def test_easyeffects_truth_check_against_real_plugin():
                        "R": [ApoFilter("PK", 7020, -3.1, 8.0)]}, -6.5, True, "x")
     assert max(check_easyeffects(easyeffects.write(plan), plan).values()) < 0.3
     assert max(check_easyeffects(easyeffects.write(plan, mode="RLC (BT)"), plan).values()) > 0.3
+
+
+def test_pipewire_dropin():
+    from flatiron.export import pipewire
+
+    plan = ExportPlan({"L": [ApoFilter("LS", 105, 5.5, 0.7), ApoFilter("PK", 6150, -4.2, 6.5)],
+                       "R": [ApoFilter("PK", 7020, -3.1, 8.0)]}, -6.2, True, "abc123")
+    text = pipewire.write(plan, "HD 600", "hd-600")
+    left = text.split("filters1 = [")[1].split("]")[0]
+    right = text.split("filters2 = [")[1].split("]")[0]
+    assert "bq_highshelf, freq = 0, gain = -6.20" in left and "bq_highshelf, freq = 0, gain = -6.20" in right
+    assert "bq_lowshelf, freq = 105.00, gain = 5.50, q = 0.7000" in left
+    assert "bq_peaking, freq = 6150.00, gain = -4.20, q = 6.5000" in left and "7020.00" in right
+    assert 'node.name = "effect_input.flatiron.hd-600"' in text and 'node.description = "Flatiron HD 600"' in text
+    assert text.count("{") == text.count("}") and text.count("[") == text.count("]")
+
+
+@pytest.mark.skipif(not __import__("flatiron.export.verify", fromlist=["x"]).pipewire_available(),
+                    reason="PipeWire not running")
+def test_pipewire_truth_check(tmp_path):
+    """Plays noise through a private filter-chain (virtual sink → param_eq →
+    virtual source) on the running PipeWire; nothing reaches a device."""
+    from flatiron.export.verify import check_pipewire
+
+    plan = ExportPlan({"L": [ApoFilter("PK", 6150, -4.2, 6.5), ApoFilter("HS", 10000, -3, 0.7)],
+                       "R": [ApoFilter("PK", 7020, -3.1, 8.0), ApoFilter("PK", 11000, 6, 12)]}, -6.5, True, "x")
+    assert max(check_pipewire(plan, tmp_path).values()) < 0.3
+
+
+def test_export_preamp_override(tmp_path, monkeypatch, capsys):
+    from flatiron.cli import main
+    from flatiron.session.store import Profile
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    Profile.open("HD 600").update(fit=fit_entry([(6150, -4.2, 6.5), (9000, 3, 4)], [(7020, -3.1, 8.0)], -3.5))
+    assert main(["export", "-t", "apo", "-o", "safe"]) == 0
+    assert (tmp_path / "safe_L.txt").read_text().startswith("Preamp: -3.50 dB")
+    capsys.readouterr()
+    assert main(["export", "-t", "apo", "-o", "zero", "--preamp", "0"]) == 0
+    assert (tmp_path / "zero_L.txt").read_text().startswith("Preamp: 0.00 dB")
+    assert "can clip" in capsys.readouterr().out
+    assert main(["export", "-t", "apo", "--preamp", "loud"]) == 1

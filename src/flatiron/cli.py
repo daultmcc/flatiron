@@ -271,8 +271,8 @@ def cmd_export(args):
     from pathlib import Path
 
     from flatiron.apo import parse_apo
-    from flatiron.export import apo, easyeffects, lsp
-    from flatiron.export.plan import build_plan
+    from flatiron.export import apo, easyeffects, lsp, pipewire
+    from flatiron.export.plan import build_plan, response_db
 
     prof = _profile(args)
     if prof is None:
@@ -294,7 +294,17 @@ def cmd_export(args):
             print(e)
             return 1
     plan = build_plan(fit, pref)
-    ext = {"apo": ".txt", "lsp": ".cfg", "easyeffects": ".json"}[args.target]
+    if args.preamp != "safe":
+        try:
+            plan.preamp_db = float(args.preamp)
+        except ValueError:
+            print(f"--preamp takes 'safe' or a gain in dB, not {args.preamp!r}")
+            return 1
+        peak = max(float(response_db(fs).max()) for fs in plan.channels.values()) + plan.preamp_db
+        if peak > 0:
+            print(f"Note: with this preamp the EQ boosts up to {peak:+.1f} dB at its peak, so loud "
+                  "material in that band can clip.")
+    ext = {"apo": ".txt", "lsp": ".cfg", "easyeffects": ".json", "pipewire": ".conf"}[args.target]
     out = Path(args.output) if args.output else Path(
         f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
     if not out.suffix:
@@ -304,7 +314,25 @@ def cmd_export(args):
         return 1
     written = []
     try:
-        if args.target == "apo":
+        if args.target == "pipewire":
+            if args.check:
+                import tempfile
+
+                from flatiron.export import verify
+
+                if not verify.pipewire_available():
+                    print("Can't check: PipeWire isn't running (or pw-play/pw-record are missing).")
+                    return 1
+                with tempfile.TemporaryDirectory() as tmp:
+                    err = verify.check_pipewire(plan, tmp)
+                worst = max(err.values())
+                print(f"Measured through a private PipeWire filter-chain: max error {worst:.2f} dB (tolerance 0.3)")
+                if worst > 0.3:
+                    print("Not writing it: PipeWire doesn't do what Flatiron predicts.")
+                    return 1
+            out.write_text(pipewire.write(plan, prof.read()["label"], prof.slug))
+            written.append(out)
+        elif args.target == "apo":
             # One file per channel: name_L.txt, name_R.txt.
             for e, text in apo.write(plan).items():
                 path = out.with_name(f"{out.stem}_{e}{out.suffix}")
@@ -333,6 +361,9 @@ def cmd_export(args):
     print(f"{'Merged' if plan.merged else 'Correction-only'} export, bands {bands}, preamp {plan.preamp_db:+.2f} dB")
     if not plan.merged:
         print("Stack it after any EQ you already use (or in its own instance).")
+    if args.target == "pipewire":
+        print("Install: copy it to ~/.config/pipewire/pipewire.conf.d/ and restart PipeWire "
+              "(systemctl --user restart pipewire), then pick the Flatiron output.")
     for p in written:
         print(f"  {p}")
     return 0
@@ -434,11 +465,18 @@ def main(argv=None):
 
     s = sub.add_parser("export", help="write the last fit's correction for an EQ host")
     s.add_argument("-p", "--profile", help="default: the only profile")
-    s.add_argument("-t", "--target", choices=("apo", "lsp", "easyeffects"), required=True,
+    s.add_argument("-t", "--target", choices=("apo", "lsp", "easyeffects", "pipewire"), required=True,
                    help="apo: Equalizer APO / AutoEQ text per channel (also PipeWire param_eq files); "
                         "lsp: LSP Parametric Equalizer x32 LeftRight settings; "
-                        "easyeffects: EasyEffects preset, the format Equaliser (macOS) imports")
+                        "easyeffects: EasyEffects preset, the format Equaliser (macOS) imports; "
+                        "pipewire: filter-chain drop-in for ~/.config/pipewire/pipewire.conf.d/")
     s.add_argument("-m", "--merge", metavar="APO_TXT", help="preference preset to merge in front, both channels")
+    s.add_argument("--preamp", default="safe", metavar="safe|DB",
+                   help="safe (default): enough headroom that no boost can clip; or a gain in dB, "
+                        "e.g. 0 to keep the level of the uncorrected sound for A/B comparison")
+    s.add_argument("--check", action="store_true",
+                   help="pipewire: measure the filters through a private filter-chain first "
+                        "(virtual sink/source, a few seconds; nothing plays on your devices)")
     s.add_argument("--merge-left", metavar="APO_TXT")
     s.add_argument("--merge-right", metavar="APO_TXT")
     s.add_argument("-o", "--output", metavar="FILE",

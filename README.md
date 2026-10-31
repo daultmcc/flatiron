@@ -5,9 +5,9 @@ By-ear headphone resonance EQ from forced-choice loudness judgments. See
 
 Status: milestones 1 to 5 are in place (audio core, model and simulator,
 adaptive scheduler, trial UI and session files, fit pipeline and report).
-Milestone 6 (exporters): Equalizer APO text, LSP x32 LeftRight and
-EasyEffects (the format Equaliser on macOS imports) are done; a PipeWire
-drop-in is next. The simulator doesn't yet meet DESIGN.md's strict pass
+Milestone 6 (exporters) is done: Equalizer APO text, LSP x32 LeftRight,
+EasyEffects (the format Equaliser on macOS imports) and a PipeWire
+filter-chain drop-in. The simulator doesn't yet meet DESIGN.md's strict pass
 criteria (see `flatiron simulate` and `src/flatiron/sim/validate.py`).
 
 ```sh
@@ -19,7 +19,7 @@ uv run flatiron run                              # later sessions (-p can go whe
 uv run flatiron sessions                         # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --delete <id>           # e.g. a session left open by a crash
 uv run flatiron fit --open                       # filters per ear; opens report.html
-uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / -t easyeffects; -m preset.txt
+uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire; -m preset.txt
 uv run flatiron probe                            # hunt by hand: a band at a chosen freq/ear
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run pytest
@@ -53,6 +53,10 @@ with different settings before exporting if you want them. LSP exports use filte
 installed, every LSP export is checked against the real plugin before it's
 written. `--merge` puts an Equalizer APO / AutoEQ preset (your preference EQ)
 in front of the correction in the same file, with the preamp computed over both.
+The preamp defaults to enough headroom that no boost can clip; `--preamp 0`
+keeps the uncorrected level, which is easier to A/B against. `-t pipewire
+--check` measures the filters through a private filter-chain on the running
+PipeWire (virtual sink and source; nothing plays on your devices).
 
 Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
 (grid, probit fit, refinement), `session/` (scheduler, runner, storage,
