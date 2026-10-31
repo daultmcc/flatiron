@@ -217,6 +217,12 @@ class TrialScreen(Screen):
         self.busy = False
         self.replays = 0
         self.play_start = 0.0
+        # Reaction time counts from the end of B in the first presentation
+        # that reached B; replays don't reset it (answering soon after a
+        # replay is an informed answer, not a careless one).
+        self.heard_b = False
+        self.first_end: float | None = None
+        self.last_end = 0.0
         self.timers = []
         self.active_s = 0.0
         self.active_since: float | None = None
@@ -271,19 +277,23 @@ class TrialScreen(Screen):
     def play(self):
         tr = self.trial
         self.cancel_timers()
-        self.accepting = False
-        self.light(None)
+        self.accepting = self.heard_b
+        self.light(None, answerable=self.heard_b)
         self.app.player.start(tr.buffer)
         lat = self.app.player.latency
         self.play_start = self.clock() + lat
+        self.last_end = self.play_start + tr.second_off
         at = lambda s, fn: self.timers.append(self.set_timer(max(s + lat, 0.001), fn))
-        at(tr.first_on, lambda: self.light("A"))
-        at(tr.first_off, lambda: self.light(None))
+        at(tr.first_on, lambda: self.light("A", answerable=self.heard_b))
+        at(tr.first_off, lambda: self.light(None, answerable=self.heard_b))
         at(tr.second_on, self.second_on)
         at(tr.second_off, lambda: self.light(None, answerable=True))
 
     def second_on(self):
-        self.light("B")
+        if not self.heard_b:
+            self.heard_b = True
+            self.first_end = self.last_end
+        self.light("B", answerable=True)
         self.accepting = True
 
     # -- trial loop --------------------------------------------------------
@@ -294,7 +304,7 @@ class TrialScreen(Screen):
 
         def work():
             if answer is not None:
-                self.runner.answer(*answer)
+                self.runner.answer(**answer)
             nxt = self.runner.prepare()
             self.app.call_from_thread(self.ready, nxt)
 
@@ -313,6 +323,7 @@ class TrialScreen(Screen):
             self.dismiss("time")
             return
         self.trial, self.replays = nxt, 0
+        self.heard_b, self.first_end = False, None
         self.query_one("#message", Static).update("")
         if not self.paused:
             self.timers.append(self.set_timer(ITI_S, self.play))
@@ -321,11 +332,13 @@ class TrialScreen(Screen):
         if not self.accepting or self.paused or self.busy:
             return
         self.accepting = False
-        rt_ms = (self.clock() - (self.play_start + self.trial.second_off)) * 1000
-        self.app.player.stop()
+        now = self.clock()
+        self.app.player.stop()  # fades out if still playing
         self.cancel_timers()
         self.light(None)
-        self.fetch_next((self.trial, first_louder, rt_ms, self.replays, self.clock() - self.started))
+        self.fetch_next(dict(trial=self.trial, first_louder=first_louder,
+                             rt_ms=(now - self.first_end) * 1000, rt_last_ms=(now - self.last_end) * 1000,
+                             replays=self.replays, t=now - self.started))
 
     def action_replay(self):
         if self.trial is None or self.paused or self.busy:
@@ -428,4 +441,4 @@ class FlatironApp(App):
     def on_unmount(self):
         if self.runner is not None and self.runner.session.ended is None:
             self.runner.finish()
-        self.player.stop()
+        self.player.close()

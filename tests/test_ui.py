@@ -77,7 +77,7 @@ async def test_trials_record_answers_and_quit_saves(tmp_path):
     assert [t.response for t in s.trials] == ["first", "second", "first", "first"]
     assert [t.replays for t in s.trials] == [0, 0, 0, 1]
     assert s.ended is not None
-    assert all(-1200 < t.rt_ms < 2000 for t in s.trials)
+    assert all(-1200 < t.rt_ms < 5000 for t in s.trials)
     assert len(app.player.played) >= 2 + 5
 
 
@@ -142,3 +142,23 @@ async def test_sweep_taps_become_marks(tmp_path):
         await wait_for(pilot, lambda: isinstance(app.screen, TrialScreen), 5)
     marks = runners[0].session.sweep_marks
     assert set(marks) == {"L", "R"} and all(len(m) == 1 and m[0]["kind"] == "dip" for m in marks.values())
+
+
+async def test_replay_does_not_reset_reaction_time(tmp_path):
+    app, runners, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pass_channel_check(app, pilot)
+        scr = app.screen
+        await wait_for(pilot, lambda: scr.accepting)
+        await wait_for(pilot, lambda: app.clock() > scr.first_end + 0.1)
+        await pilot.press("space")
+        # Still answerable during the replay, and the reference stays put.
+        assert scr.accepting
+        await wait_for(pilot, lambda: app.clock() > scr.last_end + 0.05)
+        await pilot.press("left")
+        await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
+    t = runners[0].session.trials[0]
+    assert t.replays == 1
+    assert t.rt_ms > 1000  # counted from the first presentation
+    assert 0 < t.rt_last_ms < 150  # a quick answer after the replay...
+    assert not t.fast  # ...is not flagged

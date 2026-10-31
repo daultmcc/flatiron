@@ -55,12 +55,13 @@ class TrialRecord:
     catch: bool
     response: str  # "first" or "second": which interval the listener chose
     a_louder: bool
-    rt_ms: float  # from the end of the second burst; negative = answered during it
+    rt_ms: float  # from the end of B in the first presentation; negative = answered during it
     replays: int = 0
     fast: bool = False
     eq_gain_a: float = 0.0  # known EQ gain in effect at f_a / f_b (active + preview)
     eq_gain_b: float = 0.0
     t: float = 0.0  # seconds since session start
+    rt_last_ms: float | None = None  # from the end of B in the latest replay
 
     @property
     def offset(self) -> float:

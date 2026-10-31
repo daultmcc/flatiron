@@ -116,7 +116,9 @@ class TrialRunner:
         return float(ga), float(gb)
 
     def answer(self, trial: PreparedTrial, first_louder: bool, rt_ms: float,
-               replays: int = 0, t: float = 0.0) -> TrialRecord:
+               replays: int = 0, t: float = 0.0, rt_last_ms: float | None = None) -> TrialRecord:
+        """rt_ms counts from the end of B in the first presentation, so a
+        quick answer after a replay isn't flagged as fast."""
         p = trial.plan
         ga, gb = self.eq_gains(p)
         rec = TrialRecord(
@@ -124,7 +126,8 @@ class TrialRunner:
             a_first=p.a_first, rove_db=p.rove_db, catch=p.catch,
             response="first" if first_louder else "second",
             a_louder=(first_louder == p.a_first), rt_ms=float(rt_ms), replays=replays,
-            fast=rt_ms < FAST_MS, eq_gain_a=ga, eq_gain_b=gb, t=round(t, 3))
+            fast=rt_ms < FAST_MS, eq_gain_a=ga, eq_gain_b=gb, t=round(t, 3),
+            rt_last_ms=rt_ms if rt_last_ms is None else float(rt_last_ms))
         self.session.trials.append(rec)
         self._save()  # persist before the (slower) refit
         self.scheduler.record(p, rec.a_louder, known_gain_db=(ga, gb))

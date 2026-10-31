@@ -23,7 +23,7 @@ def cmd_devices(args):
 
 
 def cmd_level(args):
-    from flatiron.audio import player
+    from flatiron.audio.player import StreamPlayer
     from flatiron.audio.limiter import limit, monaural, db_to_amp
 
     x = make_stimulus(args.freq, StimulusSpec(duration=0.4))
@@ -33,11 +33,9 @@ def cmd_level(args):
     print(f"Looping a {args.freq:g} Hz band at {args.level:g} dBFS in both ears.")
     print("Raise the system volume to a comfortable, moderate level, then press Enter.")
     print("Keep the volume fixed for every session from now on.")
-    player.play_loop(buf, device=args.device)
-    try:
+    with StreamPlayer(args.device) as player:
+        player.start(buf, loop=True)
         input()
-    finally:
-        player.stop()
     if args.profile:
         from flatiron.session.store import Profile, now_iso
 
@@ -58,7 +56,13 @@ PROBE_HELP = """commands:
 
 
 def cmd_probe(args):
-    from flatiron.audio import player
+    from flatiron.audio.player import StreamPlayer
+
+    with StreamPlayer(args.device) as player:
+        _probe_loop(args, player)
+
+
+def _probe_loop(args, player):
     from flatiron.audio.limiter import limit, monaural, db_to_amp
 
     f, ear, kind, level = args.freq, args.ear, args.type, args.level
@@ -84,7 +88,8 @@ def cmd_probe(args):
             res = limit(x * db_to_amp(level))
             note = f"  (limited by {-res.gain_db:.1f} dB)" if res.gain_db else ""
             print(f"{ear}  {f:8.1f} Hz  {kind}  {level:g} dBFS{note}")
-            player.play(monaural(res.signal, ear), device=args.device)
+            player.start(monaural(res.signal, ear))
+            player.wait()
         except ValueError as e:
             print(f"? {e}")
         try:
@@ -112,7 +117,7 @@ def _settings(args, profile):
 
 
 def _launch(args, sweep: bool):
-    from flatiron.audio.player import NullPlayer, SoundDevicePlayer
+    from flatiron.audio.player import NullPlayer, StreamPlayer
     from flatiron.session.runner import TrialRunner
     from flatiron.session.store import Profile
     from flatiron.ui.app import FlatironApp
@@ -132,7 +137,7 @@ def _launch(args, sweep: bool):
             device.update(name=d.name, hostapi=d.hostapi, warnings=d.warnings)
             for w in d.warnings:
                 print(f"! {d.name}: {w}")
-    player = NullPlayer() if args.dry_run else SoundDevicePlayer(args.device)
+    player = NullPlayer() if args.dry_run else StreamPlayer(args.device)
     app = FlatironApp(lambda: TrialRunner(profile, settings, device=device), player, sweep=sweep)
     app.run()
     return 0
