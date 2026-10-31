@@ -192,6 +192,53 @@ def cmd_sessions(args):
     print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
 
 
+def cmd_fit(args):
+    from flatiron.fit.pipeline import CorrectionSettings
+    from flatiron.fit.run import fit_profile
+    from flatiron.session.store import Profile
+
+    prof = Profile.existing(args.profile)
+    if prof is None:
+        print(f"No profile {args.profile!r}. See: flatiron profiles")
+        return 1
+    try:
+        settings = CorrectionSettings(
+            max_width_oct=args.width, reference=args.reference, phon=args.phon, k=args.k,
+            k_broad=args.k_broad, broad_strength=args.strength / 100, bands=args.bands,
+            max_boost_narrow_db=args.boost_narrow, max_boost_broad_db=args.boost_broad,
+            max_cut_db=args.max_cut, f_lo=args.f_lo, f_hi=args.f_hi, consistency=not args.no_consistency)
+        print("Fitting (perceptual fits are cached, so refits with other settings are quick)...")
+        pf = fit_profile(prof, settings, args.sessions.split(",") if args.sessions else None)
+    except (ValueError, FileNotFoundError) as e:
+        print(e)
+        return 1
+    corr = pf.correction
+    for e, c in corr.ears.items():
+        f = pf.fits[e]
+        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}")
+        for flt in c.filters:
+            print(f"  PK  Fc {flt.fc:7.0f} Hz  Gain {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}")
+        if not c.filters:
+            print("  no correction needed")
+        for kind in ("narrow", "broad"):
+            acc = [x for x in c.features if x.accepted and x.kind == kind]
+            rej = [x for x in c.features if not x.accepted and x.reason.startswith("inconsistent")]
+            if acc:
+                print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({-x.peak_db:+.1f} dB)" for x in acc))
+            if rej and kind == "narrow":
+                print("  dropped as inconsistent across reseats: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
+        for a, b, m in c.left_out:
+            print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
+    print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")
+    if settings.reference == "iso226":
+        print("reference: ISO 226 free field (the diffuse-field table isn't sourced yet)")
+    if not args.no_report:
+        from flatiron.report.html import write_report
+
+        print(f"report: {write_report(prof, pf)}")
+    return 0
+
+
 def cmd_simulate(args):
     from flatiron.session.scheduler import SchedulerConfig
     from flatiron.sim.listener import SimulatedListener, design_example
@@ -262,6 +309,25 @@ def main(argv=None):
     s.add_argument("--delete", metavar="SESSION_ID", help="delete a session (e.g. one left open by a crash)")
     s.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     s.set_defaults(func=cmd_sessions)
+
+    s = sub.add_parser("fit", help="fit correction filters from a profile's sessions")
+    s.add_argument("--profile", required=True)
+    s.add_argument("--width", type=float, default=1.0, help="max feature width W in octaves (1/3 to 2)")
+    s.add_argument("--reference", default="iso226", help="iso226, diffuse, none, or a CSV of freq_hz,db")
+    s.add_argument("--phon", type=float, default=60.0, help="listening level assumed by the reference")
+    s.add_argument("--k", type=float, default=2.0, help="significance for narrow features (SDs)")
+    s.add_argument("--k-broad", type=float, default=2.5, help="significance for broad features (SDs)")
+    s.add_argument("--strength", type=float, default=100, help="broad-feature strength, 0 to 100%%")
+    s.add_argument("--bands", type=int, default=10, help="correction bands per channel")
+    s.add_argument("--boost-narrow", type=float, default=4.0, help="max boost for narrow features (dB)")
+    s.add_argument("--boost-broad", type=float, default=6.0, help="max boost for broad features (dB)")
+    s.add_argument("--max-cut", type=float, default=12.0, help="max cut (dB)")
+    s.add_argument("--f-lo", type=float, default=1000.0)
+    s.add_argument("--f-hi", type=float, default=14000.0)
+    s.add_argument("--sessions", help="comma-separated session ids to use (default: all)")
+    s.add_argument("--no-consistency", action="store_true", help="skip the reseat consistency check")
+    s.add_argument("--no-report", action="store_true")
+    s.set_defaults(func=cmd_fit)
 
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")
     s.add_argument("--trials", type=int, default=600, help="per ear")

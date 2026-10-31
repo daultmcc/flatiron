@@ -3,9 +3,10 @@
 By-ear headphone resonance EQ from forced-choice loudness judgments. See
 [DESIGN.md](DESIGN.md) for the method.
 
-Status: milestones 1 (audio core), 2 (model and simulator), 3 (adaptive
-scheduler) and 4 (trial UI and session files) are in place. Fitting filters,
-exports and reports come next.
+Status: milestones 1 to 5 are in place (audio core, model and simulator,
+adaptive scheduler, trial UI and session files, fit pipeline and report).
+Exporters come next. The simulator doesn't yet meet DESIGN.md's strict pass
+criteria (see `flatiron simulate` and `src/flatiron/sim/validate.py`).
 
 ```sh
 uv sync
@@ -15,6 +16,7 @@ uv run flatiron run --profile "HD 600" --sweep   # first session: coarse sweep, 
 uv run flatiron run --profile "HD 600"           # later sessions (reseat in between)
 uv run flatiron sessions --profile "HD 600"      # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --profile "HD 600" --delete <id>   # e.g. a session left open by a crash
+uv run flatiron fit --profile "HD 600"           # filters per ear + an HTML report
 uv run flatiron probe                            # hunt by hand: a band at a chosen freq/ear
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run pytest
@@ -35,7 +37,15 @@ a warning; changes are logged), Q = save and quit, X = discard the session
 `~/.local/share/flatiron/profiles/<headphone>/sessions/` (macOS:
 `~/Library/Application Support/flatiron/`).
 
+`fit` options (all usable without new listening; the perceptual fit is
+cached): `--width` (max feature width W, octaves), `--reference iso226|diffuse|none|file.csv`,
+`--strength` (broad features, %), `--k`, `--k-broad`, `--bands`, `--boost-narrow`,
+`--boost-broad`, `--max-cut`, `--f-lo`, `--f-hi`, `--sessions`, `--no-consistency`.
+The design's default diffuse-field reference needs the ISO 389-7 table, which
+isn't sourced yet, so `iso226` (free field) is the default for now.
+
 Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
 (grid, probit fit, refinement), `session/` (scheduler, runner, storage,
-sweep), `ui/` (Textual app), `sim/` (simulated listener, baseline design,
-runner), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).
+sweep), `ui/` (Textual app), `fit/` (reference, baseline, features, filters,
+pipeline), `report/` (figures, HTML), `sim/` (simulated listener, designs,
+validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).

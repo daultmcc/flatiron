@@ -77,3 +77,21 @@ def sos_response_db(sos: np.ndarray, freqs, fs: int = FS) -> np.ndarray:
     freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
     _, h = signal.sosfreqz(sos, worN=freqs, fs=fs)
     return 20.0 * np.log10(np.abs(h))
+
+
+def peaking_db_fast(fc, gain_db, q, freqs, fs: int = FS) -> np.ndarray:
+    """Magnitude (dB) of RBJ peaking filters, vectorised: fc/gain_db/q are
+    arrays of n filters, freqs has m points; returns (n, m). Same filter as
+    peaking_coeffs, evaluated in closed form for the optimiser."""
+    fc, g, q = (np.atleast_1d(np.asarray(v, float))[:, None] for v in (fc, gain_db, q))
+    w = 2 * np.pi * np.asarray(freqs, float)[None, :] / fs
+    a = 10.0 ** (g / 40.0)
+    w0 = 2 * np.pi * fc / fs
+    alpha = np.sin(w0) / (2 * q)
+    c = -2 * np.cos(w0)
+    b0, b2 = 1 + alpha * a, 1 - alpha * a
+    a0, a2 = 1 + alpha / a, 1 - alpha / a
+    cw, c2w = np.cos(w), np.cos(2 * w)
+    num = b0**2 + c**2 + b2**2 + 2 * c * (b0 + b2) * cw + 2 * b0 * b2 * c2w
+    den = a0**2 + c**2 + a2**2 + 2 * c * (a0 + a2) * cw + 2 * a0 * a2 * c2w
+    return 10 * np.log10(num / den)

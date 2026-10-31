@@ -90,11 +90,23 @@ class ProbitFit:
         return m @ self.L, np.sqrt(np.einsum("ij,jk,ik->i", m, self.cov, m))
 
 
+def band_matrix(grid: np.ndarray, freqs, offsets_oct: np.ndarray | None) -> np.ndarray:
+    """Interpolation rows averaged over the stimulus spectrum (log2 offsets
+    from each centre), so L is compared as heard through the stimulus band.
+    None: point probes at the centre frequencies."""
+    if offsets_oct is None:
+        return interp_matrix(grid, freqs)
+    f = np.asarray(freqs, float)
+    return np.mean([interp_matrix(grid, f * 2.0**o) for o in offsets_oct], axis=0)
+
+
 class _Problem:
-    def __init__(self, trials: Trials, grid: np.ndarray, priors: Priors):
+    def __init__(self, trials: Trials, grid: np.ndarray, priors: Priors,
+                 band_offsets_oct: np.ndarray | None = None):
         self.grid = grid
         self.n = grid.size
-        self.A = interp_matrix(grid, trials.f_a) - interp_matrix(grid, trials.f_b)
+        self.A = (band_matrix(grid, trials.f_a, band_offsets_oct)
+                  - band_matrix(grid, trials.f_b, band_offsets_oct))
         self.off = trials.offset
         self.y = trials.a_louder.astype(float)
         self.d = octaves(trials.f_a, trials.f_b)
@@ -180,7 +192,8 @@ def _simplex(start, lo, hi, step=0.3):
 
 
 def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
-               init: ProbitFit | None = None, fit_hyper: bool = True) -> ProbitFit:
+               init: ProbitFit | None = None, fit_hyper: bool = True,
+               band_offsets_oct: np.ndarray | None = None) -> ProbitFit:
     """Fit perceived level L with Laplace error bars.
 
     The noise hyperparameters (sigma0, d0, lapse) are set by maximising the
@@ -190,7 +203,7 @@ def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
     hyperparameters. With fit_hyper=False the hyperparameters stay at `init`
     (or the prior means), which is the fast path for trial-by-trial refits.
     """
-    prob = _Problem(trials, np.asarray(grid, float), priors)
+    prob = _Problem(trials, np.asarray(grid, float), priors, band_offsets_oct)
     n = prob.n
     lo = np.array([LOG_SIGMA0_BOUNDS[0], LOG_D0_BOUNDS[0], LOGIT_LAPSE_BOUNDS[0]])
     hi = np.array([LOG_SIGMA0_BOUNDS[1], LOG_D0_BOUNDS[1], LOGIT_LAPSE_BOUNDS[1]])
@@ -213,13 +226,16 @@ def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
             cache = {"L": L0}
 
             def outer(h):
-                v, L, _ = _neg_log_evidence(prob, h, cache["L"])
+                # Inner fits always start from the same point, so the
+                # evidence is a deterministic function of h; warm-starting
+                # from the last call made it jitter by more than fatol.
+                v, L, _ = _neg_log_evidence(prob, h, L0)
                 cache["L"] = L
                 return v
 
             start = np.array(start)
             res = optimize.minimize(outer, start, method="Nelder-Mead", bounds=list(zip(lo, hi)),
-                                    options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 400,
+                                    options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 1000,
                                              "initial_simplex": _simplex(start, lo, hi)})
             if best is None or res.fun < best[0].fun:
                 best = (res, cache["L"])

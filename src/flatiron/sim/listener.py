@@ -50,7 +50,9 @@ def design_example(ear: str = "L") -> EarTruth:
         tilt_db_per_oct=-1.0,
         features=[
             PeakingFilter(4000.0, 4.0, bw_oct_to_q(0.5)),
-            PeakingFilter(6200.0 * s, -5.0, 6.0),
+            # The doc's "−5 dB peak": a +5 dB headphone peak, corrected by −5 dB.
+            # (Read as a −5 dB notch it would need a +5 dB boost, past the +4 dB cap.)
+            PeakingFilter(6200.0 * s, 5.0, 6.0),
             PeakingFilter(8400.0 * s, -3.0, 10.0),
             PeakingFilter(11000.0, 3.0, 4.0),
         ],
