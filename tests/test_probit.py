@@ -9,8 +9,9 @@ from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
 
 
 def simulate(truth, n, seed, grid, **kw):
+    """Data from the model's own assumptions: an ideal point probe."""
     rng = np.random.default_rng(seed)
-    lis = SimulatedListener({"L": truth}, seed=seed, **kw)
+    lis = SimulatedListener({"L": truth}, seed=seed, stimulus=None, **kw)
     f_a, f_b, off, _ = uniform_design(grid, n, rng)
     return Trials(f_a, f_b, off, lis.respond("L", f_a, f_b, off))
 
@@ -82,3 +83,19 @@ def test_warm_start_without_hyper_refit():
     fast = fit_probit(t, g, init=full, fit_hyper=False)
     assert fast.sigma0 == pytest.approx(full.sigma0)
     assert np.max(np.abs(fast.L - full.L)) < 0.05
+
+
+def test_heard_level_smears_narrow_notches():
+    from flatiron.audio.stimulus import StimulusSpec
+    from flatiron.sim.listener import narrow_example
+
+    truth = {"L": narrow_example()}
+    f = np.array([7300.0, 2000.0])
+    point = SimulatedListener(truth, stimulus=None).heard_level("L", f)
+    assert np.allclose(point, truth["L"].level(f))
+    tone = SimulatedListener(truth, stimulus=StimulusSpec(kind="tone")).heard_level("L", f)
+    assert np.allclose(tone, point)
+    wide = SimulatedListener(truth, stimulus=StimulusSpec()).heard_level("L", f)
+    narrow = SimulatedListener(truth, stimulus=StimulusSpec(bandwidth_oct=1 / 24)).heard_level("L", f)
+    assert point[0] < narrow[0] < wide[0]  # notch gets shallower as the band widens
+    assert abs(wide[1] - point[1]) < 0.05  # smooth regions barely change
