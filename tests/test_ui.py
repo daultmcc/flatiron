@@ -335,3 +335,28 @@ async def test_undo_replays_the_pair_and_keeps_the_record(tmp_path):
                                                                     ("second", False, True)]
     assert s.trials[0].f_a == s.trials[1].f_a and s.trials[0].f_b == s.trials[1].f_b
     assert len(s.trials_for(first.plan.ear)) == 1
+
+
+async def test_verify_session_ends_at_its_trial_count(tmp_path):
+    from flatiron.apo import ApoFilter
+    from flatiron.audio.preview import PreviewEQ
+
+    prof = Profile.open("v", root=tmp_path)
+    eq = PreviewEQ({"L": [ApoFilter("PK", 6000, -6, 4)], "R": []}, -0.5, "abc")
+    runners = []
+
+    def make():
+        runners.append(TrialRunner(prof, RunSettings(preview=eq, max_trials=2), config=CFG, seed=0))
+        return runners[-1]
+
+    app = FlatironApp(make, NullPlayer())
+    async with app.run_test() as pilot:
+        await pass_channel_check(app, pilot)
+        scr = app.screen
+        for k in range(2):
+            await wait_for(pilot, lambda: scr.accepting)
+            await pilot.press("left")
+            await wait_for(pilot, lambda: len(runners[0].session.trials) == k + 1)
+        await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
+        assert "Verify session complete" in str(app.screen.query_one("#title").render())
+    assert prof.sessions()[0].preview["fit_hash"] == "abc"

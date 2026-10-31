@@ -79,10 +79,17 @@ class EarCorrection:
     sessions_checked: int = 0
     session_R: list[np.ndarray] = field(default_factory=list)  # each session's residual, same baseline
     compensation: list[PeakingFilter] = field(default_factory=list)  # tonality-preserving filters (in fit.filters)
+    fixed: list[PeakingFilter] = field(default_factory=list)  # filters kept from before (incremental refit)
 
     @property
     def filters(self) -> list[PeakingFilter]:
         return self.fit.filters
+
+    @property
+    def added(self) -> list[PeakingFilter]:
+        """Filters this fit adds (all of them, unless it's incremental)."""
+        keep = {id(f) for f in self.fixed}
+        return [f for f in self.fit.filters if id(f) not in keep]
 
 
 def taper(freqs, f_lo, f_hi, width_lo_oct, width_hi_oct) -> np.ndarray:
@@ -112,10 +119,16 @@ def build_target(features, R, settings: CorrectionSettings) -> np.ndarray:
 
 
 def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = CorrectionSettings(),
-                session_fits: list[ProbitFit] | None = None) -> EarCorrection:
+                session_fits: list[ProbitFit] | None = None,
+                fixed: list[PeakingFilter] | None = None) -> EarCorrection:
+    """fixed: filters already in use (an incremental refit). The pipeline then
+    runs on the corrected curve, L + fixed, and only adds filters for what's
+    still significant, within the bands left over."""
     g = fit.grid
+    fixed = list(fixed or [])
     E = reference(settings.reference, g, settings.phon)
-    D = fit.L - E
+    H_fixed = response(fixed, g)
+    D = fit.L + H_fixed - E
     base = fit_baseline(g, D, fit.sd, settings.max_width_oct, settings.baseline_penalty)
     M = np.eye(g.size) - base.smoother
     R = M @ D
@@ -125,7 +138,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     feats = find_features(g, R, cov_R, settings.k, settings.k_broad, settings.narrow_max_oct)
     checked, session_R = 0, []
     if session_fits:
-        per = [(M @ (s.L - E), M @ s.cov @ M.T) for s in session_fits]
+        per = [(M @ (s.L + H_fixed - E), M @ s.cov @ M.T) for s in session_fits]
         session_R = [r for r, _ in per]
         if settings.consistency:
             checked = len(per)
@@ -144,14 +157,20 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     target = (m @ C) * taper(freqs, settings.f_lo, settings.f_hi, w_lo, w_hi)
     sd = np.sqrt(np.einsum("ij,jk,ik->i", m, cov_R, m))
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, settings.q_max, settings.max_gain_db)
-    ff = fit_filters(freqs, target, sd, settings.bands, bounds, settings.stop_z, settings.min_gain_db)
+    ff = fit_filters(freqs, target, sd, max(settings.bands - len(fixed), 0), bounds, settings.stop_z,
+                     settings.min_gain_db)
     comp: list[PeakingFilter] = []
     if settings.preserve_tonality:
         for f in feats:
             if f.accepted and f.kind == BROAD:
                 f.accepted = False
                 f.reason = "left as tonality (--preserve-tonality)"
-        ff, comp = add_tonality_compensation(ff, freqs, settings, w_lo, w_hi)
+        ff, comp = add_tonality_compensation(ff, freqs, settings, w_lo, w_hi, len(fixed))
+    if fixed:
+        contrib = dict(zip(map(id, ff.filters), ff.contributions))
+        allf = sorted(fixed + ff.filters, key=lambda f: f.fc)
+        ff = replace(ff, filters=allf, response=ff.response + response(fixed, freqs),
+                     contributions=[contrib.get(id(f), 0.0) for f in allf])
 
     left = []
     if ff.budget_bound:
@@ -168,7 +187,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
             else:
                 i += 1
     return EarCorrection(ear, g, fit.L, fit.sd, E, base.values, R, R_sd, feats, C, freqs, target, sd, ff,
-                         left, checked, session_R, comp)
+                         left, checked, session_R, comp, fixed)
 
 
 def smooth_log(freqs, values, fwhm_oct, weights) -> np.ndarray:
@@ -195,14 +214,14 @@ def _merge_close(filters: list[PeakingFilter], oct_tol: float = 1 / 24) -> list[
     return out
 
 
-def add_tonality_compensation(ff: FilterFit, freqs, settings: CorrectionSettings, w_lo, w_hi):
+def add_tonality_compensation(ff: FilterFit, freqs, settings: CorrectionSettings, w_lo, w_hi, used: int = 0):
     """Broad filters that cancel the narrow filters' average over ~W, so the
     corrected response keeps the original's broad shape. Fitted to what the
     narrow filters actually do (a noise-free curve), with the bands left over."""
     w = taper(freqs, settings.f_lo, settings.f_hi, w_lo, w_hi)
     h = response(ff.filters, freqs)
     goal = -smooth_log(freqs, h, settings.max_width_oct, w) * w
-    room = min(settings.bands - len(ff.filters), COMP_MAX_BANDS)
+    room = min(settings.bands - used - len(ff.filters), COMP_MAX_BANDS)
     if room <= 0 or np.max(np.abs(goal)) < COMP_TOL_DB:
         return ff, []
     # Gains no bigger than the curve itself: otherwise the fit chases the
@@ -244,7 +263,9 @@ class Correction:
 
 
 def correct(fits: dict[str, ProbitFit], settings: CorrectionSettings = CorrectionSettings(),
-            session_fits: dict[str, list[ProbitFit]] | None = None) -> Correction:
-    ears = {e: correct_ear(e, fits[e], settings, (session_fits or {}).get(e)) for e in fits}
+            session_fits: dict[str, list[ProbitFit]] | None = None,
+            fixed: dict[str, list[PeakingFilter]] | None = None) -> Correction:
+    ears = {e: correct_ear(e, fits[e], settings, (session_fits or {}).get(e), (fixed or {}).get(e))
+            for e in fits}
     pre = min(preamp_db(c.filters) for c in ears.values())
     return Correction(settings, ears, pre)

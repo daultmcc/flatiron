@@ -89,6 +89,7 @@ class Session:
     grid: dict = field(default_factory=dict)  # ear -> list of Hz, at the end of the session
     channel_checks: list = field(default_factory=list)
     level_changes: list = field(default_factory=list)  # {after_trial, from, to, at}
+    preview: dict | None = None  # verify sessions: the correction applied to every burst (PreviewEQ JSON)
     sweep_marks: dict = field(default_factory=dict)  # ear -> list of {freq, kind}
     trials: list[TrialRecord] = field(default_factory=list)
     ended: str | None = None

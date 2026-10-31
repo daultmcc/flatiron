@@ -120,14 +120,18 @@ def _settings(args, profile):
                        active_eq=eq, eq_note=note, eq_text=text)
 
 
-def _launch(args, sweep: bool):
+def _launch(args, sweep: bool, profile=None, **extra):
+    """extra: RunSettings overrides (verify: preview, max_trials)."""
+    from dataclasses import replace
+
     from flatiron.session.runner import TrialRunner
     from flatiron.ui.app import FlatironApp
 
-    profile = _profile(args, create=True)
+    profile = profile or _profile(args, create=True)
     if profile is None:
         return 1
-    _settings(args, profile)  # validate options before the UI starts
+    settings = lambda: replace(_settings(args, profile), **extra)
+    settings()  # validate options before the UI starts
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
         from flatiron.audio.devices import list_output_devices
@@ -138,8 +142,7 @@ def _launch(args, sweep: bool):
             device.update(name=d.name, hostapi=d.hostapi, warnings=d.warnings)
             for w in d.warnings:
                 print(f"! {d.name}: {w}")
-    app = FlatironApp(lambda: TrialRunner(profile, _settings(args, profile), device=device),
-                      _player(args), sweep=sweep)
+    app = FlatironApp(lambda: TrialRunner(profile, settings(), device=device), _player(args), sweep=sweep)
     app.run()
     print(VOLUME_REMINDER)
     return 0
@@ -147,6 +150,62 @@ def _launch(args, sweep: bool):
 
 def cmd_run(args):
     return _launch(args, sweep=args.sweep)
+
+
+def cmd_verify(args):
+    from flatiron.audio.preview import PreviewEQ
+    from flatiron.fit.run import leftovers
+
+    prof = _profile(args)
+    if prof is None:
+        return 1
+    fit = prof.read().get("fit")
+    if not fit:
+        print(f"No fit to verify yet. Run: flatiron fit -p {prof.read()['label']!r}")
+        return 1
+    eq = PreviewEQ.from_fit(fit)
+    print(f"Verifying fit {eq.fit_hash}: Flatiron applies the correction to every burst itself.")
+    print("Make sure it isn't also applied by the system (don't play through a Flatiron PipeWire sink or an")
+    print("LSP instance with this correction), or it will be applied twice.")
+    rc = _launch(args, sweep=False, profile=prof, preview=eq, max_trials=args.trials)
+    if rc or not any(s.preview for s in prof.sessions()):
+        return rc
+    print("\nChecking what's left with the correction applied (all trials, verify included)...")
+    pf, left = leftovers(prof)
+    for e, feats in left.items():
+        who = f"{e} ({pf.fits[e].n_trials} trials)"
+        if not feats:
+            print(f"  {who}: nothing significant left. The correction holds.")
+            continue
+        print(f"  {who}: still significant: " + ", ".join(
+            f"{x.fc:.0f} Hz ({-x.peak_db:+.1f} dB, {x.kind})" for x in sorted(feats, key=lambda x: x.fc)))
+    if any(left.values()):
+        print("Add filters for these, keeping the current ones: flatiron fit --increment")
+    return 0
+
+
+def cmd_audition(args):
+    from flatiron.audio.preview import PreviewEQ
+    from flatiron.ui.audition import AuditionApp, load_source
+
+    prof = _profile(args)
+    if prof is None:
+        return 1
+    fit = prof.read().get("fit")
+    if not fit:
+        print(f"No fit to audition yet. Run: flatiron fit -p {prof.read()['label']!r}")
+        return 1
+    try:
+        sources = [load_source(x) for x in (args.source or ["pink", "sweep"])]
+    except (FileNotFoundError, ValueError) as e:
+        print(e)
+        return 1
+    eq = PreviewEQ.from_fit(fit)
+    print("Make sure the correction isn't also applied by the system (a Flatiron PipeWire sink or LSP),")
+    print("or the 'on' state gets it twice.")
+    AuditionApp(sources, eq, _player(args), f"{prof.read()['label']} · fit {eq.fit_hash}").run()
+    print(VOLUME_REMINDER)
+    return 0
 
 
 def _confirm(question: str, yes: bool) -> bool:
@@ -208,6 +267,7 @@ def cmd_sessions(args):
         mins = s.trials[-1].t / 60 if s.trials else 0
         print(f"{s.id}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  catch {acc:>4}  "
               f"fast {fast:3d}  chose first {first:>4}  EQ: {s.eq_context.get('note')}"
+              f"{'  [verify ' + s.preview.get('fit_hash', '') + ']' if s.preview else ''}"
               f"{'' if s.ended else '  (not closed)'}")
     trials, _ = prof.history(sessions)
     print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
@@ -227,8 +287,16 @@ def cmd_fit(args):
             max_boost_narrow_db=args.boost_narrow, max_boost_broad_db=args.boost_broad,
             max_cut_db=args.max_cut, f_lo=args.f_lo, f_hi=args.f_hi, consistency=not args.no_consistency,
             preserve_tonality=args.preserve_tonality)
+        fixed = None
+        if args.increment:
+            from flatiron.fit.run import saved_filters
+
+            fixed = saved_filters(prof)
+            if fixed is None:
+                print("--increment needs a saved fit to add to.")
+                return 1
         print("Fitting (perceptual fits are cached, so refits with other settings are quick)...")
-        pf = fit_profile(prof, settings, args.sessions.split(",") if args.sessions else None)
+        pf = fit_profile(prof, settings, args.sessions.split(",") if args.sessions else None, fixed=fixed)
     except (ValueError, FileNotFoundError) as e:
         print(e)
         return 1
@@ -238,8 +306,10 @@ def cmd_fit(args):
         print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}, "
               f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
         comp = {id(x) for x in c.compensation}
+        kept = {id(x) for x in c.fixed}
         for flt in c.filters:
-            note = "  (tonality compensation)" if id(flt) in comp else ""
+            note = ("  (kept)" if id(flt) in kept else
+                    "  (tonality compensation)" if id(flt) in comp else "")
             print(f"  PK  Fc {flt.fc:7.0f} Hz  Gain {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}{note}")
         if not c.filters:
             print("  no correction needed")
@@ -431,6 +501,19 @@ def main(argv=None):
     session_args(s)
     s.set_defaults(func=lambda a: _launch(a, sweep=True))
 
+    s = sub.add_parser("verify", help="short session with the saved correction applied to every burst")
+    session_args(s)
+    s.add_argument("--trials", type=int, default=150, help="answers in the session (default 150)")
+    s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("audition", help="listen with the saved correction on and off")
+    s.add_argument("-p", "--profile", help="default: the only profile")
+    s.add_argument("-d", "--device", type=int)
+    s.add_argument("-n", "--dry-run", action="store_true", help="no audio")
+    s.add_argument("--source", action="append", metavar="pink|sweep|FILE.wav",
+                   help="what to play (repeatable; default: pink noise and the slow sweep)")
+    s.set_defaults(func=cmd_audition)
+
     s = sub.add_parser("profiles", help="list headphone profiles")
     s.set_defaults(func=cmd_profiles)
 
@@ -461,6 +544,9 @@ def main(argv=None):
     s.add_argument("--sessions", help="comma-separated session ids to use (default: all)")
     s.add_argument("--no-consistency", action="store_true", help="skip the reseat consistency check")
     s.add_argument("--no-report", action="store_true", help="don't write report.html")
+    s.add_argument("--increment", action="store_true",
+                   help="keep the saved fit's filters and add filters only for what's still significant "
+                        "with them applied (e.g. after a verify session)")
     s.set_defaults(func=cmd_fit)
 
     s = sub.add_parser("export", help="write the last fit's correction for an EQ host")

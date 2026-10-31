@@ -12,6 +12,7 @@ import numpy as np
 
 from flatiron import EARS, FS
 from flatiron.apo import ApoEq
+from flatiron.audio.preview import PreviewEQ
 from flatiron.audio.limiter import DEFAULT_LEVEL_DB, render_pair
 from flatiron.audio.stimulus import StimulusSpec, make_stimulus, stimulus_key
 from flatiron.model.refine import refine_around
@@ -32,6 +33,10 @@ class RunSettings:
     active_eq: ApoEq | None = None
     eq_note: str = "none"
     eq_text: str | None = None
+    # Verify sessions: Flatiron applies this correction to every burst and
+    # records each burst's level change as a known offset.
+    preview: PreviewEQ | None = None
+    max_trials: int | None = None  # end the session after this many answers
 
     def __post_init__(self):
         if not 0.15 <= self.gap_s <= 0.6:
@@ -51,6 +56,8 @@ class PreparedTrial:
     limited_db: float
     level_dbfs: float
     retake: bool = False
+    preview_gain_a: float = 0.0  # level change of each burst from the preview EQ (dB)
+    preview_gain_b: float = 0.0
 
 
 class TrialRunner:
@@ -78,7 +85,8 @@ class TrialRunner:
             device=device or {}, sample_rate=fs,
             eq_context={"note": settings.eq_note, "apo": settings.eq_text},
             stimulus=asdict(settings.stimulus), level_dbfs=self.level_dbfs,
-            gap_s=settings.gap_s, seed=self.seed, scheduler=asdict(config))
+            gap_s=settings.gap_s, seed=self.seed, scheduler=asdict(config),
+            preview=settings.preview.to_json() if settings.preview is not None else None)
         self._save()
 
     # -- setup steps -------------------------------------------------------
@@ -125,6 +133,10 @@ class TrialRunner:
         spec, s = self.settings.stimulus, self.settings
         a = make_stimulus(plan.f_a, spec, seed=self.seed, fs=self.fs)
         b = make_stimulus(plan.f_b, spec, seed=self.seed, fs=self.fs)
+        pa = pb = 0.0
+        if s.preview is not None:
+            a, pa = s.preview.burst_gain_db(a, plan.ear, self.fs)
+            b, pb = s.preview.burst_gain_db(b, plan.ear, self.fs)
         la = self.level_dbfs + plan.rove_db + plan.delta_a
         lb = self.level_dbfs + plan.rove_db + plan.delta_b
         if plan.a_first:
@@ -133,7 +145,7 @@ class TrialRunner:
             buf, lim = render_pair(b, a, lb, la, s.gap_s, plan.ear, self.fs)
         d = a.size / self.fs
         return PreparedTrial(plan, buf, 0.0, d, d + s.gap_s, 2 * d + s.gap_s, lim.gain_db,
-                             self.level_dbfs, retake)
+                             self.level_dbfs, retake, pa, pb)
 
     def eq_gains(self, plan: TrialPlan) -> tuple[float, float]:
         eq = self.settings.active_eq
@@ -148,6 +160,7 @@ class TrialRunner:
         quick answer after a replay isn't flagged as fast."""
         p = trial.plan
         ga, gb = self.eq_gains(p)
+        ga, gb = ga + trial.preview_gain_a, gb + trial.preview_gain_b
         rec = TrialRecord(
             ear=p.ear, f_a=p.f_a, f_b=p.f_b, delta_a=p.delta_a, delta_b=p.delta_b,
             a_first=p.a_first, rove_db=p.rove_db, catch=p.catch,

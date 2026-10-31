@@ -64,3 +64,18 @@ def test_stop_when_idle_is_harmless():
     m = Mixer(fs=FS)
     m.stop()
     assert np.all(m.render(64) == 0)
+
+
+def test_switch_keeps_position_and_crossfades():
+    m = Mixer(fs=FS)
+    a = np.full((4000, 2), 0.5, np.float32)
+    b = np.full((4000, 2), -0.5, np.float32)
+    b[:, 1] = 0.25
+    m.start(a, loop=True)
+    first = m.render(1000)
+    m.switch(b)
+    out = np.concatenate([first, m.render(3000)])
+    # Same position: the switch happens over the next n_fade samples, then it's b.
+    assert np.allclose(out[1000 + m.n_fade:, 0], -0.5) and np.allclose(out[1000 + m.n_fade:, 1], 0.25)
+    assert max_step(out) < 1.0 * np.pi / (2 * m.n_fade) * 1.01  # a 1.0 swing, raised-cosine
+    assert m.playing and m.pos == 0  # a full loop: back to the start

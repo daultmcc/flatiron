@@ -98,7 +98,9 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         out.append("<h3>Filters</h3>")
         if c.filters:
             comp = {id(x) for x in c.compensation}
+            kept = {id(x) for x in c.fixed}
             rows = [(f"{flt.fc:,.0f}", f"{flt.gain_db:+.1f}", f"{flt.q:.2f}",
+                     "kept from before" if id(flt) in kept else
                      "tonality compensation" if id(flt) in comp else f"{ctb:.2f}")
                     for flt, ctb in zip(c.filters, c.fit.contributions)]
             out.append(_table(["Fc (Hz)", "gain (dB)", "Q", "χ² if removed"], rows, (0, 1, 2)))

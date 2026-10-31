@@ -27,15 +27,18 @@ def reseat(truth: EarTruth, rng: np.random.Generator, shift_oct: float = 1 / 48,
 
 def simulate_profile(profile: Profile, truths: dict[str, EarTruth], sessions: int = 3,
                      trials_per_ear: int = 200, seed: int = 0, fragile: tuple[float, ...] = (),
-                     config: SchedulerConfig = SchedulerConfig(), **listener_kw) -> None:
+                     config: SchedulerConfig = SchedulerConfig(), preview=None, **listener_kw) -> None:
+    """preview: a PreviewEQ for verify sessions; the listener hears each burst
+    through it (its level change adds to the burst's level)."""
     rng = np.random.default_rng(seed)
     for k in range(sessions):
         lis = SimulatedListener({e: reseat(truths[e], rng, fragile=fragile) for e in EARS},
                                 seed=seed * 100 + k, **listener_kw)
-        r = TrialRunner(profile, RunSettings(), config, seed=seed * 100 + k)
+        r = TrialRunner(profile, RunSettings(preview=preview), config, seed=seed * 100 + k)
         for _ in range(trials_per_ear * len(EARS)):
             tr = r.prepare()
             p = tr.plan
-            a = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset, p.a_first))
+            heard_offset = p.offset + tr.preview_gain_a - tr.preview_gain_b
+            a = bool(lis.respond(p.ear, p.f_a, p.f_b, heard_offset, p.a_first))
             r.answer(tr, first_louder=(a == p.a_first), rt_ms=600.0)
         r.finish()

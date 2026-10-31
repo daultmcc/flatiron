@@ -3,11 +3,10 @@
 By-ear headphone resonance EQ from forced-choice loudness judgments. See
 [DESIGN.md](DESIGN.md) for the method.
 
-Status: milestones 1 to 5 are in place (audio core, model and simulator,
-adaptive scheduler, trial UI and session files, fit pipeline and report).
-Milestone 6 (exporters) is done: Equalizer APO text, LSP x32 LeftRight,
-EasyEffects (the format Equaliser on macOS imports) and a PipeWire
-filter-chain drop-in. The simulator doesn't yet meet DESIGN.md's strict pass
+Status: all seven milestones in DESIGN.md are in place: audio core, model and
+simulator, adaptive scheduler, trial UI and session files, fit pipeline and
+report, exporters (Equalizer APO text, LSP x32 LeftRight, EasyEffects for
+Equaliser on macOS, PipeWire), and audition and verify. The simulator doesn't yet meet DESIGN.md's strict pass
 criteria (see `flatiron simulate` and `src/flatiron/sim/validate.py`).
 
 ```sh
@@ -19,6 +18,9 @@ uv run flatiron run                              # later sessions (-p can go whe
 uv run flatiron sessions                         # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --delete <id>           # e.g. a session left open by a crash
 uv run flatiron fit --open                       # filters per ear; opens report.html
+uv run flatiron audition                         # the saved fit on/off: pink noise, sweep, or --source song.wav
+uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
+uv run flatiron fit --increment                  # keep the filters, add ones for what verify found
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire; -m preset.txt
 uv run flatiron probe                            # hunt by hand: a band at a chosen freq/ear
 uv run flatiron simulate                         # scheduler + fit against a simulated listener

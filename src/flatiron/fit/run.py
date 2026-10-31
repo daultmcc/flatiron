@@ -1,11 +1,12 @@
 """Fit a profile: cached perceptual fits → correction → profile.json."""
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 
 import numpy as np
 
 from flatiron import EARS
+from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.pipeline import Correction, CorrectionSettings, correct
 from flatiron.model.grid import log_grid
 from flatiron.model.probit import Priors, ProbitFit, Trials, fit_probit
@@ -52,8 +53,17 @@ class ProfileFit:
     session_ids: dict[str, list[str]]  # per ear: sessions in the consistency check
 
 
+def saved_filters(profile: Profile) -> dict[str, list[PeakingFilter]] | None:
+    """The filters of the profile's saved fit (what export would write)."""
+    fit = profile.read().get("fit")
+    if not fit:
+        return None
+    return {e: [PeakingFilter(**f) for f in fit["ears"][e]["filters"]] for e in EARS}
+
+
 def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSettings(),
-                session_ids: list[str] | None = None, save: bool = True) -> ProfileFit:
+                session_ids: list[str] | None = None, save: bool = True,
+                fixed: dict[str, list[PeakingFilter]] | None = None) -> ProfileFit:
     sessions = profile.sessions()
     if session_ids:
         missing = set(session_ids) - {s.id for s in sessions}
@@ -73,7 +83,7 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
             if len(t) >= MIN_SESSION_TRIALS:
                 per_session[e].append(cached_fit(profile, t, grid, init=fits[e], fit_hyper=False))
                 used[e].append(s.id)
-    corr = correct(fits, settings, per_session)
+    corr = correct(fits, settings, per_session, fixed)
     if save:
         summary = corr.summary()
         summary.update(fitted=now_iso(), sessions=[s.id for s in sessions],
@@ -82,3 +92,18 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
                               for e, f in fits.items()})
         profile.update(fit=summary)
     return ProfileFit(corr, fits, sessions, used)
+
+
+def leftovers(profile: Profile) -> tuple[ProfileFit, dict[str, list]]:
+    """What's still significant with the saved correction applied, using all
+    trials (verify trials included) and the saved fit's settings. Nothing is
+    saved and no filters are added."""
+    fit = profile.read().get("fit")
+    if not fit:
+        raise ValueError("no saved fit")
+    known = {f.name for f in fields(CorrectionSettings)}
+    st = CorrectionSettings(**{k: v for k, v in fit["settings"].items() if k in known})
+    fixed = saved_filters(profile)
+    st = replace(st, bands=max(len(v) for v in fixed.values()))
+    pf = fit_profile(profile, st, save=False, fixed=fixed)
+    return pf, {e: [f for f in c.features if f.accepted] for e, c in pf.correction.ears.items()}

@@ -18,9 +18,10 @@ from flatiron.audio.limiter import CEILING_DB, db_to_amp
 FADE_S = 0.01
 
 
-def _guard(buf: np.ndarray) -> np.ndarray:
-    # Final guard: nothing leaves Flatiron above the hard ceiling.
-    c = float(db_to_amp(CEILING_DB))
+def _guard(buf: np.ndarray, ceiling_db: float = CEILING_DB) -> np.ndarray:
+    # Final guard: nothing leaves Flatiron above the ceiling (−12 dBFS for test
+    # stimuli; audition of music passes 0 dBFS, just to prevent clipping).
+    c = float(db_to_amp(ceiling_db))
     return np.clip(buf, -c, c).astype(np.float32)
 
 
@@ -28,7 +29,9 @@ class Mixer:
     """Sample-accurate playback state, independent of any audio API.
 
     start() while something is playing fades the old sound out first, then
-    starts the new one; stop() fades out. render() fills one output block.
+    starts the new one; stop() fades out; switch() crossfades to another
+    buffer of the same length at the same position (A/B toggling).
+    render() fills one output block.
     """
 
     def __init__(self, channels: int = 2, fs: int = FS, fade_s: float = FADE_S):
@@ -41,6 +44,8 @@ class Mixer:
         self.loop = False
         self.fade_left: int | None = None
         self.pending: tuple[np.ndarray, bool] | None = None
+        self.xfade_to: np.ndarray | None = None
+        self.xfade_left = 0
 
     @property
     def playing(self) -> bool:
@@ -59,7 +64,23 @@ class Mixer:
     def stop(self) -> None:
         self.pending = None
         if self.buf is not None and self.fade_left is None:
+            self._finish_xfade()
             self.fade_left = self.n_fade
+
+    def switch(self, buf: np.ndarray) -> None:
+        """Crossfade to `buf` (same length) without losing the playback position."""
+        buf = np.asarray(buf, np.float32)
+        if buf.ndim == 1:
+            buf = np.repeat(buf[:, None], self.channels, axis=1)
+        if self.buf is None or self.fade_left is not None or buf.shape != self.buf.shape:
+            self.start(buf, loop=True)
+            return
+        self._finish_xfade()
+        self.xfade_to, self.xfade_left = buf, self.n_fade
+
+    def _finish_xfade(self):
+        if self.xfade_to is not None:
+            self.buf, self.xfade_to, self.xfade_left = self.xfade_to, None, 0
 
     def render(self, frames: int) -> np.ndarray:
         out = np.zeros((frames, self.channels), np.float32)
@@ -72,7 +93,16 @@ class Mixer:
             n = min(frames - i, self.buf.shape[0] - self.pos)
             if self.fade_left is not None:
                 n = min(n, self.fade_left)
-            chunk = self.buf[self.pos:self.pos + n]
+            if self.xfade_to is not None:
+                n = min(n, self.xfade_left)
+                k0 = self.n_fade - self.xfade_left
+                g = self.fade_curve[k0:k0 + n, None]
+                chunk = self.buf[self.pos:self.pos + n] * g + self.xfade_to[self.pos:self.pos + n] * (1 - g)
+                self.xfade_left -= n
+                if self.xfade_left == 0:
+                    self._finish_xfade()
+            else:
+                chunk = self.buf[self.pos:self.pos + n]
             if self.fade_left is not None:
                 k0 = self.n_fade - self.fade_left
                 chunk = chunk * self.fade_curve[k0:k0 + n, None]
@@ -110,9 +140,13 @@ class StreamPlayer:
         with self.lock:
             outdata[:] = self.mixer.render(frames)
 
-    def start(self, buf: np.ndarray, loop: bool = False) -> None:
+    def start(self, buf: np.ndarray, loop: bool = False, ceiling_db: float = CEILING_DB) -> None:
         with self.lock:
-            self.mixer.start(_guard(buf), loop)
+            self.mixer.start(_guard(buf, ceiling_db), loop)
+
+    def switch(self, buf: np.ndarray, ceiling_db: float = CEILING_DB) -> None:
+        with self.lock:
+            self.mixer.switch(_guard(buf, ceiling_db))
 
     def stop(self) -> None:
         with self.lock:
@@ -150,7 +184,10 @@ class NullPlayer:
     def __init__(self):
         self.played: list[np.ndarray] = []
 
-    def start(self, buf: np.ndarray, loop: bool = False) -> None:
+    def start(self, buf: np.ndarray, loop: bool = False, ceiling_db: float = 0.0) -> None:
+        self.played.append(buf)
+
+    def switch(self, buf: np.ndarray, ceiling_db: float = 0.0) -> None:
         self.played.append(buf)
 
     def stop(self) -> None:

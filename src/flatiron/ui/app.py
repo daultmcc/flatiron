@@ -425,6 +425,10 @@ class TrialScreen(Screen):
         if self.active_seconds() >= self.limit_s and not nxt.retake:
             self.dismiss("time")
             return
+        cap = self.runner.settings.max_trials
+        if cap and self.runner.progress()["session_trials"] >= cap and not nxt.retake:
+            self.dismiss("done")
+            return
         if nxt.level_dbfs != self.runner.level_dbfs:  # level changed while it was being prepared
             nxt = self.runner.render(nxt.plan, retake=nxt.retake)
         self.trial, self.replays = nxt, 0
@@ -539,7 +543,8 @@ class SessionEndScreen(MessageScreen):
         if self.reason == "discarded":
             head, summary = "Session discarded.", "Nothing from it was kept.\n"
         else:
-            head = "Time for a break." if self.reason == "time" else "Session saved."
+            head = {"time": "Time for a break.", "done": "Verify session complete."}.get(self.reason,
+                                                                                    "Session saved.")
             undone = f", {p['undone']} undone" if p["undone"] else ""
             summary = (f"{p['session_trials']} trials this session{undone}, {acc_s}, "
                        f"{p['fast']} very fast answers.\n")
