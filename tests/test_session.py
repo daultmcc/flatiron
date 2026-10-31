@@ -268,3 +268,21 @@ def test_session_trials_carry_play_order(tmp_path):
         want = [1.0 if p.a_first else -1.0 for p in plans if p.ear == e]
         assert s.trials_for(e).order.tolist() == want
         assert r.scheduler.ears[e].trials().order.tolist() == want
+
+
+def test_sessions_with_different_stimuli_pool_with_their_keys(tmp_path):
+    from flatiron.audio.stimulus import StimulusSpec
+
+    prof = Profile.open("x", root=tmp_path)
+    for spec in (StimulusSpec(), StimulusSpec(bandwidth_oct=1 / 24), StimulusSpec(kind="tone")):
+        r = TrialRunner(prof, RunSettings(stimulus=spec), config=FAST_CFG, seed=0)
+        for _ in range(4):
+            r.answer(r.prepare(), True, 400)
+        assert set(r.scheduler.ears["L"].trials().stimulus[-2:]) == {
+            {"noise": f"noise:{spec.bandwidth_oct:.6f}", "tone": "point"}[spec.kind]}
+        r.finish()
+    trials, _ = prof.history()
+    assert sorted(set(trials["L"].stimulus)) == ["noise:0.041667", "noise:0.083333", "point"]
+    # A later session's scheduler starts from all of it, keys included.
+    r = TrialRunner(prof, config=FAST_CFG, seed=1)
+    assert len(set(r.scheduler.ears["L"].trials().stimulus)) == 3

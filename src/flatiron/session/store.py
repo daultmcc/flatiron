@@ -16,6 +16,7 @@ import numpy as np
 
 from flatiron import EARS
 from flatiron.audio.limiter import DEFAULT_LEVEL_DB
+from flatiron.audio.stimulus import POINT, StimulusSpec, stimulus_key
 from flatiron.model.probit import Trials
 from flatiron.paths import data_dir
 
@@ -106,8 +107,9 @@ class Session:
 
     def trials_for(self, ear: str) -> Trials:
         ts = [t for t in self.trials if t.ear == ear and not t.undone]
+        key = stimulus_key(StimulusSpec(**self.stimulus)) if self.stimulus else POINT
         return Trials([t.f_a for t in ts], [t.f_b for t in ts], [t.offset for t in ts],
-                      [t.a_louder for t in ts], [1.0 if t.a_first else -1.0 for t in ts])
+                      [t.a_louder for t in ts], [1.0 if t.a_first else -1.0 for t in ts], [key] * len(ts))
 
 
 class Profile:

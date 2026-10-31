@@ -16,7 +16,7 @@ from scipy.special import ndtr
 
 from flatiron import iso226
 from flatiron.audio.biquad import PeakingFilter, bw_oct_to_q, response_db
-from flatiron.audio.stimulus import StimulusSpec, band_edges
+from flatiron.audio.stimulus import StimulusSpec, spectrum_offsets_oct, stimulus_key
 from flatiron.model.grid import octaves
 
 
@@ -72,22 +72,9 @@ def narrow_example(ear: str = "L") -> EarTruth:
     )
 
 
-SPECTRUM_POINTS = 41
-
-
 def heard_offsets_oct(spec: StimulusSpec | None) -> np.ndarray:
-    """Log2 offsets from the centre frequency sampling the stimulus spectrum.
-
-    Noise is flat in Hz between its band edges; a warble spends its time
-    uniformly in FM phase; a tone (or None) is a single point.
-    """
-    if spec is None or spec.kind == "tone":
-        return np.zeros(1)
-    if spec.kind == "noise":
-        lo, hi = band_edges(1.0, spec.bandwidth_oct)
-        return np.log2(np.linspace(lo, hi, SPECTRUM_POINTS))
-    theta = (np.arange(SPECTRUM_POINTS) + 0.5) * 2 * np.pi / SPECTRUM_POINTS
-    return spec.warble_depth_oct * np.sin(theta)
+    """Log2 offsets sampling the stimulus spectrum (see stimulus.spectrum_offsets_oct)."""
+    return spectrum_offsets_oct(stimulus_key(spec))
 
 
 @dataclass

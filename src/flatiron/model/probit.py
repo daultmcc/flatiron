@@ -3,8 +3,9 @@
 P(A) = lapse/2 + (1 - lapse) * Phi((L_a - L_b + off + bias * order) / sigma(d)),
 sigma(d) = sigma0 * sqrt(1 + (d/d0)^2), d = |log2(f_a/f_b)|,
 where `off` is every known level difference between A and B (Δ_a − Δ_b plus
-any active or preview EQ gain), order is +1 when A played first and −1 when B
-did, and bias is the time-order error: how many dB louder the first interval
+any active or preview EQ gain), L_a and L_b are L averaged (in dB) over each
+trial's stimulus spectrum (a point for tones; the band for noise), order is +1
+when A played first and −1 when B did, and bias is the time-order error: how many dB louder the first interval
 sounds. The bias is fitted with L (a fixed effect), so its uncertainty is part
 of L's error bars.
 """
@@ -15,6 +16,7 @@ import numpy as np
 from scipy import optimize
 from scipy.special import expit, logit, ndtr
 
+from flatiron.audio.stimulus import POINT, spectrum_offsets_oct
 from flatiron.model.grid import interp_matrix, octaves, second_difference
 
 SQRT_2PI = np.sqrt(2 * np.pi)
@@ -29,6 +31,7 @@ class Trials:
     offset: np.ndarray
     a_louder: np.ndarray
     order: np.ndarray | None = None
+    stimulus: np.ndarray | None = None  # per-trial stimulus key (stimulus.stimulus_key); None: points
 
     def __post_init__(self):
         self.f_a = np.asarray(self.f_a, float)
@@ -37,6 +40,8 @@ class Trials:
         self.a_louder = np.asarray(self.a_louder, bool)
         self.order = (np.zeros(self.f_a.size) if self.order is None
                       else np.asarray(self.order, float))
+        self.stimulus = (np.full(self.f_a.size, POINT, dtype=object) if self.stimulus is None
+                         else np.asarray(self.stimulus, dtype=object))
 
     def __len__(self):
         return self.f_a.size
@@ -44,7 +49,7 @@ class Trials:
     @classmethod
     def concat(cls, parts: list["Trials"]) -> "Trials":
         return cls(*(np.concatenate([getattr(p, k) for p in parts])
-                     for k in ("f_a", "f_b", "offset", "a_louder", "order")))
+                     for k in ("f_a", "f_b", "offset", "a_louder", "order", "stimulus")))
 
 
 @dataclass(frozen=True)
@@ -103,23 +108,29 @@ class ProbitFit:
         return m @ self.L, np.sqrt(np.einsum("ij,jk,ik->i", m, self.cov, m))
 
 
-def band_matrix(grid: np.ndarray, freqs, offsets_oct: np.ndarray | None) -> np.ndarray:
-    """Interpolation rows averaged over the stimulus spectrum (log2 offsets
-    from each centre), so L is compared as heard through the stimulus band.
-    None: point probes at the centre frequencies."""
-    if offsets_oct is None:
-        return interp_matrix(grid, freqs)
+MODEL_SPECTRUM_POINTS = 11  # samples across each stimulus band (grid steps are wider)
+
+
+def band_matrix(grid: np.ndarray, freqs, stimulus) -> np.ndarray:
+    """Rows mapping L to each trial's level as heard through its stimulus:
+    interpolation averaged over the stimulus spectrum (in dB, a linear
+    approximation to the power average; close for features of a few dB)."""
     f = np.asarray(freqs, float)
-    return np.mean([interp_matrix(grid, f * 2.0**o) for o in offsets_oct], axis=0)
+    out = np.zeros((f.size, grid.size))
+    keys = np.asarray(stimulus, dtype=object)
+    for key in set(keys):
+        rows = keys == key
+        offs = spectrum_offsets_oct(key, MODEL_SPECTRUM_POINTS)
+        out[rows] = np.mean([interp_matrix(grid, f[rows] * 2.0**o) for o in offs], axis=0)
+    return out
 
 
 class _Problem:
-    def __init__(self, trials: Trials, grid: np.ndarray, priors: Priors,
-                 band_offsets_oct: np.ndarray | None = None):
+    def __init__(self, trials: Trials, grid: np.ndarray, priors: Priors):
         self.grid = grid
         self.n = grid.size
-        self.A = (band_matrix(grid, trials.f_a, band_offsets_oct)
-                  - band_matrix(grid, trials.f_b, band_offsets_oct))
+        self.A = (band_matrix(grid, trials.f_a, trials.stimulus)
+                  - band_matrix(grid, trials.f_b, trials.stimulus))
         self.off = trials.offset
         self.order = trials.order
         self.m = self.n + 1  # inner parameters: L and the bias
@@ -216,8 +227,7 @@ def _simplex(start, lo, hi, step=0.3):
 
 
 def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
-               init: ProbitFit | None = None, fit_hyper: bool = True,
-               band_offsets_oct: np.ndarray | None = None) -> ProbitFit:
+               init: ProbitFit | None = None, fit_hyper: bool = True) -> ProbitFit:
     """Fit perceived level L with Laplace error bars.
 
     The noise hyperparameters (sigma0, d0, lapse) are set by maximising the
@@ -227,7 +237,7 @@ def fit_probit(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
     hyperparameters. With fit_hyper=False the hyperparameters stay at `init`
     (or the prior means), which is the fast path for trial-by-trial refits.
     """
-    prob = _Problem(trials, np.asarray(grid, float), priors, band_offsets_oct)
+    prob = _Problem(trials, np.asarray(grid, float), priors)
     n = prob.n
     lo = np.array([LOG_SIGMA0_BOUNDS[0], LOG_D0_BOUNDS[0], LOGIT_LAPSE_BOUNDS[0]])
     hi = np.array([LOG_SIGMA0_BOUNDS[1], LOG_D0_BOUNDS[1], LOGIT_LAPSE_BOUNDS[1]])

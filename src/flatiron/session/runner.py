@@ -13,7 +13,7 @@ import numpy as np
 from flatiron import EARS, FS
 from flatiron.apo import ApoEq
 from flatiron.audio.limiter import DEFAULT_LEVEL_DB, render_pair
-from flatiron.audio.stimulus import StimulusSpec, make_stimulus
+from flatiron.audio.stimulus import StimulusSpec, make_stimulus, stimulus_key
 from flatiron.model.refine import refine_around
 from flatiron.session.scheduler import Scheduler, SchedulerConfig, TrialPlan
 from flatiron.session.store import Profile, Session, TrialRecord, now_iso
@@ -62,7 +62,7 @@ class TrialRunner:
         self.fs = fs
         self.seed = secrets.randbelow(2**31) if seed is None else seed
         hist, grids = profile.history()
-        self.scheduler = Scheduler(config, seed=self.seed)
+        self.scheduler = Scheduler(config, seed=self.seed, stimulus_key=stimulus_key(settings.stimulus))
         for e in EARS:
             if len(hist[e]) or e in grids:
                 self.scheduler.load_history(e, hist[e], grids.get(e))

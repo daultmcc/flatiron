@@ -1,7 +1,7 @@
 """Fit a profile: cached perceptual fits → correction → profile.json."""
 
 import hashlib
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -12,13 +12,14 @@ from flatiron.model.probit import Priors, ProbitFit, Trials, fit_probit
 from flatiron.session.store import Profile, Session, now_iso
 
 MIN_SESSION_TRIALS = 60  # per ear, for a session to enter the consistency check
-CACHE_VERSION = "2"  # 2: time-order bias
+CACHE_VERSION = "3"  # 2: time-order bias; 3: per-trial stimulus spectrum
 
 
 def _key(trials: Trials, grid: np.ndarray, priors: Priors, extra: str = "") -> str:
     h = hashlib.sha256(CACHE_VERSION.encode())
     for a in (trials.f_a, trials.f_b, trials.offset, trials.a_louder.astype(np.int8), trials.order, grid):
         h.update(np.ascontiguousarray(a).tobytes())
+    h.update("|".join(map(str, trials.stimulus)).encode())
     h.update(repr(priors).encode() + extra.encode())
     return h.hexdigest()[:20]
 

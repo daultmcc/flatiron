@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from flatiron.audio.stimulus import stimulus_key
 from flatiron.model.grid import log_grid
 from flatiron.model.probit import Priors, ProbitFit
 from flatiron.session.scheduler import Scheduler, SchedulerConfig
@@ -24,7 +25,7 @@ class EarScore:
 def run(listener: SimulatedListener, trials_per_ear: int, config: SchedulerConfig = SchedulerConfig(),
         seed: int = 0, priors: Priors = Priors()) -> tuple[Scheduler, dict[str, ProbitFit]]:
     ears = tuple(listener.ears)
-    sch = Scheduler(config, seed=seed, ears=ears, priors=priors)
+    sch = Scheduler(config, seed=seed, ears=ears, priors=priors, stimulus_key=stimulus_key(listener.stimulus))
     for _ in range(trials_per_ear * len(ears)):
         plan = sch.next_trial()
         ans = listener.respond(plan.ear, plan.f_a, plan.f_b, plan.offset, plan.a_first)

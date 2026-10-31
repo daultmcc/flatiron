@@ -4,7 +4,7 @@ Every stimulus is returned at unit RMS (0 dBFS RMS); levels are applied later
 in dB relative to that.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -88,3 +88,34 @@ def make_stimulus(fc: float, spec: StimulusSpec = StimulusSpec(), seed: int = 0,
         x = tone(fc, n, fs)
     x = x * raised_cosine_gate(n, int(round(spec.ramp * fs)))
     return x / np.sqrt(np.mean(x**2))
+
+
+POINT = "point"
+
+
+def stimulus_key(spec: "StimulusSpec | None") -> str:
+    """Compact label for what a trial's bursts were, stored per trial so the
+    fit can model each stimulus's spectrum: "noise:<bw oct>", "warble:<depth
+    oct>", or "point" (a pure tone, or unknown)."""
+    if spec is None or spec.kind == "tone":
+        return POINT
+    if spec.kind == "noise":
+        return f"noise:{spec.bandwidth_oct:.6f}"
+    return f"warble:{spec.warble_depth_oct:.6f}"
+
+
+def spectrum_offsets_oct(key: str, points: int = 41) -> np.ndarray:
+    """Log2 offsets from the centre frequency that sample a stimulus's
+    spectrum: noise is flat in Hz between its band edges; a warble spends its
+    time uniformly in FM phase; a point is just the centre."""
+    if key == POINT:
+        return np.zeros(1)
+    kind, width = key.split(":")
+    w = float(width)
+    if kind == "noise":
+        lo, hi = band_edges(1.0, w)
+        return np.log2(np.linspace(lo, hi, points))
+    if kind == "warble":
+        theta = (np.arange(points) + 0.5) * 2 * np.pi / points
+        return w * np.sin(theta)
+    raise ValueError(f"unknown stimulus key {key!r}")

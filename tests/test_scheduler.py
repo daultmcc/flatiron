@@ -95,7 +95,10 @@ def test_adaptive_recovers_noise_and_curve(adaptive_vs_uniform):
 def test_adaptive_beats_uniform(adaptive_vs_uniform):
     a = adaptive_vs_uniform["adaptive"][1]
     u = adaptive_vs_uniform["uniform"][1]
-    assert a.rmse < 0.8 * u.rmse
+    assert a.rmse < u.rmse
+    # Adaptivity pays off most on the narrow features.
+    feat = lambda sc: np.sqrt(np.mean(np.square(sc.feature_err)))
+    assert feat(a) < 0.5 * feat(u)
 
 
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from flatiron import EARS
+from flatiron.audio.stimulus import POINT
 from flatiron.model.grid import MIN_STEP_OCT, log_grid, octaves
 from flatiron.model.probit import Priors, ProbitFit, Trials, fit_probit
 from flatiron.model.refine import curvature_z, refine_grid
@@ -70,11 +71,12 @@ class EarState:
     offset: list = field(default_factory=list)
     a_louder: list = field(default_factory=list)
     order: list = field(default_factory=list)  # +1: A played first
+    stimulus: list = field(default_factory=list)  # stimulus key per trial
     since_refit: int = 0
     since_block: int = 0
 
     def trials(self) -> Trials:
-        return Trials(self.f_a, self.f_b, self.offset, self.a_louder, self.order)
+        return Trials(self.f_a, self.f_b, self.offset, self.a_louder, self.order, self.stimulus or None)
 
 
 def candidate_pairs(grid: np.ndarray, max_step: int, long_max_oct: float):
@@ -88,8 +90,10 @@ def candidate_pairs(grid: np.ndarray, max_step: int, long_max_oct: float):
 
 class Scheduler:
     def __init__(self, config: SchedulerConfig = SchedulerConfig(), seed: int = 0,
-                 ears=EARS, grid: np.ndarray | None = None, priors: Priors = Priors()):
+                 ears=EARS, grid: np.ndarray | None = None, priors: Priors = Priors(),
+                 stimulus_key: str = POINT):
         self.cfg = config
+        self.stimulus_key = stimulus_key  # what this session's bursts are
         self.priors = priors
         self.rng = np.random.default_rng(seed)
         g = log_grid() if grid is None else np.asarray(grid, float)
@@ -108,6 +112,7 @@ class Scheduler:
         st.f_a, st.f_b = list(trials.f_a), list(trials.f_b)
         st.offset, st.a_louder = list(trials.offset), list(trials.a_louder)
         st.order = list(trials.order)
+        st.stimulus = list(trials.stimulus)
         st.fit = fit_probit(trials, st.grid, self.priors,
                             fit_hyper=len(trials) >= self.cfg.min_trials_noise_fit)
         st.since_refit = st.since_block = 0
@@ -123,7 +128,7 @@ class Scheduler:
         st = self.ears[ear]
         if not st.f_a:
             return
-        for lst in (st.f_a, st.f_b, st.offset, st.a_louder, st.order):
+        for lst in (st.f_a, st.f_b, st.offset, st.a_louder, st.order, st.stimulus):
             lst.pop()
         st.since_block = max(st.since_block - 1, 0)
         st.since_refit = 0
@@ -205,6 +210,7 @@ class Scheduler:
         st.offset.append(plan.offset + known_gain_db[0] - known_gain_db[1])
         st.a_louder.append(bool(a_louder))
         st.order.append(1.0 if plan.a_first else -1.0)
+        st.stimulus.append(self.stimulus_key)
         st.since_refit += 1
         st.since_block += 1
         if st.since_block >= self.cfg.block_size:

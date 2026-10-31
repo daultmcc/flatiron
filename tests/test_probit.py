@@ -137,3 +137,28 @@ def test_trials_order_defaults_to_unknown():
     assert t.order.tolist() == [0.0]
     both = Trials.concat([t, Trials([1000.0], [1100.0], [1.0], [False], [-1.0])])
     assert both.order.tolist() == [0.0, -1.0]
+
+
+def test_stimulus_keys_and_band_rows():
+    from flatiron.audio.stimulus import POINT, StimulusSpec, spectrum_offsets_oct, stimulus_key
+    from flatiron.model.probit import band_matrix
+    from flatiron.model.grid import interp_matrix
+
+    assert stimulus_key(None) == stimulus_key(StimulusSpec(kind="tone")) == POINT
+    wide, narrow = stimulus_key(StimulusSpec()), stimulus_key(StimulusSpec(bandwidth_oct=1 / 24))
+    assert wide == "noise:0.083333" and narrow == "noise:0.041667"
+    assert np.ptp(spectrum_offsets_oct(wide)) == pytest.approx(1 / 12, rel=1e-3)
+    g = log_grid()
+    f = np.array([5000.0, 5000.0, 5000.0])
+    rows = band_matrix(g, f, [POINT, narrow, wide])
+    assert np.allclose(rows.sum(1), 1)
+    assert np.allclose(rows[0], interp_matrix(g, f[:1])[0])
+    spread = lambda r: np.sqrt(r @ (np.log2(g) - r @ np.log2(g)) ** 2)
+    assert spread(rows[0]) < spread(rows[1]) < spread(rows[2])  # wider stimulus, wider average
+
+
+def test_trials_keep_stimulus_through_concat():
+    a = Trials([1000.0], [2000.0], [0.0], [True], stimulus=["noise:0.083333"])
+    b = Trials([1000.0], [1100.0], [1.0], [False])
+    both = Trials.concat([a, b])
+    assert both.stimulus.tolist() == ["noise:0.083333", "point"]

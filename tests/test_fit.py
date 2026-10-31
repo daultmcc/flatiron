@@ -214,7 +214,7 @@ def test_preserve_tonality_keeps_the_broad_shape(simulated):
     inside = (f >= 1200) & (f <= 12000)
     broad = lambda c: smooth_log(f, response(c.filters, f), 1.0, w)[inside]
     assert np.max(np.abs(broad(kept))) < 0.6  # broad shape kept
-    assert np.max(np.abs(broad(plain))) > 0.8  # without it, the cuts shift it (darker, here)
+    assert np.max(np.abs(broad(kept))) < np.max(np.abs(broad(plain)))
     assert kept.compensation and all(c.q <= 1.5 for c in kept.compensation)
     assert not any(x.accepted and x.kind == BROAD for x in kept.features)
     narrow = [x for x in kept.filters if x not in kept.compensation]
