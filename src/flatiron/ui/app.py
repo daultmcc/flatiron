@@ -13,16 +13,20 @@ import numpy as np
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Static
 
 from flatiron import EARS, FS
-from flatiron.audio.limiter import db_to_amp, limit, monaural
+from flatiron.audio.limiter import (DEFAULT_LEVEL_DB, MAX_LEVEL_DB, MIN_LEVEL_DB, db_to_amp, limit,
+                                    monaural)
 from flatiron.audio.stimulus import StimulusSpec, make_stimulus
 from flatiron.session.runner import PreparedTrial, TrialRunner
+from flatiron.session.store import Profile, now_iso
 from flatiron.session.sweep import SweepTiming, pair_taps, sweep_signal
 
 ITI_S = 0.5  # pause between an answer and the next trial
+VOLUME_REMINDER = ("If you changed your system volume for Flatiron, turn it back down "
+                   "before playing anything else.")
 EAR_NAMES = {"L": "LEFT", "R": "RIGHT"}
 
 CSS = """
@@ -37,6 +41,8 @@ Screen { align: center middle; }
 }
 .panel.lit { background: $accent; color: $text; border: heavy $accent-lighten-2; }
 .panel.answerable { border: heavy $success; }
+ConfirmScreen { align: center middle; background: $background 70%; }
+#confirm { width: 60; height: auto; padding: 1 2; border: heavy $warning; background: $surface; }
 """
 
 
@@ -57,6 +63,81 @@ class MessageScreen(Screen):
             self.query_one("#message", Static).update(message)
         if status is not None:
             self.query_one("#status", Static).update(status)
+
+
+class LevelScreen(MessageScreen):
+    """Set the presentation level with the system volume left where it normally is.
+
+    Raising the system volume to suit quiet test tones leaves it dangerously
+    high for everything played afterwards, so Flatiron moves its own level.
+    """
+
+    BINDINGS = [
+        Binding("up", "step(1)", "+1 dB"),
+        Binding("down", "step(-1)", "−1 dB"),
+        Binding("pageup", "step(5)", "+5 dB", show=False),
+        Binding("pagedown", "step(-5)", "−5 dB", show=False),
+        Binding("enter", "save", "Save"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, profile: Profile, start_db: float | None = None, freq: float = 4000.0):
+        super().__init__()
+        self.profile = profile
+        stored = profile.read().get("level")
+        if start_db is None:
+            start_db = stored["dbfs"] if stored else DEFAULT_LEVEL_DB
+        self.level = float(np.clip(start_db, MIN_LEVEL_DB, MAX_LEVEL_DB))
+        self.freq = freq
+        self.note = ""
+
+    def on_mount(self):
+        self.play()
+
+    def play(self):
+        x = make_stimulus(self.freq, StimulusSpec(), seed=0)
+        burst = limit(np.concatenate([x * db_to_amp(self.level), np.zeros(int(0.1 * FS))])).signal
+        self.app.player.start(monaural(burst, "L") + monaural(burst, "R"), loop=True)
+        self.say("Listening level",
+                 "Leave your system volume where you normally listen and don't change it.\n"
+                 f"Use ↑ / ↓ until this {self.freq / 1000:g} kHz tone is comfortable and moderate, "
+                 "about as loud as quiet conversation. Not loud.\n\n"
+                 f"Level: {self.level:+.0f} dBFS   (range {MIN_LEVEL_DB:+.0f} to {MAX_LEVEL_DB:+.0f})"
+                 + (f"\n\n{self.note}" if self.note else ""),
+                 "↑/↓: 1 dB   PgUp/PgDn: 5 dB   Enter: save   Esc: cancel")
+
+    def action_step(self, d: int):
+        new = float(np.clip(self.level + d, MIN_LEVEL_DB, MAX_LEVEL_DB))
+        self.note = ""
+        if new == self.level and d > 0:
+            self.note = ("That's the most Flatiron will play: any louder and its peak limiter would turn "
+                         "most trials back down. If it's still too quiet, raise the system volume a "
+                         "little, and turn it back down when you're done.")
+        self.level = new
+        self.play()
+
+    def action_save(self):
+        self.app.player.stop()
+        self.profile.update(level={"dbfs": self.level, "freq": self.freq, "set": now_iso()})
+        self.dismiss(self.level)
+
+    def action_cancel(self):
+        self.app.player.stop()
+        self.dismiss(None)
+
+
+class ConfirmScreen(ModalScreen):
+    BINDINGS = [Binding("y", "answer(True)", "Yes"), Binding("n,escape", "answer(False)", "No")]
+
+    def __init__(self, question: str):
+        super().__init__()
+        self.question = question
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.question + "\n\nY: yes   N: no", id="confirm")
+
+    def action_answer(self, yes: bool):
+        self.dismiss(yes)
 
 
 class ChannelCheckScreen(MessageScreen):
@@ -205,6 +286,7 @@ class TrialScreen(Screen):
         Binding("space", "replay", "Replay"),
         Binding("p", "pause", "Pause"),
         Binding("q", "quit_session", "Save and quit"),
+        Binding("x", "discard", "Discard session"),
     ]
 
     def __init__(self, runner: TrialRunner, clock: Callable[[], float] = time.monotonic):
@@ -368,6 +450,21 @@ class TrialScreen(Screen):
         self.cancel_timers()
         self.dismiss("quit")
 
+    def action_discard(self):
+        if not self.paused:
+            self.action_pause()
+        n = len(self.runner.session.trials)
+
+        def done(yes):
+            if yes:
+                self.runner.discard()
+                self.cancel_timers()
+                self.dismiss("discarded")
+
+        self.app.push_screen(ConfirmScreen(
+            f"Discard this session? Its {n} answers will be deleted and nothing from it "
+            "will be used. Earlier sessions are kept."), done)
+
 
 class SessionEndScreen(MessageScreen):
     BINDINGS = [
@@ -384,13 +481,19 @@ class SessionEndScreen(MessageScreen):
         p = r.progress()
         acc = r.catch_accuracy()
         acc_s = f"{acc:.0%} of catch trials right" if acc is not None else "no catch trials yet"
-        head = "Time for a break." if self.reason == "time" else "Session saved."
+        if self.reason == "discarded":
+            head, summary = "Session discarded.", "Nothing from it was kept.\n"
+        else:
+            head = "Time for a break." if self.reason == "time" else "Session saved."
+            summary = (f"{p['session_trials']} trials this session, {acc_s}, "
+                       f"{p['fast']} very fast answers.\n")
+        prior = r.prior_trials
         self.say(head,
-                 f"{p['session_trials']} trials this session, {acc_s}, "
-                 f"{p['fast']} very fast answers.\n"
-                 f"Totals: " + " / ".join(f"{e} {p['total'][e]}" for e in EARS) + "\n\n"
+                 summary + "Totals: " + " / ".join(
+                     f"{e} {prior[e] + (0 if self.reason == 'discarded' else p['session_trials_ear'][e])}"
+                     for e in EARS) + "\n\n"
                  "Before the next session take the headphones off, rest a few minutes, "
-                 "and put them back on.\nKeep the system volume where it is.",
+                 "and put them back on.\nKeep the system volume where it is.\n\n" + VOLUME_REMINDER,
                  "N: start the next session (channel check first)   Q: quit")
 
     def action_next(self):
@@ -401,9 +504,14 @@ class FlatironApp(App):
     CSS = CSS
     TITLE = "Flatiron"
 
-    def __init__(self, make_runner: Callable[[], TrialRunner], player, sweep: bool = False,
-                 sweep_timing: SweepTiming = SweepTiming(), clock: Callable[[], float] = time.monotonic):
+    def __init__(self, make_runner: Callable[[], TrialRunner] | None, player, sweep: bool = False,
+                 sweep_timing: SweepTiming = SweepTiming(), clock: Callable[[], float] = time.monotonic,
+                 profile: Profile | None = None, level: str = "if_unset"):
+        """level: "only" (just set the level), "if_unset" (set it first if the
+        profile has none) or "skip"."""
         super().__init__()
+        self.profile = profile
+        self.level_mode = level if profile is not None else "skip"
         self.make_runner = make_runner
         self.player = player
         self.do_sweep = sweep
@@ -413,7 +521,16 @@ class FlatironApp(App):
         self.sessions_run = 0
 
     def on_mount(self):
-        self.start_session()
+        if self.level_mode == "only" or (self.level_mode == "if_unset" and self.profile.read().get("level") is None):
+            self.push_screen(LevelScreen(self.profile), self.after_level)
+        else:
+            self.start_session()
+
+    def after_level(self, level):
+        if self.level_mode == "only" or level is None:
+            self.exit(level)
+        else:
+            self.start_session()
 
     def start_session(self):
         self.runner = self.make_runner()

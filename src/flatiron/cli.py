@@ -6,6 +6,7 @@ import sys
 import numpy as np
 
 from flatiron import EARS, FS
+from flatiron.audio.limiter import DEFAULT_LEVEL_DB
 from flatiron.audio.stimulus import KINDS, StimulusSpec, make_stimulus
 
 STEP_OCT = 1 / 24
@@ -22,27 +23,25 @@ def cmd_devices(args):
     print("\n* = default. Pass --device <index> to other commands; a wired output at 48 kHz is recommended.")
 
 
+VOLUME_REMINDER = ("Reminder: if you changed your system volume for Flatiron, turn it back down "
+                   "before playing anything else.")
+
+
+def _player(args):
+    from flatiron.audio.player import NullPlayer, StreamPlayer
+
+    return NullPlayer() if getattr(args, "dry_run", False) else StreamPlayer(args.device)
+
+
 def cmd_level(args):
-    from flatiron.audio.player import StreamPlayer
-    from flatiron.audio.limiter import limit, monaural, db_to_amp
+    from flatiron.session.store import Profile
+    from flatiron.ui.app import FlatironApp
 
-    x = make_stimulus(args.freq, StimulusSpec(duration=0.4))
-    gap = np.zeros(int(0.1 * FS))
-    burst = limit(np.concatenate([x * db_to_amp(args.level), gap])).signal
-    buf = monaural(burst, "L") + monaural(burst, "R")
-    print(f"Looping a {args.freq:g} Hz band at {args.level:g} dBFS in both ears.")
-    print("Raise the system volume to a comfortable, moderate level, then press Enter.")
-    print("Keep the volume fixed for every session from now on.")
-    with StreamPlayer(args.device) as player:
-        player.start(buf, loop=True)
-        input()
-    if args.profile:
-        from flatiron.session.store import Profile, now_iso
-
-        note = input("Note the volume setting for your records (e.g. 'PipeWire 62%'), or Enter to skip: ")
-        Profile.open(args.profile).update(level={"dbfs": args.level, "freq": args.freq,
-                                                 "volume_note": note.strip(), "set": now_iso()})
-        print(f"Saved to profile {args.profile!r}. Keep the volume fixed for every session.")
+    profile = Profile.open(args.profile)
+    level = FlatironApp(None, _player(args), profile=profile, level="only").run()
+    if level is not None:
+        print(f"Saved {level:+.0f} dBFS to {args.profile!r}. Keep the system volume where it is for every session.")
+    print(VOLUME_REMINDER)
 
 
 PROBE_HELP = """commands:
@@ -105,7 +104,7 @@ def _settings(args, profile):
     level = args.level
     if level is None:
         stored = profile.read().get("level")
-        level = stored["dbfs"] if stored else -40.0
+        level = stored["dbfs"] if stored else DEFAULT_LEVEL_DB
     eq, text, note = None, None, args.eq_note or "none"
     if args.active_eq:
         text = open(args.active_eq).read()
@@ -117,16 +116,12 @@ def _settings(args, profile):
 
 
 def _launch(args, sweep: bool):
-    from flatiron.audio.player import NullPlayer, StreamPlayer
     from flatiron.session.runner import TrialRunner
     from flatiron.session.store import Profile
     from flatiron.ui.app import FlatironApp
 
     profile = Profile.open(args.profile)
-    if profile.read().get("level") is None and not args.dry_run:
-        print(f"No level set for {args.profile!r} yet. Run: flatiron level --profile {args.profile!r}")
-        return 1
-    settings = _settings(args, profile)
+    _settings(args, profile)  # validate options before the UI starts
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
         from flatiron.audio.devices import list_output_devices
@@ -137,9 +132,11 @@ def _launch(args, sweep: bool):
             device.update(name=d.name, hostapi=d.hostapi, warnings=d.warnings)
             for w in d.warnings:
                 print(f"! {d.name}: {w}")
-    player = NullPlayer() if args.dry_run else StreamPlayer(args.device)
-    app = FlatironApp(lambda: TrialRunner(profile, settings, device=device), player, sweep=sweep)
+    # Settings are rebuilt per session so a level set in the app's first step is used.
+    app = FlatironApp(lambda: TrialRunner(profile, _settings(args, profile), device=device),
+                      _player(args), sweep=sweep, profile=profile)
     app.run()
+    print(VOLUME_REMINDER)
     return 0
 
 
@@ -147,11 +144,53 @@ def cmd_run(args):
     return _launch(args, sweep=args.sweep)
 
 
+def _confirm(question: str, yes: bool) -> bool:
+    if yes:
+        return True
+    try:
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def cmd_profiles(args):
+    from flatiron.session.store import Profile
+
+    profiles = Profile.all()
+    if not profiles:
+        print("No profiles yet. Start one with: flatiron run --profile 'Headphone name'")
+        return
+    for p in profiles:
+        info = p.read()
+        sessions = p.sessions()
+        n = {e: sum(t.ear == e for s in sessions for t in s.trials) for e in EARS}
+        level = info.get("level")
+        level_s = f"{level['dbfs']:+.0f} dBFS" if level else "level not set"
+        last = sessions[-1].started[:10] if sessions else "-"
+        open_s = sum(s.ended is None for s in sessions)
+        print(f"{info['label']}  ({p.slug})")
+        print(f"    {len(sessions)} sessions, L {n['L']} / R {n['R']} trials, last {last}, {level_s}"
+              + (f", {open_s} not closed" if open_s else ""))
+
+
 def cmd_sessions(args):
     from flatiron.session.store import Profile
 
-    prof = Profile.open(args.profile)
+    prof = Profile.existing(args.profile)
+    if prof is None:
+        print(f"No profile {args.profile!r}. See: flatiron profiles")
+        return 1
     sessions = prof.sessions()
+    if args.delete:
+        match = [s for s in sessions if s.id == args.delete]
+        if not match:
+            print(f"No session {args.delete!r} in {args.profile!r}.")
+            return 1
+        s = match[0]
+        if _confirm(f"Delete session {s.id} ({len(s.trials)} trials)? This can't be undone.", args.yes):
+            prof.delete(s)
+            print("Deleted.")
+        return 0
     if not sessions:
         print(f"No sessions for {args.profile!r} yet.")
         return
@@ -199,11 +238,10 @@ def main(argv=None):
     s = sub.add_parser("devices", help="list output devices and flag problems")
     s.set_defaults(func=cmd_devices)
 
-    s = sub.add_parser("level", help="loop a reference band while setting system volume")
+    s = sub.add_parser("level", help="set the listening level for a headphone profile")
+    s.add_argument("--profile", required=True)
     s.add_argument("--device", type=int)
-    s.add_argument("--freq", type=float, default=4000.0)
-    s.add_argument("--level", type=float, default=-40.0, help="dBFS RMS")
-    s.add_argument("--profile", help="save the level to this headphone profile")
+    s.add_argument("--dry-run", action="store_true", help="no audio")
     s.set_defaults(func=cmd_level)
 
     s = sub.add_parser("probe", help="manual probe: play a band at a chosen frequency and ear")
@@ -211,7 +249,7 @@ def main(argv=None):
     s.add_argument("--freq", type=float, default=4000.0)
     s.add_argument("--ear", choices=EARS, default="L")
     s.add_argument("--type", choices=KINDS, default="noise")
-    s.add_argument("--level", type=float, default=-40.0, help="dBFS RMS")
+    s.add_argument("--level", type=float, default=DEFAULT_LEVEL_DB, help="dBFS RMS")
     s.add_argument("--duration", type=float, default=0.4)
     s.set_defaults(func=cmd_probe)
 
@@ -237,8 +275,13 @@ def main(argv=None):
     session_args(s)
     s.set_defaults(func=lambda a: _launch(a, sweep=True))
 
-    s = sub.add_parser("sessions", help="list a profile's sessions")
+    s = sub.add_parser("profiles", help="list headphone profiles")
+    s.set_defaults(func=cmd_profiles)
+
+    s = sub.add_parser("sessions", help="list a profile's sessions, or delete one")
     s.add_argument("--profile", required=True)
+    s.add_argument("--delete", metavar="SESSION_ID", help="delete a session (e.g. one left open by a crash)")
+    s.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     s.set_defaults(func=cmd_sessions)
 
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")

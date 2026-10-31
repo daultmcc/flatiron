@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from flatiron import EARS
+from flatiron.audio.limiter import DEFAULT_LEVEL_DB
 from flatiron.model.probit import Trials
 from flatiron.paths import data_dir
 
@@ -77,7 +78,7 @@ class Session:
     sample_rate: int = 48_000
     eq_context: dict = field(default_factory=lambda: {"note": "none", "apo": None})
     stimulus: dict = field(default_factory=dict)
-    level_dbfs: float = -40.0
+    level_dbfs: float = DEFAULT_LEVEL_DB
     gap_s: float = 0.3
     seed: int = 0
     scheduler: dict = field(default_factory=dict)
@@ -118,6 +119,18 @@ class Profile:
             write_json(p.path, {"label": label, "slug": p.slug, "created": now_iso(),
                                 "level": None, "fit": None, "version": FORMAT_VERSION})
         return p
+
+    @classmethod
+    def all(cls, root: Path | None = None) -> list["Profile"]:
+        base = (root or data_dir()) / "profiles"
+        if not base.exists():
+            return []
+        return [cls(d.name, root) for d in sorted(base.iterdir()) if (d / "profile.json").exists()]
+
+    @classmethod
+    def existing(cls, label: str, root: Path | None = None) -> "Profile | None":
+        p = cls(slugify(label), root)
+        return p if p.path.exists() else None
 
     @property
     def path(self) -> Path:

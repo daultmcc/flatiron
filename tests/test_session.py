@@ -167,3 +167,43 @@ def test_empty_session_is_not_kept(tmp_path):
     assert len(prof.sessions()) == 1  # saved from the start, so a crash keeps setup data
     r.finish()
     assert prof.sessions() == []
+
+
+def test_discard_deletes_and_blocks_later_saves(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, config=FAST_CFG, seed=0)
+    r.answer(r.prepare(), True, 400)
+    tr = r.prepare()
+    r.discard()
+    r.answer(tr, True, 400)  # e.g. a refit worker finishing after the discard
+    r.finish()
+    assert prof.sessions() == []
+
+
+def test_profile_listing(tmp_path):
+    assert Profile.all(root=tmp_path) == []
+    Profile.open("HD 600", root=tmp_path)
+    Profile.open("Sundara", root=tmp_path)
+    assert [p.slug for p in Profile.all(root=tmp_path)] == ["hd-600", "sundara"]
+    assert Profile.existing("hd 600", root=tmp_path).slug == "hd-600"
+    assert Profile.existing("nope", root=tmp_path) is None
+
+
+def test_cli_profiles_and_session_delete(tmp_path, monkeypatch, capsys):
+    from flatiron.cli import main
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "linux")
+    prof = Profile.open("HD 600")
+    assert prof.dir.is_relative_to(tmp_path)
+    r = TrialRunner(prof, config=FAST_CFG, seed=0)
+    r.answer(r.prepare(), True, 400)  # left open, as after a crash
+    main(["profiles"])
+    out = capsys.readouterr().out
+    assert "HD 600  (hd-600)" in out and "1 not closed" in out and "level not set" in out
+    monkeypatch.setattr("builtins.input", lambda q: "n")
+    main(["sessions", "--profile", "HD 600", "--delete", r.session.id])
+    assert len(prof.sessions()) == 1
+    main(["sessions", "--profile", "HD 600", "--delete", r.session.id, "--yes"])
+    assert prof.sessions() == []
+    assert main(["sessions", "--profile", "nope"]) == 1

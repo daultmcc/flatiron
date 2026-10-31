@@ -7,6 +7,14 @@ import numpy as np
 PEAK_TARGET_DB = -18.0
 CEILING_DB = -12.0
 
+# Presentation level (dBFS RMS of a unit stimulus before offsets). The user
+# sets it with the system volume left at its usual setting. Band noise peaks
+# up to ~14 dB above its RMS, so above MAX_LEVEL_DB the ceiling would scale
+# most trials back down anyway.
+DEFAULT_LEVEL_DB = -30.0
+MAX_LEVEL_DB = -24.0
+MIN_LEVEL_DB = -60.0
+
 
 def db_to_amp(db):
     return 10.0 ** (np.asarray(db) / 20.0)

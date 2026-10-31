@@ -5,13 +5,14 @@ listener's answer to answer(), which records it, refits and saves.
 """
 
 import secrets
+import threading
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
 from flatiron import EARS, FS
 from flatiron.apo import ApoEq
-from flatiron.audio.limiter import render_pair
+from flatiron.audio.limiter import DEFAULT_LEVEL_DB, render_pair
 from flatiron.audio.stimulus import StimulusSpec, make_stimulus
 from flatiron.model.refine import refine_around
 from flatiron.session.scheduler import Scheduler, SchedulerConfig, TrialPlan
@@ -25,7 +26,7 @@ FAST_MS = 150.0
 @dataclass
 class RunSettings:
     stimulus: StimulusSpec = field(default_factory=StimulusSpec)
-    level_dbfs: float = -40.0
+    level_dbfs: float = DEFAULT_LEVEL_DB
     gap_s: float = 0.3
     session_minutes: float = 12.0
     active_eq: ApoEq | None = None
@@ -64,6 +65,8 @@ class TrialRunner:
             if len(hist[e]) or e in grids:
                 self.scheduler.load_history(e, hist[e], grids.get(e))
         self.prior_trials = {e: len(hist[e]) for e in EARS}
+        self.discarded = False
+        self._lock = threading.Lock()
         self.session: Session = profile.new_session(
             device=device or {}, sample_rate=fs,
             eq_context={"note": settings.eq_note, "apo": settings.eq_text},
@@ -133,8 +136,17 @@ class TrialRunner:
         self.scheduler.record(p, rec.a_louder, known_gain_db=(ga, gb))
         return rec
 
+    def discard(self) -> None:
+        """Cancel the session: delete its file and save nothing more."""
+        with self._lock:
+            self.discarded = True
+            self.profile.delete(self.session)
+            self.session.ended = now_iso()
+
     def finish(self) -> None:
         """Close the session. One with no trials and no sweep marks is deleted."""
+        if self.discarded:
+            return
         if not self.session.trials and not self.session.sweep_marks:
             self.profile.delete(self.session)
             self.session.ended = now_iso()
@@ -155,11 +167,15 @@ class TrialRunner:
         n = len(self.session.trials)
         return {
             "session_trials": n,
+            "session_trials_ear": {e: sum(t.ear == e for t in self.session.trials) for e in EARS},
             "total": {e: self.scheduler.n_trials(e) for e in EARS},
             "block_left": min(self.scheduler.until_block_end(e) for e in EARS),
             "fast": sum(t.fast for t in self.session.trials),
         }
 
     def _save(self) -> None:
-        self.session.grid = {e: self.scheduler.ears[e].grid.tolist() for e in EARS}
-        self.profile.save(self.session)
+        with self._lock:
+            if self.discarded:
+                return
+            self.session.grid = {e: self.scheduler.ears[e].grid.tolist() for e in EARS}
+            self.profile.save(self.session)
