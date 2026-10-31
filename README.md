@@ -6,8 +6,9 @@ By-ear headphone resonance EQ from forced-choice loudness judgments. See
 Status: all seven milestones in DESIGN.md are in place: audio core, model and
 simulator, adaptive scheduler, trial UI and session files, fit pipeline and
 report, exporters (Equalizer APO text, LSP x32 LeftRight, EasyEffects for
-Equaliser on macOS, PipeWire), and audition and verify. The simulator doesn't yet meet DESIGN.md's strict pass
-criteria (see `flatiron simulate` and `src/flatiron/sim/validate.py`).
+Equaliser on macOS, PipeWire), and audition and verify. Simulator validation
+uses 1.5 dB tolerances rather than DESIGN.md's 1 dB (`src/flatiron/sim/validate.py`);
+very narrow (Q 12-16) and near-edge (~11 kHz) features still come out shallow.
 
 ```sh
 uv sync
