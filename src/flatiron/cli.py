@@ -41,6 +41,10 @@ def cmd_level(args):
     level = FlatironApp(None, _player(args), profile=profile, level="only").run()
     if level is not None:
         print(f"Saved {level:+.0f} dBFS to {args.profile!r}. Keep the system volume where it is for every session.")
+    else:
+        stored = profile.read().get("level")
+        still = f"still uses {stored['dbfs']:+.0f} dBFS" if stored else "still has no level"
+        print(f"Level NOT saved (it's saved with Enter or S on the level screen). {args.profile!r} {still}.")
     print(VOLUME_REMINDER)
 
 
@@ -122,6 +126,12 @@ def _launch(args, sweep: bool):
 
     profile = Profile.open(args.profile)
     _settings(args, profile)  # validate options before the UI starts
+    stored = profile.read().get("level")
+    if args.level is not None:
+        print(f"Level: {args.level:+.0f} dBFS (from --level)")
+    elif stored:
+        print(f"Level: {stored['dbfs']:+.0f} dBFS (set {stored.get('set', '?')[:16].replace('T', ' ')}; "
+              f"change it with: flatiron level --profile {args.profile!r})")
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
         from flatiron.audio.devices import list_output_devices
@@ -136,6 +146,8 @@ def _launch(args, sweep: bool):
     app = FlatironApp(lambda: TrialRunner(profile, _settings(args, profile), device=device),
                       _player(args), sweep=sweep, profile=profile)
     app.run()
+    if profile.read().get("level") is None:
+        print("No level was saved, so no session ran.")
     print(VOLUME_REMINDER)
     return 0
 
@@ -190,6 +202,8 @@ def cmd_sessions(args):
         if _confirm(f"Delete session {s.id} ({len(s.trials)} trials)? This can't be undone.", args.yes):
             prof.delete(s)
             print("Deleted.")
+        else:
+            print("Not deleted.")
         return 0
     if not sessions:
         print(f"No sessions for {args.profile!r} yet.")

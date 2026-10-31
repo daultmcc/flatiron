@@ -248,3 +248,25 @@ async def test_discard_session(tmp_path):
         await pilot.pause()
         assert runners[1].prior_trials == {"L": 0, "R": 0}
     assert prof.sessions() == []
+
+
+async def test_level_sequence_is_like_the_trials(tmp_path):
+    from flatiron.audio.limiter import DEFAULT_LEVEL_DB
+    from flatiron.ui.app import LevelScreen
+
+    prof = Profile.open("lvl", root=tmp_path)
+    app = FlatironApp(None, NullPlayer(), profile=prof, level="only")
+    async with app.run_test() as pilot:
+        buf = app.player.played[-1]
+        n = int(0.4 * 48000)
+        step = n + int(LevelScreen.GAP_S * 48000)
+        assert buf.shape[0] == step * len(LevelScreen.FREQS)
+        for i in range(len(LevelScreen.FREQS)):
+            burst = buf[i * step:i * step + n]
+            on, off = (0, 1) if i % 2 == 0 else (1, 0)
+            assert np.all(burst[:, off] == 0)  # one ear at a time
+            rms = 20 * np.log10(np.sqrt(np.mean(burst[:, on].astype(float) ** 2)))
+            assert abs(rms - DEFAULT_LEVEL_DB) < 0.1  # same level as a trial burst
+        await pilot.press("s")
+        await pilot.pause()
+    assert prof.read()["level"]["dbfs"] == DEFAULT_LEVEL_DB

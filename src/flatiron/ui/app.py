@@ -77,34 +77,46 @@ class LevelScreen(MessageScreen):
         Binding("down", "step(-1)", "−1 dB"),
         Binding("pageup", "step(5)", "+5 dB", show=False),
         Binding("pagedown", "step(-5)", "−5 dB", show=False),
-        Binding("enter", "save", "Save"),
-        Binding("escape", "cancel", "Cancel"),
+        Binding("enter,s", "save", "Save"),
+        Binding("escape", "cancel", "Cancel without saving"),
     ]
 
-    def __init__(self, profile: Profile, start_db: float | None = None, freq: float = 4000.0):
+    # Bursts like the trials': one ear at a time, across the measured range.
+    # A single 4 kHz tone in both ears misleads: both ears sound louder than
+    # one, and 4 kHz is where hearing is most sensitive.
+    FREQS = (1000, 2000, 3000, 4000, 6000, 8000, 11000, 14000)
+    GAP_S = 0.3
+
+    def __init__(self, profile: Profile, start_db: float | None = None):
         super().__init__()
         self.profile = profile
         stored = profile.read().get("level")
         if start_db is None:
             start_db = stored["dbfs"] if stored else DEFAULT_LEVEL_DB
         self.level = float(np.clip(start_db, MIN_LEVEL_DB, MAX_LEVEL_DB))
-        self.freq = freq
         self.note = ""
 
     def on_mount(self):
         self.play()
 
+    def sequence(self) -> np.ndarray:
+        gap = np.zeros((int(self.GAP_S * FS), 2), np.float32)
+        parts = []
+        for i, f in enumerate(self.FREQS):
+            x = make_stimulus(float(f), StimulusSpec(), seed=0) * db_to_amp(self.level)
+            parts += [monaural(limit(x).signal, "LR"[i % 2]), gap]
+        return np.concatenate(parts)
+
     def play(self):
-        x = make_stimulus(self.freq, StimulusSpec(), seed=0)
-        burst = limit(np.concatenate([x * db_to_amp(self.level), np.zeros(int(0.1 * FS))])).signal
-        self.app.player.start(monaural(burst, "L") + monaural(burst, "R"), loop=True)
+        self.app.player.start(self.sequence(), loop=True)
         self.say("Listening level",
                  "Leave your system volume where you normally listen and don't change it.\n"
-                 f"Use ↑ / ↓ until this {self.freq / 1000:g} kHz tone is comfortable and moderate, "
-                 "about as loud as quiet conversation. Not loud.\n\n"
+                 "These bursts are like the trial sounds: one ear at a time, low to high pitch.\n"
+                 "Use ↑ / ↓ until the loudest of them is comfortable and moderate, about as loud "
+                 "as quiet conversation. Not loud.\n\n"
                  f"Level: {self.level:+.0f} dBFS   (range {MIN_LEVEL_DB:+.0f} to {MAX_LEVEL_DB:+.0f})"
                  + (f"\n\n{self.note}" if self.note else ""),
-                 "↑/↓: 1 dB   PgUp/PgDn: 5 dB   Enter: save   Esc: cancel")
+                 "↑/↓: 1 dB   PgUp/PgDn: 5 dB   Enter: save   Esc: cancel without saving")
 
     def action_step(self, d: int):
         new = float(np.clip(self.level + d, MIN_LEVEL_DB, MAX_LEVEL_DB))
@@ -118,7 +130,7 @@ class LevelScreen(MessageScreen):
 
     def action_save(self):
         self.app.player.stop()
-        self.profile.update(level={"dbfs": self.level, "freq": self.freq, "set": now_iso()})
+        self.profile.update(level={"dbfs": self.level, "calibration": "trial-like sequence", "set": now_iso()})
         self.dismiss(self.level)
 
     def action_cancel(self):
@@ -341,7 +353,8 @@ class TrialScreen(Screen):
         tot = " / ".join(f"{e} {p['total'][e]}" for e in EARS)
         self.query_one("#status", Static).update(
             f"Trial {p['session_trials'] + 1} this session · totals {tot} · "
-            f"{p['block_left']} to next block · {t // 60:02d}:{t % 60:02d} of {lim // 60:02d}:{lim % 60:02d}")
+            f"{p['block_left']} to next block · {t // 60:02d}:{t % 60:02d} of {lim // 60:02d}:{lim % 60:02d} · "
+            f"level {self.runner.settings.level_dbfs:+.0f} dBFS")
 
     # -- playback ----------------------------------------------------------
 
