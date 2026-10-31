@@ -99,6 +99,29 @@ class Scheduler:
         self._last_centre: float | None = None
         self.refinements: list[tuple[str, int, int]] = []  # (ear, trial no., points added)
 
+    def load_history(self, ear: str, trials: Trials, grid: np.ndarray | None = None) -> None:
+        """Start from earlier sessions' trials (and their final grid)."""
+        st = self.ears[ear]
+        if grid is not None and len(grid):
+            st.grid = np.asarray(grid, float)
+        st.f_a, st.f_b = list(trials.f_a), list(trials.f_b)
+        st.offset, st.a_louder = list(trials.offset), list(trials.a_louder)
+        st.fit = fit_probit(trials, st.grid, self.priors,
+                            fit_hyper=len(trials) >= self.cfg.min_trials_noise_fit)
+        st.since_refit = st.since_block = 0
+
+    def seed_grid(self, ear: str, grid: np.ndarray) -> None:
+        """Replace an ear's grid (e.g. refined around sweep marks)."""
+        st = self.ears[ear]
+        st.fit = fit_probit(st.trials(), np.asarray(grid, float), self.priors, init=st.fit, fit_hyper=False)
+        st.grid = st.fit.grid
+
+    def n_trials(self, ear: str) -> int:
+        return len(self.ears[ear].f_a)
+
+    def until_block_end(self, ear: str) -> int:
+        return self.cfg.block_size - self.ears[ear].since_block
+
     # -- selection ---------------------------------------------------------
 
     def next_trial(self) -> TrialPlan:

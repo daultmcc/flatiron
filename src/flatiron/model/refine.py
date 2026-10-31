@@ -28,3 +28,18 @@ def refine_grid(fit: ProbitFit, k: float = 2.0, min_step_oct: float = MIN_STEP_O
     wide = (x[intervals + 1] - x[intervals]) / 2 >= min_step_oct * (1 - 1e-6)
     mids = 2.0 ** (0.5 * (x[intervals[wide]] + x[intervals[wide] + 1]))
     return np.sort(np.concatenate([g, mids]))
+
+
+def refine_around(grid: np.ndarray, freqs, half_width_oct: float = 1 / 12,
+                  min_step_oct: float = MIN_STEP_OCT) -> np.ndarray:
+    """Halve every grid interval overlapping fc ± half_width_oct for each fc."""
+    g = np.asarray(grid, float)
+    x = np.log2(g)
+    mids = []
+    for fc in np.atleast_1d(freqs):
+        c = np.log2(fc)
+        for m in range(g.size - 1):
+            if x[m + 1] >= c - half_width_oct and x[m] <= c + half_width_oct \
+                    and (x[m + 1] - x[m]) / 2 >= min_step_oct * (1 - 1e-6):
+                mids.append(2.0 ** (0.5 * (x[m] + x[m + 1])))
+    return np.unique(np.concatenate([g, mids]))

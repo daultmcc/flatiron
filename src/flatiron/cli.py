@@ -38,6 +38,13 @@ def cmd_level(args):
         input()
     finally:
         player.stop()
+    if args.profile:
+        from flatiron.session.store import Profile, now_iso
+
+        note = input("Note the volume setting for your records (e.g. 'PipeWire 62%'), or Enter to skip: ")
+        Profile.open(args.profile).update(level={"dbfs": args.level, "freq": args.freq,
+                                                 "volume_note": note.strip(), "set": now_iso()})
+        print(f"Saved to profile {args.profile!r}. Keep the volume fixed for every session.")
 
 
 PROBE_HELP = """commands:
@@ -86,6 +93,75 @@ def cmd_probe(args):
             return
 
 
+def _settings(args, profile):
+    from flatiron.apo import parse_apo
+    from flatiron.session.runner import RunSettings
+
+    level = args.level
+    if level is None:
+        stored = profile.read().get("level")
+        level = stored["dbfs"] if stored else -40.0
+    eq, text, note = None, None, args.eq_note or "none"
+    if args.active_eq:
+        text = open(args.active_eq).read()
+        eq = parse_apo(text)
+        note = args.eq_note or f"APO file {args.active_eq}"
+    spec = StimulusSpec(kind=args.stimulus, bandwidth_oct=1 / args.bands_per_octave)
+    return RunSettings(stimulus=spec, level_dbfs=level, session_minutes=args.minutes,
+                       active_eq=eq, eq_note=note, eq_text=text)
+
+
+def _launch(args, sweep: bool):
+    from flatiron.audio.player import NullPlayer, SoundDevicePlayer
+    from flatiron.session.runner import TrialRunner
+    from flatiron.session.store import Profile
+    from flatiron.ui.app import FlatironApp
+
+    profile = Profile.open(args.profile)
+    if profile.read().get("level") is None and not args.dry_run:
+        print(f"No level set for {args.profile!r} yet. Run: flatiron level --profile {args.profile!r}")
+        return 1
+    settings = _settings(args, profile)
+    device = {"index": args.device, "dry_run": args.dry_run}
+    if not args.dry_run:
+        from flatiron.audio.devices import list_output_devices
+
+        devs = {d.index: d for d in list_output_devices()}
+        d = devs.get(args.device) or next((d for d in devs.values() if d.is_default), None)
+        if d:
+            device.update(name=d.name, hostapi=d.hostapi, warnings=d.warnings)
+            for w in d.warnings:
+                print(f"! {d.name}: {w}")
+    player = NullPlayer() if args.dry_run else SoundDevicePlayer(args.device)
+    app = FlatironApp(lambda: TrialRunner(profile, settings, device=device), player, sweep=sweep)
+    app.run()
+    return 0
+
+
+def cmd_run(args):
+    return _launch(args, sweep=args.sweep)
+
+
+def cmd_sessions(args):
+    from flatiron.session.store import Profile
+
+    prof = Profile.open(args.profile)
+    sessions = prof.sessions()
+    if not sessions:
+        print(f"No sessions for {args.profile!r} yet.")
+        return
+    for s in sessions:
+        n = {e: sum(t.ear == e for t in s.trials) for e in EARS}
+        catch = [t for t in s.trials if t.catch]
+        acc = f"{np.mean([(t.offset > 0) == t.a_louder for t in catch]):.0%}" if catch else "-"
+        fast = sum(t.fast for t in s.trials)
+        mins = s.trials[-1].t / 60 if s.trials else 0
+        print(f"{s.id}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  catch {acc:>4}  "
+              f"fast {fast:3d}  EQ: {s.eq_context.get('note')}{'' if s.ended else '  (not closed)'}")
+    trials, _ = prof.history(sessions)
+    print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
+
+
 def cmd_simulate(args):
     from flatiron.session.scheduler import SchedulerConfig
     from flatiron.sim.listener import SimulatedListener, design_example
@@ -122,6 +198,7 @@ def main(argv=None):
     s.add_argument("--device", type=int)
     s.add_argument("--freq", type=float, default=4000.0)
     s.add_argument("--level", type=float, default=-40.0, help="dBFS RMS")
+    s.add_argument("--profile", help="save the level to this headphone profile")
     s.set_defaults(func=cmd_level)
 
     s = sub.add_parser("probe", help="manual probe: play a band at a chosen frequency and ear")
@@ -133,6 +210,32 @@ def main(argv=None):
     s.add_argument("--duration", type=float, default=0.4)
     s.set_defaults(func=cmd_probe)
 
+    def session_args(s):
+        s.add_argument("--profile", required=True, help="headphone label, e.g. 'HD 600'")
+        s.add_argument("--device", type=int)
+        s.add_argument("--level", type=float, help="dBFS RMS (default: the profile's level)")
+        s.add_argument("--minutes", type=float, default=12.0, help="session length, at most 15")
+        s.add_argument("--stimulus", choices=KINDS, default="noise")
+        s.add_argument("--bands-per-octave", type=int, choices=(12, 24), default=12,
+                       help="noise bandwidth: 1/12 or 1/24 octave")
+        s.add_argument("--active-eq", metavar="APO_TXT",
+                       help="system EQ in effect while measuring (Equalizer APO / AutoEQ text)")
+        s.add_argument("--eq-note", help="free-text note on the EQ context")
+        s.add_argument("--dry-run", action="store_true", help="no audio; for trying the UI")
+
+    s = sub.add_parser("run", help="run forced-choice sessions")
+    session_args(s)
+    s.add_argument("--sweep", action="store_true", help="start with the coarse sweep (phase 0)")
+    s.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("sweep", help="coarse sweep (phase 0), then trials")
+    session_args(s)
+    s.set_defaults(func=lambda a: _launch(a, sweep=True))
+
+    s = sub.add_parser("sessions", help="list a profile's sessions")
+    s.add_argument("--profile", required=True)
+    s.set_defaults(func=cmd_sessions)
+
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")
     s.add_argument("--trials", type=int, default=600, help="per ear")
     s.add_argument("--seed", type=int, default=0)
@@ -142,7 +245,7 @@ def main(argv=None):
     s.set_defaults(func=cmd_simulate)
 
     args = p.parse_args(argv)
-    args.func(args)
+    return args.func(args)
 
 
 if __name__ == "__main__":
