@@ -1,0 +1,84 @@
+import numpy as np
+import pytest
+from scipy import optimize
+
+from flatiron.model.grid import log_grid
+from flatiron.model.probit import Priors, Trials, _Problem, fit_probit
+from flatiron.sim.design import random_pairs, uniform_design
+from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
+
+
+def simulate(truth, n, seed, grid, **kw):
+    rng = np.random.default_rng(seed)
+    lis = SimulatedListener({"L": truth}, seed=seed, **kw)
+    f_a, f_b, off, _ = uniform_design(grid, n, rng)
+    return Trials(f_a, f_b, off, lis.respond("L", f_a, f_b, off))
+
+
+def test_gradient_matches_finite_differences():
+    g = log_grid(1000, 4000)
+    t = simulate(design_example(), 300, 0, g)
+    prob = _Problem(t, g, Priors())
+    theta = np.concatenate([np.random.default_rng(1).normal(0, 2, g.size), [0.1, -0.5, -3.0]])
+    err = optimize.check_grad(lambda x: prob.objective(x)[0], lambda x: prob.objective(x)[1], theta)
+    assert err < 1e-4 * np.linalg.norm(prob.objective(theta)[1])
+
+
+def test_random_pairs_respect_graph():
+    g = log_grid()
+    i, j = random_pairs(g, 5000, np.random.default_rng(0))
+    step = np.abs(i - j)
+    assert np.all(step >= 1)
+    assert np.all(np.abs(np.log2(g[i] / g[j])) <= 1 + 1e-9)
+    assert 0.2 < np.mean(step > 3) < 0.3
+
+
+@pytest.fixture(scope="module")
+def recovery():
+    g = log_grid()
+    truth = design_example("L")
+    fits = [fit_probit(simulate(truth, 1200, s, g), g) for s in range(3)]
+    tc = truth.level(g)
+    return g, tc - tc.mean(), fits
+
+
+def test_hyperparameters_recovered(recovery):
+    _, _, fits = recovery
+    for f in fits:
+        assert f.converged
+        assert 0.7 < f.sigma0 < 1.4
+        assert 0.01 < f.lapse < 0.08
+
+
+def test_curve_recovered_with_calibrated_error_bars(recovery):
+    _, truth, fits = recovery
+    for f in fits:
+        err = f.L - truth
+        assert abs(f.L.mean()) < 1e-9
+        assert np.sqrt(np.mean(err**2)) < 1.1
+        assert np.mean(np.abs(err) < 2 * f.sd) > 0.85
+
+
+def test_narrow_notch_depth_recovered(recovery):
+    g, truth, fits = recovery
+    k = int(np.argmin(np.abs(g - 6200)))
+    flank = lambda L: L[k] - 0.5 * (L[k - 6] + L[k + 6])
+    depth = np.mean([flank(f.L) for f in fits])
+    assert flank(truth) < -4
+    # Smoothness shrinkage leaves it ~1 dB shallow at this trial count.
+    assert abs(depth - flank(truth)) < 1.5
+
+
+def test_flat_ear_gives_flat_curve():
+    g = log_grid()
+    f = fit_probit(simulate(EarTruth(phon=None), 600, 5, g), g)
+    assert np.max(np.abs(f.L)) < 3 * f.sd.max()
+
+
+def test_warm_start_without_hyper_refit():
+    g = log_grid()
+    t = simulate(design_example(), 600, 2, g)
+    full = fit_probit(t, g)
+    fast = fit_probit(t, g, init=full, fit_hyper=False)
+    assert fast.sigma0 == pytest.approx(full.sigma0)
+    assert np.max(np.abs(fast.L - full.L)) < 0.05
