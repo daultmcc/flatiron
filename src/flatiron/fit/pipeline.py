@@ -4,14 +4,14 @@ Every setting here is downstream of the cached perceptual fit, so it can be
 changed without new trials.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 
 from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.baseline import fit_baseline
 from flatiron.fit.features import BROAD, Feature, check_consistency, find_features
-from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db
+from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
 from flatiron.fit.reference import reference
 from flatiron.model.grid import interp_matrix, log_grid
 from flatiron.model.probit import ProbitFit
@@ -35,7 +35,7 @@ class CorrectionSettings:
     f_lo: float = 1000.0
     f_hi: float = 13000.0  # trials near the top of the range are hard to judge; don't go below 12 kHz
     taper_oct: float = 1 / 3  # fade beyond [f_lo, f_hi], limited by the measured margin
-    bands: int = 10
+    bands: int = 20  # per channel; LSP x32 holds 32
     q_min: float = 0.7
     q_max: float = 16.0
     max_gain_db: float = 12.0
@@ -43,6 +43,10 @@ class CorrectionSettings:
     stop_z: float = 2.0  # filter fit stops when no point is off by more than this many SDs
     consistency: bool = True
     consistency_p: float = 0.01
+    # Keep the broad shape of the original response: correct narrow features
+    # only, then add broad compensation so the correction's own average over
+    # about max_width_oct (W) is zero. Broad tonal changes are left to the user.
+    preserve_tonality: bool = False
 
     def __post_init__(self):
         if not 1 / 3 - 1e-9 <= self.max_width_oct <= 2 + 1e-9:
@@ -74,6 +78,7 @@ class EarCorrection:
     left_out: list[tuple[float, float, float]] = field(default_factory=list)  # (f_lo, f_hi, max |err| dB)
     sessions_checked: int = 0
     session_R: list[np.ndarray] = field(default_factory=list)  # each session's residual, same baseline
+    compensation: list[PeakingFilter] = field(default_factory=list)  # tonality-preserving filters (in fit.filters)
 
     @property
     def filters(self) -> list[PeakingFilter]:
@@ -97,6 +102,8 @@ def build_target(features, R, settings: CorrectionSettings) -> np.ndarray:
             continue
         seg = -R[f.span]
         if f.kind == BROAD:
+            if settings.preserve_tonality:
+                continue
             seg = np.minimum(seg, settings.max_boost_broad_db) * settings.broad_strength
         else:
             seg = np.minimum(seg, settings.max_boost_narrow_db)
@@ -138,6 +145,13 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     sd = np.sqrt(np.einsum("ij,jk,ik->i", m, cov_R, m))
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, settings.q_max, settings.max_gain_db)
     ff = fit_filters(freqs, target, sd, settings.bands, bounds, settings.stop_z, settings.min_gain_db)
+    comp: list[PeakingFilter] = []
+    if settings.preserve_tonality:
+        for f in feats:
+            if f.accepted and f.kind == BROAD:
+                f.accepted = False
+                f.reason = "left as tonality (--preserve-tonality)"
+        ff, comp = add_tonality_compensation(ff, freqs, settings, w_lo, w_hi)
 
     left = []
     if ff.budget_bound:
@@ -154,7 +168,53 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
             else:
                 i += 1
     return EarCorrection(ear, g, fit.L, fit.sd, E, base.values, R, R_sd, feats, C, freqs, target, sd, ff,
-                         left, checked, session_R)
+                         left, checked, session_R, comp)
+
+
+def smooth_log(freqs, values, fwhm_oct, weights) -> np.ndarray:
+    """Gaussian smoothing in log2 f, normalised by `weights` (so the edges
+    of the correction range average only over the range)."""
+    x = np.log2(freqs)
+    k = np.exp(-0.5 * ((x[:, None] - x[None, :]) / (fwhm_oct / 2.355)) ** 2) * weights[None, :]
+    return (k @ values) / np.maximum(k.sum(axis=1), 1e-12)
+
+
+COMP_Q_MAX = 1.5  # compensation filters stay broad
+COMP_TOL_DB = 0.5  # the broad shape is kept to within this
+COMP_MAX_BANDS = 4
+
+
+def _merge_close(filters: list[PeakingFilter], oct_tol: float = 1 / 24) -> list[PeakingFilter]:
+    """Fold filters at (nearly) the same frequency and Q into one (gains add)."""
+    out: list[PeakingFilter] = []
+    for f in sorted(filters, key=lambda f: f.fc):
+        if out and abs(np.log2(f.fc / out[-1].fc)) < oct_tol and abs(np.log2(f.q / out[-1].q)) < 0.1:
+            p = out.pop()
+            f = PeakingFilter(p.fc, p.gain_db + f.gain_db, p.q)
+        out.append(f)
+    return out
+
+
+def add_tonality_compensation(ff: FilterFit, freqs, settings: CorrectionSettings, w_lo, w_hi):
+    """Broad filters that cancel the narrow filters' average over ~W, so the
+    corrected response keeps the original's broad shape. Fitted to what the
+    narrow filters actually do (a noise-free curve), with the bands left over."""
+    w = taper(freqs, settings.f_lo, settings.f_hi, w_lo, w_hi)
+    h = response(ff.filters, freqs)
+    goal = -smooth_log(freqs, h, settings.max_width_oct, w) * w
+    room = min(settings.bands - len(ff.filters), COMP_MAX_BANDS)
+    if room <= 0 or np.max(np.abs(goal)) < COMP_TOL_DB:
+        return ff, []
+    # Gains no bigger than the curve itself: otherwise the fit chases the
+    # range-edge fade with large opposing pairs (seen: −12 dB against +11 dB).
+    limit = min(settings.max_gain_db, 1.5 * float(np.max(np.abs(goal))) + 0.5)
+    bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, COMP_Q_MAX, limit)
+    cf = fit_filters(freqs, goal, np.full(freqs.size, COMP_TOL_DB / 2), room, bounds, 2.0, 0.2)
+    comp = _merge_close(cf.filters)
+    contrib = dict(zip(map(id, ff.filters), ff.contributions))
+    filters = sorted(ff.filters + comp, key=lambda f: f.fc)
+    return replace(ff, filters=filters, response=ff.response + cf.response,
+                   contributions=[contrib.get(id(f), 0.0) for f in filters]), comp
 
 
 @dataclass
@@ -169,6 +229,7 @@ class Correction:
         for e, c in self.ears.items():
             out["ears"][e] = {
                 "filters": [asdict(f) for f in c.filters],
+                "compensation": [asdict(f) for f in c.compensation],
                 "chi2": c.fit.chi2,
                 "budget_bound": c.fit.budget_bound,
                 "left_out": c.left_out,

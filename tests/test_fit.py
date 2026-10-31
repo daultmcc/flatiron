@@ -201,3 +201,21 @@ def test_fit_cli_writes_profile_and_report(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(run_mod, "fit_probit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
     assert main(["fit", "--profile", "Sim", "--width", "0.5", "--no-report"]) == 0
     assert json.loads(prof.path.read_text())["fit"]["settings"]["max_width_oct"] == 0.5
+
+
+def test_preserve_tonality_keeps_the_broad_shape(simulated):
+    from flatiron.fit.pipeline import smooth_log
+
+    lis, fit = simulated["design"]
+    plain = correct_ear("L", fit, CorrectionSettings(broad_strength=0, consistency=False))
+    kept = correct_ear("L", fit, CorrectionSettings(preserve_tonality=True, consistency=False))
+    f = kept.freqs
+    w = taper(f, 1000, 13000, 0.234, 0.206)
+    inside = (f >= 1200) & (f <= 12000)
+    broad = lambda c: smooth_log(f, response(c.filters, f), 1.0, w)[inside]
+    assert np.max(np.abs(broad(kept))) < 0.6  # broad shape kept
+    assert np.max(np.abs(broad(plain))) > 0.8  # without it, the cuts shift it (darker, here)
+    assert kept.compensation and all(c.q <= 1.5 for c in kept.compensation)
+    assert not any(x.accepted and x.kind == BROAD for x in kept.features)
+    narrow = [x for x in kept.filters if x not in kept.compensation]
+    assert len(narrow) == len([x for x in plain.filters])  # same narrow corrections

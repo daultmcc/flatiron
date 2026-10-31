@@ -225,7 +225,8 @@ def cmd_fit(args):
             max_width_oct=args.width, reference=args.reference, phon=args.phon, k=args.k,
             k_broad=args.k_broad, broad_strength=args.strength / 100, bands=args.bands,
             max_boost_narrow_db=args.boost_narrow, max_boost_broad_db=args.boost_broad,
-            max_cut_db=args.max_cut, f_lo=args.f_lo, f_hi=args.f_hi, consistency=not args.no_consistency)
+            max_cut_db=args.max_cut, f_lo=args.f_lo, f_hi=args.f_hi, consistency=not args.no_consistency,
+            preserve_tonality=args.preserve_tonality)
         print("Fitting (perceptual fits are cached, so refits with other settings are quick)...")
         pf = fit_profile(prof, settings, args.sessions.split(",") if args.sessions else None)
     except (ValueError, FileNotFoundError) as e:
@@ -236,8 +237,10 @@ def cmd_fit(args):
         f = pf.fits[e]
         print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}, "
               f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
+        comp = {id(x) for x in c.compensation}
         for flt in c.filters:
-            print(f"  PK  Fc {flt.fc:7.0f} Hz  Gain {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}")
+            note = "  (tonality compensation)" if id(flt) in comp else ""
+            print(f"  PK  Fc {flt.fc:7.0f} Hz  Gain {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}{note}")
         if not c.filters:
             print("  no correction needed")
         for kind in ("narrow", "broad"):
@@ -415,7 +418,10 @@ def main(argv=None):
     s.add_argument("-k", "--k", type=float, default=2.0, help="significance for narrow features (SDs)")
     s.add_argument("--k-broad", type=float, default=2.5, help="significance for broad features (SDs)")
     s.add_argument("-s", "--strength", type=float, default=100, help="broad-feature strength, 0 to 100%%")
-    s.add_argument("-b", "--bands", type=int, default=10, help="correction bands per channel")
+    s.add_argument("-t", "--preserve-tonality", action="store_true",
+                   help="correct narrow features only, and keep the original broad shape "
+                        "(adds broad compensation; broad tonal changes are left to you)")
+    s.add_argument("-b", "--bands", type=int, default=20, help="correction bands per channel (max 32)")
     s.add_argument("--boost-narrow", type=float, default=4.0, help="max boost for narrow features (dB)")
     s.add_argument("--boost-broad", type=float, default=6.0, help="max boost for broad features (dB)")
     s.add_argument("--max-cut", type=float, default=12.0, help="max cut (dB)")
