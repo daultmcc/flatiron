@@ -26,7 +26,7 @@ FAST_MS = 150.0
 @dataclass
 class RunSettings:
     stimulus: StimulusSpec = field(default_factory=StimulusSpec)
-    level_dbfs: float = DEFAULT_LEVEL_DB
+    level_dbfs: float | None = None  # starting level; None: the last session's
     gap_s: float = 0.3
     session_minutes: float = 12.0
     active_eq: ApoEq | None = None
@@ -49,6 +49,8 @@ class PreparedTrial:
     second_on: float
     second_off: float
     limited_db: float
+    level_dbfs: float
+    retake: bool = False
 
 
 class TrialRunner:
@@ -67,10 +69,15 @@ class TrialRunner:
         self.prior_trials = {e: len(hist[e]) for e in EARS}
         self.discarded = False
         self._lock = threading.Lock()
+        self._last_answered: PreparedTrial | None = None
+        start = settings.level_dbfs
+        if start is None:
+            start = profile.last_level()
+        self.level_dbfs = float(DEFAULT_LEVEL_DB if start is None else start)
         self.session: Session = profile.new_session(
             device=device or {}, sample_rate=fs,
             eq_context={"note": settings.eq_note, "apo": settings.eq_text},
-            stimulus=asdict(settings.stimulus), level_dbfs=settings.level_dbfs,
+            stimulus=asdict(settings.stimulus), level_dbfs=self.level_dbfs,
             gap_s=settings.gap_s, seed=self.seed, scheduler=asdict(config))
         self._save()
 
@@ -97,19 +104,36 @@ class TrialRunner:
 
     # -- trials ------------------------------------------------------------
 
+    def set_level(self, level_dbfs: float) -> None:
+        """Change the presentation level. Before any trials it just sets the
+        session's level; later changes are logged with the trial count."""
+        level_dbfs = float(level_dbfs)
+        n = len(self.live_trials())
+        if n == 0:
+            self.session.level_dbfs = level_dbfs
+        elif level_dbfs != self.level_dbfs:
+            self.session.level_changes.append({"after_trial": n, "from": self.level_dbfs,
+                                               "to": level_dbfs, "at": now_iso()})
+        self.level_dbfs = level_dbfs
+        self._save()
+
     def prepare(self) -> PreparedTrial:
-        plan = self.scheduler.next_trial()
+        return self.render(self.scheduler.next_trial())
+
+    def render(self, plan: TrialPlan, retake: bool = False) -> PreparedTrial:
+        """Synthesize a plan's buffer at the current level."""
         spec, s = self.settings.stimulus, self.settings
         a = make_stimulus(plan.f_a, spec, seed=self.seed, fs=self.fs)
         b = make_stimulus(plan.f_b, spec, seed=self.seed, fs=self.fs)
-        la = s.level_dbfs + plan.rove_db + plan.delta_a
-        lb = s.level_dbfs + plan.rove_db + plan.delta_b
+        la = self.level_dbfs + plan.rove_db + plan.delta_a
+        lb = self.level_dbfs + plan.rove_db + plan.delta_b
         if plan.a_first:
             buf, lim = render_pair(a, b, la, lb, s.gap_s, plan.ear, self.fs)
         else:
             buf, lim = render_pair(b, a, lb, la, s.gap_s, plan.ear, self.fs)
         d = a.size / self.fs
-        return PreparedTrial(plan, buf, 0.0, d, d + s.gap_s, 2 * d + s.gap_s, lim.gain_db)
+        return PreparedTrial(plan, buf, 0.0, d, d + s.gap_s, 2 * d + s.gap_s, lim.gain_db,
+                             self.level_dbfs, retake)
 
     def eq_gains(self, plan: TrialPlan) -> tuple[float, float]:
         eq = self.settings.active_eq
@@ -130,11 +154,35 @@ class TrialRunner:
             response="first" if first_louder else "second",
             a_louder=(first_louder == p.a_first), rt_ms=float(rt_ms), replays=replays,
             fast=rt_ms < FAST_MS, eq_gain_a=ga, eq_gain_b=gb, t=round(t, 3),
-            rt_last_ms=rt_ms if rt_last_ms is None else float(rt_last_ms))
+            rt_last_ms=rt_ms if rt_last_ms is None else float(rt_last_ms),
+            level_dbfs=trial.level_dbfs, retake=trial.retake)
         self.session.trials.append(rec)
         self._save()  # persist before the (slower) refit
         self.scheduler.record(p, rec.a_louder, known_gain_db=(ga, gb))
+        self._last_answered = trial
         return rec
+
+    def can_undo(self) -> bool:
+        return self._last_answered is not None
+
+    def undo_last(self) -> PreparedTrial | None:
+        """Withdraw the last answer (one step) and return its trial to present
+        again. The answer stays in the session file, marked undone."""
+        trial = self._last_answered
+        if trial is None:
+            return None
+        rec = self.live_trials()[-1]
+        rec.undone = True
+        self.scheduler.pop_last(rec.ear)
+        self._last_answered = None
+        self._save()
+        if trial.level_dbfs != self.level_dbfs:
+            return self.render(trial.plan, retake=True)
+        trial.retake = True
+        return trial
+
+    def live_trials(self) -> list[TrialRecord]:
+        return [t for t in self.session.trials if not t.undone]
 
     def discard(self) -> None:
         """Cancel the session: delete its file and save nothing more."""
@@ -157,20 +205,21 @@ class TrialRunner:
     # -- status ------------------------------------------------------------
 
     def catch_accuracy(self) -> float | None:
-        c = [t for t in self.session.trials if t.catch]
+        c = [t for t in self.live_trials() if t.catch]
         if not c:
             return None
         # Correct = the +6 dB stimulus judged louder.
         return float(np.mean([(t.offset > 0) == t.a_louder for t in c]))
 
     def progress(self) -> dict:
-        n = len(self.session.trials)
+        live = self.live_trials()
         return {
-            "session_trials": n,
-            "session_trials_ear": {e: sum(t.ear == e for t in self.session.trials) for e in EARS},
+            "session_trials": len(live),
+            "session_trials_ear": {e: sum(t.ear == e for t in live) for e in EARS},
             "total": {e: self.scheduler.n_trials(e) for e in EARS},
             "block_left": min(self.scheduler.until_block_end(e) for e in EARS),
-            "fast": sum(t.fast for t in self.session.trials),
+            "fast": sum(t.fast for t in live),
+            "undone": len(self.session.trials) - len(live),
         }
 
     def _save(self) -> None:

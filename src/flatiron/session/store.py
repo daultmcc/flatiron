@@ -63,6 +63,9 @@ class TrialRecord:
     eq_gain_b: float = 0.0
     t: float = 0.0  # seconds since session start
     rt_last_ms: float | None = None  # from the end of B in the latest replay
+    level_dbfs: float | None = None  # presentation level for this trial (None: the session's)
+    undone: bool = False  # withdrawn by the listener; kept on file, left out of fits
+    retake: bool = False  # answer given after undoing the previous one for this trial
 
     @property
     def offset(self) -> float:
@@ -84,6 +87,7 @@ class Session:
     scheduler: dict = field(default_factory=dict)
     grid: dict = field(default_factory=dict)  # ear -> list of Hz, at the end of the session
     channel_checks: list = field(default_factory=list)
+    level_changes: list = field(default_factory=list)  # {after_trial, from, to, at}
     sweep_marks: dict = field(default_factory=dict)  # ear -> list of {freq, kind}
     trials: list[TrialRecord] = field(default_factory=list)
     ended: str | None = None
@@ -101,7 +105,7 @@ class Session:
         return cls(**d)
 
     def trials_for(self, ear: str) -> Trials:
-        ts = [t for t in self.trials if t.ear == ear]
+        ts = [t for t in self.trials if t.ear == ear and not t.undone]
         return Trials([t.f_a for t in ts], [t.f_b for t in ts], [t.offset for t in ts],
                       [t.a_louder for t in ts])
 
@@ -117,7 +121,7 @@ class Profile:
         p = cls(slugify(label), root)
         if not p.path.exists():
             write_json(p.path, {"label": label, "slug": p.slug, "created": now_iso(),
-                                "level": None, "fit": None, "version": FORMAT_VERSION})
+                                "fit": None, "version": FORMAT_VERSION})
         return p
 
     @classmethod
@@ -167,6 +171,15 @@ class Profile:
             return []
         return [Session.from_json(json.loads(p.read_text()))
                 for p in sorted(self.sessions_dir.glob("*.json"))]
+
+    def last_level(self, sessions: list[Session] | None = None) -> float | None:
+        """Level of the most recent trial on record (or the latest session's)."""
+        sessions = self.sessions() if sessions is None else sessions
+        for s in reversed(sessions):
+            for t in reversed(s.trials):
+                if not t.undone:
+                    return s.level_dbfs if t.level_dbfs is None else t.level_dbfs
+        return sessions[-1].level_dbfs if sessions else None
 
     def history(self, sessions: list[Session] | None = None) -> tuple[dict[str, Trials], dict[str, np.ndarray]]:
         """All trials pooled per ear, and the most recent grid per ear."""

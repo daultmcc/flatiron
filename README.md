@@ -11,7 +11,6 @@ exports and reports come next.
 uv sync
 uv run flatiron devices                          # list outputs, flag Bluetooth/mono/rate issues
 uv run flatiron profiles                         # list headphone profiles
-uv run flatiron level --profile "HD 600"         # set Flatiron's level (system volume stays put)
 uv run flatiron run --profile "HD 600" --sweep   # first session: coarse sweep, then trials
 uv run flatiron run --profile "HD 600"           # later sessions (reseat in between)
 uv run flatiron sessions --profile "HD 600"      # trial counts, catch accuracy, fast answers
@@ -25,11 +24,14 @@ uv run pytest
 `--bands-per-octave 12|24`, `--active-eq preset.txt` (system EQ in effect while
 measuring, as Equalizer APO / AutoEQ text), `--dry-run` (no audio).
 
-Leave the system volume at your usual listening level: Flatiron's level is
-set inside the app (the first `run` on a new profile asks for it).
+Leave the system volume at your usual listening level. Each session opens on a
+level screen (starting from the last session's level) where Flatiron's own
+level is adjusted with ↑/↓.
 
 Trial keys: ← or 1 = A louder, → or 2 = B louder, Space = replay, P = pause,
-Q = save and quit, X = discard the session (asks first). Every answer is saved as it's given, under
+U = undo the last answer (the pair plays again), L = re-adjust the level (with
+a warning; changes are logged), Q = save and quit, X = discard the session
+(asks first). Every answer is saved as it's given, under
 `~/.local/share/flatiron/profiles/<headphone>/sessions/` (macOS:
 `~/Library/Application Support/flatiron/`).
 

@@ -33,21 +33,6 @@ def _player(args):
     return NullPlayer() if getattr(args, "dry_run", False) else StreamPlayer(args.device)
 
 
-def cmd_level(args):
-    from flatiron.session.store import Profile
-    from flatiron.ui.app import FlatironApp
-
-    profile = Profile.open(args.profile)
-    level = FlatironApp(None, _player(args), profile=profile, level="only").run()
-    if level is not None:
-        print(f"Saved {level:+.0f} dBFS to {args.profile!r}. Keep the system volume where it is for every session.")
-    else:
-        stored = profile.read().get("level")
-        still = f"still uses {stored['dbfs']:+.0f} dBFS" if stored else "still has no level"
-        print(f"Level NOT saved (it's saved with Enter or S on the level screen). {args.profile!r} {still}.")
-    print(VOLUME_REMINDER)
-
-
 PROBE_HELP = """commands:
   <number>     set frequency in Hz (e.g. 6150)
   + / -        step up / down 1/24 octave (++ / -- for 1/6 octave)
@@ -105,17 +90,13 @@ def _settings(args, profile):
     from flatiron.apo import parse_apo
     from flatiron.session.runner import RunSettings
 
-    level = args.level
-    if level is None:
-        stored = profile.read().get("level")
-        level = stored["dbfs"] if stored else DEFAULT_LEVEL_DB
     eq, text, note = None, None, args.eq_note or "none"
     if args.active_eq:
         text = open(args.active_eq).read()
         eq = parse_apo(text)
         note = args.eq_note or f"APO file {args.active_eq}"
     spec = StimulusSpec(kind=args.stimulus, bandwidth_oct=1 / args.bands_per_octave)
-    return RunSettings(stimulus=spec, level_dbfs=level, session_minutes=args.minutes,
+    return RunSettings(stimulus=spec, session_minutes=args.minutes,
                        active_eq=eq, eq_note=note, eq_text=text)
 
 
@@ -126,12 +107,6 @@ def _launch(args, sweep: bool):
 
     profile = Profile.open(args.profile)
     _settings(args, profile)  # validate options before the UI starts
-    stored = profile.read().get("level")
-    if args.level is not None:
-        print(f"Level: {args.level:+.0f} dBFS (from --level)")
-    elif stored:
-        print(f"Level: {stored['dbfs']:+.0f} dBFS (set {stored.get('set', '?')[:16].replace('T', ' ')}; "
-              f"change it with: flatiron level --profile {args.profile!r})")
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
         from flatiron.audio.devices import list_output_devices
@@ -142,12 +117,9 @@ def _launch(args, sweep: bool):
             device.update(name=d.name, hostapi=d.hostapi, warnings=d.warnings)
             for w in d.warnings:
                 print(f"! {d.name}: {w}")
-    # Settings are rebuilt per session so a level set in the app's first step is used.
     app = FlatironApp(lambda: TrialRunner(profile, _settings(args, profile), device=device),
-                      _player(args), sweep=sweep, profile=profile)
+                      _player(args), sweep=sweep)
     app.run()
-    if profile.read().get("level") is None:
-        print("No level was saved, so no session ran.")
     print(VOLUME_REMINDER)
     return 0
 
@@ -176,8 +148,8 @@ def cmd_profiles(args):
         info = p.read()
         sessions = p.sessions()
         n = {e: sum(t.ear == e for s in sessions for t in s.trials) for e in EARS}
-        level = info.get("level")
-        level_s = f"{level['dbfs']:+.0f} dBFS" if level else "level not set"
+        level = p.last_level(sessions)
+        level_s = f"last level {level:+.0f} dBFS" if level is not None else "no sessions yet"
         last = sessions[-1].started[:10] if sessions else "-"
         open_s = sum(s.ended is None for s in sessions)
         print(f"{info['label']}  ({p.slug})")
@@ -252,12 +224,6 @@ def main(argv=None):
     s = sub.add_parser("devices", help="list output devices and flag problems")
     s.set_defaults(func=cmd_devices)
 
-    s = sub.add_parser("level", help="set the listening level for a headphone profile")
-    s.add_argument("--profile", required=True)
-    s.add_argument("--device", type=int)
-    s.add_argument("--dry-run", action="store_true", help="no audio")
-    s.set_defaults(func=cmd_level)
-
     s = sub.add_parser("probe", help="manual probe: play a band at a chosen frequency and ear")
     s.add_argument("--device", type=int)
     s.add_argument("--freq", type=float, default=4000.0)
@@ -270,7 +236,6 @@ def main(argv=None):
     def session_args(s):
         s.add_argument("--profile", required=True, help="headphone label, e.g. 'HD 600'")
         s.add_argument("--device", type=int)
-        s.add_argument("--level", type=float, help="dBFS RMS (default: the profile's level)")
         s.add_argument("--minutes", type=float, default=12.0, help="session length, at most 15")
         s.add_argument("--stimulus", choices=KINDS, default="noise")
         s.add_argument("--bands-per-octave", type=int, choices=(12, 24), default=12,

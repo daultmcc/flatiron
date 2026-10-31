@@ -32,8 +32,8 @@ def test_slugify():
 def test_profile_and_session_roundtrip(tmp_path):
     prof = Profile.open("HD 600", root=tmp_path)
     assert prof.read()["label"] == "HD 600"
-    prof.update(level={"dbfs": -40, "volume_note": "62%"})
-    assert Profile.open("HD 600", root=tmp_path).read()["level"]["volume_note"] == "62%"
+    prof.update(note="pads v2")
+    assert Profile.open("HD 600", root=tmp_path).read()["note"] == "pads v2"
     lis = SimulatedListener({e: design_example(e) for e in "LR"}, seed=0)
     r = TrialRunner(prof, config=FAST_CFG, seed=5, device={"name": "test"})
     answer_like(lis, r, 30)
@@ -58,6 +58,7 @@ def test_answer_maps_interval_to_stimulus(tmp_path):
 
 def test_buffer_order_levels_and_ear(tmp_path):
     settings = RunSettings(stimulus=StimulusSpec(kind="tone"), level_dbfs=-40)
+    # (An explicit starting level overrides the last session's.)
     r = TrialRunner(Profile.open("x", root=tmp_path), settings, config=FAST_CFG, seed=3)
     for _ in range(10):
         tr = r.prepare()
@@ -200,10 +201,50 @@ def test_cli_profiles_and_session_delete(tmp_path, monkeypatch, capsys):
     r.answer(r.prepare(), True, 400)  # left open, as after a crash
     main(["profiles"])
     out = capsys.readouterr().out
-    assert "HD 600  (hd-600)" in out and "1 not closed" in out and "level not set" in out
+    assert "HD 600  (hd-600)" in out and "1 not closed" in out and "last level -30 dBFS" in out
     monkeypatch.setattr("builtins.input", lambda q: "n")
     main(["sessions", "--profile", "HD 600", "--delete", r.session.id])
     assert len(prof.sessions()) == 1
     main(["sessions", "--profile", "HD 600", "--delete", r.session.id, "--yes"])
     assert prof.sessions() == []
     assert main(["sessions", "--profile", "nope"]) == 1
+
+
+def test_undo_withdraws_from_fit_and_scheduler(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, config=FAST_CFG, seed=0)
+    assert not r.can_undo() and r.undo_last() is None
+    t1 = r.prepare()
+    r.answer(t1, True, 400)
+    t2 = r.prepare()
+    r.answer(t2, False, 400)
+    ear = t2.plan.ear
+    before = r.scheduler.n_trials(ear)
+    again = r.undo_last()
+    assert again.plan is t2.plan and again.retake
+    assert r.scheduler.n_trials(ear) == before - 1
+    assert not r.can_undo()  # one step only
+    rec = r.answer(again, True, 400)
+    assert rec.retake and r.scheduler.n_trials(ear) == before
+    s = prof.sessions()[0]
+    assert [t.undone for t in s.trials] == [False, True, False]
+    assert r.progress()["session_trials"] == 2 and r.progress()["undone"] == 1
+    trials, _ = prof.history()
+    assert len(trials["L"]) + len(trials["R"]) == 2
+
+
+def test_level_carries_over_and_changes_are_logged(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, config=FAST_CFG, seed=0)
+    assert r.level_dbfs == -30
+    r.set_level(-27)  # before any trials: just the session's level
+    r.answer(r.prepare(), True, 400)
+    r.set_level(-29)
+    tr = r.prepare()
+    assert tr.level_dbfs == -29
+    r.answer(tr, True, 400)
+    r.finish()
+    s = prof.sessions()[0]
+    assert s.level_dbfs == -27 and [t.level_dbfs for t in s.trials] == [-27, -29]
+    assert [(c["after_trial"], c["from"], c["to"]) for c in s.level_changes] == [(1, -27, -29)]
+    assert TrialRunner(prof, config=FAST_CFG, seed=1).level_dbfs == -29

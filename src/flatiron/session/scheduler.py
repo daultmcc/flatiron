@@ -116,6 +116,17 @@ class Scheduler:
         st.fit = fit_probit(st.trials(), np.asarray(grid, float), self.priors, init=st.fit, fit_hyper=False)
         st.grid = st.fit.grid
 
+    def pop_last(self, ear: str) -> None:
+        """Withdraw the ear's most recent answer (undo) and refit."""
+        st = self.ears[ear]
+        if not st.f_a:
+            return
+        for lst in (st.f_a, st.f_b, st.offset, st.a_louder):
+            lst.pop()
+        st.since_block = max(st.since_block - 1, 0)
+        st.since_refit = 0
+        st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit, fit_hyper=False)
+
     def n_trials(self, ear: str) -> int:
         return len(self.ears[ear].f_a)
 
