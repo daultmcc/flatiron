@@ -5,7 +5,8 @@ By-ear headphone resonance EQ from forced-choice loudness judgments. See
 
 Status: milestones 1 to 5 are in place (audio core, model and simulator,
 adaptive scheduler, trial UI and session files, fit pipeline and report).
-Exporters come next. The simulator doesn't yet meet DESIGN.md's strict pass
+Milestone 6 (exporters): Equalizer APO text and LSP x32 LeftRight are done;
+PipeWire and EasyEffects/Equaliser are next. The simulator doesn't yet meet DESIGN.md's strict pass
 criteria (see `flatiron simulate` and `src/flatiron/sim/validate.py`).
 
 ```sh
@@ -17,6 +18,7 @@ uv run flatiron run --profile "HD 600"           # later sessions (reseat in bet
 uv run flatiron sessions --profile "HD 600"      # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --profile "HD 600" --delete <id>   # e.g. a session left open by a crash
 uv run flatiron fit --profile "HD 600"           # filters per ear + an HTML report
+uv run flatiron export --profile "HD 600" --target lsp   # or --target apo; --merge preset.txt
 uv run flatiron probe                            # hunt by hand: a band at a chosen freq/ear
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run pytest
@@ -44,8 +46,14 @@ cached): `--width` (max feature width W, octaves), `--reference iso226|diffuse|n
 The design's default diffuse-field reference needs the ISO 389-7 table, which
 isn't sourced yet, so `iso226` (free field) is the default for now.
 
+Exports go to the profile's `exports/` folder. LSP exports use filter mode
+"APO (DR)", which matches Flatiron's filters exactly; when LSP's LADSPA build is
+installed, every LSP export is checked against the real plugin before it's
+written. `--merge` puts an Equalizer APO / AutoEQ preset (your preference EQ)
+in front of the correction in the same file, with the preamp computed over both.
+
 Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
 (grid, probit fit, refinement), `session/` (scheduler, runner, storage,
 sweep), `ui/` (Textual app), `fit/` (reference, baseline, features, filters,
-pipeline), `report/` (figures, HTML), `sim/` (simulated listener, designs,
+pipeline), `export/` (APO text, LSP, LADSPA truth check), `report/` (figures, HTML), `sim/` (simulated listener, designs,
 validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).

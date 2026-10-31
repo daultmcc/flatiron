@@ -243,6 +243,71 @@ def cmd_fit(args):
     return 0
 
 
+def cmd_export(args):
+    from pathlib import Path
+
+    from flatiron.apo import parse_apo
+    from flatiron.export import apo, lsp
+    from flatiron.export.plan import build_plan
+    from flatiron.session.store import Profile
+
+    prof = Profile.existing(args.profile)
+    if prof is None:
+        print(f"No profile {args.profile!r}. See: flatiron profiles")
+        return 1
+    fit = prof.read().get("fit")
+    if not fit:
+        print(f"No fit yet. Run: flatiron fit --profile {args.profile!r}")
+        return 1
+    pref = None
+    if args.merge or args.merge_left or args.merge_right:
+        both = args.merge
+        left, right = args.merge_left or both, args.merge_right or both
+        if not (left and right):
+            print("Merging needs a preference preset for both channels (--merge, or --merge-left and --merge-right).")
+            return 1
+        try:
+            pref = {"L": parse_apo(Path(left).read_text()), "R": parse_apo(Path(right).read_text())}
+        except ValueError as e:
+            print(e)
+            return 1
+    plan = build_plan(fit, pref)
+    out = Path(args.out) if args.out else prof.dir / "exports"
+    out.mkdir(parents=True, exist_ok=True)
+    stem = f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}"
+    written = []
+    try:
+        if args.target == "apo":
+            for e, text in apo.write(plan).items():
+                path = out / f"{stem}_{e}.txt"
+                path.write_text(text)
+                written.append(path)
+        elif args.target == "lsp":
+            from flatiron.export import verify
+
+            text = lsp.write(plan)
+            if verify.available():
+                err = verify.check_lsp(text, plan)
+                worst = max(err.values())
+                print(f"Checked against LSP's own filters: max error {worst:.3f} dB (tolerance 0.3)")
+                if worst > 0.3:
+                    print("Not writing it: the export doesn't match Flatiron's prediction.")
+                    return 1
+            path = out / f"{stem}-lsp.cfg"
+            path.write_text(text)
+            written.append(path)
+    except ValueError as e:
+        print(e)
+        return 1
+    bands = " / ".join(f"{e} {len(fs)}" for e, fs in plan.channels.items())
+    print(f"{'Merged' if plan.merged else 'Correction-only'} export, bands {bands}, preamp {plan.preamp_db:+.2f} dB")
+    if not plan.merged:
+        print("Stack it after any EQ you already use (or in its own instance).")
+    for p in written:
+        print(f"  {p}")
+    return 0
+
+
 def cmd_simulate(args):
     from flatiron.session.scheduler import SchedulerConfig
     from flatiron.sim.listener import SimulatedListener, design_example
@@ -332,6 +397,17 @@ def main(argv=None):
     s.add_argument("--no-consistency", action="store_true", help="skip the reseat consistency check")
     s.add_argument("--no-report", action="store_true")
     s.set_defaults(func=cmd_fit)
+
+    s = sub.add_parser("export", help="write the fitted correction for an EQ host")
+    s.add_argument("--profile", required=True)
+    s.add_argument("--target", choices=("apo", "lsp"), required=True,
+                   help="apo: Equalizer APO / AutoEQ text per channel (also PipeWire param_eq files); "
+                        "lsp: LSP Parametric Equalizer x32 LeftRight settings")
+    s.add_argument("--merge", metavar="APO_TXT", help="preference preset to merge in front, both channels")
+    s.add_argument("--merge-left", metavar="APO_TXT")
+    s.add_argument("--merge-right", metavar="APO_TXT")
+    s.add_argument("--out", help="output directory (default: the profile's exports folder)")
+    s.set_defaults(func=cmd_export)
 
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")
     s.add_argument("--trials", type=int, default=600, help="per ear")
