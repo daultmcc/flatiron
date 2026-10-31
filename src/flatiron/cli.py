@@ -184,10 +184,13 @@ def cmd_sessions(args):
         n = {e: sum(t.ear == e for t in s.trials) for e in EARS}
         catch = [t for t in s.trials if t.catch]
         acc = f"{np.mean([(t.offset > 0) == t.a_louder for t in catch]):.0%}" if catch else "-"
-        fast = sum(t.fast for t in s.trials)
+        live = [t for t in s.trials if not t.undone]
+        fast = sum(t.fast for t in live)
+        first = f"{np.mean([t.response == 'first' for t in live]):.0%}" if live else "-"
         mins = s.trials[-1].t / 60 if s.trials else 0
         print(f"{s.id}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  catch {acc:>4}  "
-              f"fast {fast:3d}  EQ: {s.eq_context.get('note')}{'' if s.ended else '  (not closed)'}")
+              f"fast {fast:3d}  chose first {first:>4}  EQ: {s.eq_context.get('note')}"
+              f"{'' if s.ended else '  (not closed)'}")
     trials, _ = prof.history(sessions)
     print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
 
@@ -215,7 +218,8 @@ def cmd_fit(args):
     corr = pf.correction
     for e, c in corr.ears.items():
         f = pf.fits[e]
-        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}")
+        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}, "
+              f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
         for flt in c.filters:
             print(f"  PK  Fc {flt.fc:7.0f} Hz  Gain {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}")
         if not c.filters:
@@ -322,8 +326,8 @@ def main(argv=None):
     s.add_argument("--boost-narrow", type=float, default=4.0, help="max boost for narrow features (dB)")
     s.add_argument("--boost-broad", type=float, default=6.0, help="max boost for broad features (dB)")
     s.add_argument("--max-cut", type=float, default=12.0, help="max cut (dB)")
-    s.add_argument("--f-lo", type=float, default=1000.0)
-    s.add_argument("--f-hi", type=float, default=14000.0)
+    s.add_argument("--f-lo", type=float, default=1000.0, help="lower correction limit (Hz)")
+    s.add_argument("--f-hi", type=float, default=13000.0, help="upper correction limit (Hz)")
     s.add_argument("--sessions", help="comma-separated session ids to use (default: all)")
     s.add_argument("--no-consistency", action="store_true", help="skip the reseat consistency check")
     s.add_argument("--no-report", action="store_true")

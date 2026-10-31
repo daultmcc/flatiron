@@ -19,7 +19,7 @@ def answer_like(lis, runner, n, t0=0.0):
     for k in range(n):
         tr = runner.prepare()
         p = tr.plan
-        a_louder = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset))
+        a_louder = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset, p.a_first))
         runner.answer(tr, first_louder=(a_louder == p.a_first), rt_ms=400, t=t0 + k)
 
 
@@ -248,3 +248,19 @@ def test_level_carries_over_and_changes_are_logged(tmp_path):
     assert s.level_dbfs == -27 and [t.level_dbfs for t in s.trials] == [-27, -29]
     assert [(c["after_trial"], c["from"], c["to"]) for c in s.level_changes] == [(1, -27, -29)]
     assert TrialRunner(prof, config=FAST_CFG, seed=1).level_dbfs == -29
+
+
+
+def test_session_trials_carry_play_order(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, config=FAST_CFG, seed=0)
+    plans = []
+    for _ in range(6):
+        tr = r.prepare()
+        plans.append(tr.plan)
+        r.answer(tr, True, 400)
+    s = prof.sessions()[0]
+    for e in "LR":
+        want = [1.0 if p.a_first else -1.0 for p in plans if p.ear == e]
+        assert s.trials_for(e).order.tolist() == want
+        assert r.scheduler.ears[e].trials().order.tolist() == want

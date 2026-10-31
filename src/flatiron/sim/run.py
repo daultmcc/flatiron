@@ -27,7 +27,7 @@ def run(listener: SimulatedListener, trials_per_ear: int, config: SchedulerConfi
     sch = Scheduler(config, seed=seed, ears=ears, priors=priors)
     for _ in range(trials_per_ear * len(ears)):
         plan = sch.next_trial()
-        ans = listener.respond(plan.ear, plan.f_a, plan.f_b, plan.offset)
+        ans = listener.respond(plan.ear, plan.f_a, plan.f_b, plan.offset, plan.a_first)
         sch.record(plan, bool(ans))
     return sch, {e: sch.final_fit(e) for e in ears}
 

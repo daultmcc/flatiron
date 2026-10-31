@@ -69,11 +69,12 @@ class EarState:
     f_b: list = field(default_factory=list)
     offset: list = field(default_factory=list)
     a_louder: list = field(default_factory=list)
+    order: list = field(default_factory=list)  # +1: A played first
     since_refit: int = 0
     since_block: int = 0
 
     def trials(self) -> Trials:
-        return Trials(self.f_a, self.f_b, self.offset, self.a_louder)
+        return Trials(self.f_a, self.f_b, self.offset, self.a_louder, self.order)
 
 
 def candidate_pairs(grid: np.ndarray, max_step: int, long_max_oct: float):
@@ -106,6 +107,7 @@ class Scheduler:
             st.grid = np.asarray(grid, float)
         st.f_a, st.f_b = list(trials.f_a), list(trials.f_b)
         st.offset, st.a_louder = list(trials.offset), list(trials.a_louder)
+        st.order = list(trials.order)
         st.fit = fit_probit(trials, st.grid, self.priors,
                             fit_hyper=len(trials) >= self.cfg.min_trials_noise_fit)
         st.since_refit = st.since_block = 0
@@ -121,7 +123,7 @@ class Scheduler:
         st = self.ears[ear]
         if not st.f_a:
             return
-        for lst in (st.f_a, st.f_b, st.offset, st.a_louder):
+        for lst in (st.f_a, st.f_b, st.offset, st.a_louder, st.order):
             lst.pop()
         st.since_block = max(st.since_block - 1, 0)
         st.since_refit = 0
@@ -169,25 +171,29 @@ class Scheduler:
             k = int(self.rng.integers(i.size))
         a, b = (i[k], j[k]) if self.rng.random() < 0.5 else (j[k], i[k])
 
+        a_first = bool(self.rng.random() < 0.5)
         if cfg.adaptive:
             fit = st.fit
             sd = float(np.sqrt(max(fit.var_diff(a, b), 0.0)))
             jitter = np.clip(self.rng.normal() * cfg.jitter_sd * sd, -cfg.max_jitter_db, cfg.max_jitter_db)
-            off = -(fit.L[a] - fit.L[b]) + jitter
+            # Aim at the 50% point as the listener hears it, time-order bias included.
+            off = -(fit.L[a] - fit.L[b]) - fit.bias_db * (1 if a_first else -1) + jitter
         else:
             off = self.rng.uniform(-6, 6)
         off = float(np.clip(off, -cfg.max_delta_db, cfg.max_delta_db))
         self._last_centre = 0.5 * (np.log2(g[a]) + np.log2(g[b]))
-        return self._plan(ear, float(g[a]), float(g[b]), off, False)
+        return self._plan(ear, float(g[a]), float(g[b]), off, False, a_first)
 
-    def _plan(self, ear, f_a, f_b, offset, catch) -> TrialPlan:
+    def _plan(self, ear, f_a, f_b, offset, catch, a_first: bool | None = None) -> TrialPlan:
         # Put the offset on one randomly chosen stimulus.
         if self.rng.random() < 0.5:
             da, db = offset, 0.0
         else:
             da, db = 0.0, -offset
         rove = float(self.rng.uniform(-self.cfg.rove_db, self.cfg.rove_db))
-        return TrialPlan(ear, f_a, f_b, da, db, bool(self.rng.random() < 0.5), rove, catch)
+        if a_first is None:
+            a_first = bool(self.rng.random() < 0.5)
+        return TrialPlan(ear, f_a, f_b, da, db, a_first, rove, catch)
 
     # -- updates -----------------------------------------------------------
 
@@ -198,6 +204,7 @@ class Scheduler:
         st.f_b.append(plan.f_b)
         st.offset.append(plan.offset + known_gain_db[0] - known_gain_db[1])
         st.a_louder.append(bool(a_louder))
+        st.order.append(1.0 if plan.a_first else -1.0)
         st.since_refit += 1
         st.since_block += 1
         if st.since_block >= self.cfg.block_size:

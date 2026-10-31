@@ -29,7 +29,7 @@ THEMES = {
     "dark": dict(surface="#1a1a19", ink="#f0efec", ink2="#c3c2b7", muted="#898781", grid="#2c2c2a",
                  axis="#383835", s1="#3987e5", s2="#d95926", s3="#199e70", shade="#262624"),
 }
-TICKS = [1000, 1500, 2000, 3000, 4000, 6000, 8000, 10000, 14000]
+TICKS = [1000, 1500, 2000, 3000, 4000, 6000, 8000, 10000, 13000]
 EAR_NAMES = {"L": "Left", "R": "Right"}
 
 
@@ -57,7 +57,7 @@ def _label_end(ax, x, y, text, color, t, dy=0.0):
 
 
 def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, theme: str = "light",
-               f_lo: float = 1000, f_hi: float = 14000) -> bytes:
+               f_lo: float = 1000, f_hi: float = 13000) -> bytes:
     t = THEMES[theme]
     with_sessions = bool(session_R) and len(session_R) >= 2
     n = 3 if with_sessions else 2

@@ -36,6 +36,6 @@ def simulate_profile(profile: Profile, truths: dict[str, EarTruth], sessions: in
         for _ in range(trials_per_ear * len(EARS)):
             tr = r.prepare()
             p = tr.plan
-            a = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset))
+            a = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset, p.a_first))
             r.answer(tr, first_louder=(a == p.a_first), rt_ms=600.0)
         r.finish()

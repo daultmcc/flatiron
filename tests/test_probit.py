@@ -19,8 +19,9 @@ def simulate(truth, n, seed, grid, **kw):
 def test_gradient_matches_finite_differences():
     g = log_grid(1000, 4000)
     t = simulate(design_example(), 300, 0, g)
+    t.order = np.random.default_rng(2).choice([-1.0, 1.0], len(t))
     prob = _Problem(t, g, Priors())
-    theta = np.concatenate([np.random.default_rng(1).normal(0, 2, g.size), [0.1, -0.5, -3.0]])
+    theta = np.concatenate([np.random.default_rng(1).normal(0, 2, g.size), [0.7], [0.1, -0.5, -3.0]])
     err = optimize.check_grad(lambda x: prob.objective(x)[0], lambda x: prob.objective(x)[1], theta)
     assert err < 1e-4 * np.linalg.norm(prob.objective(theta)[1])
 
@@ -108,3 +109,31 @@ def test_heard_level_smears_narrow_notches():
     narrow = SimulatedListener(truth, stimulus=StimulusSpec(bandwidth_oct=1 / 24)).heard_level("L", f)
     assert point[0] < narrow[0] < wide[0]  # notch gets shallower as the band widens
     assert abs(wide[1] - point[1]) < 0.05  # smooth regions barely change
+
+
+
+def test_time_order_bias_is_recovered_and_kept_out_of_the_curve():
+    g = log_grid()
+    truth = design_example()
+    rng = np.random.default_rng(4)
+    lis = SimulatedListener({"L": truth}, seed=4, stimulus=None, order_bias_db=1.2)
+    f_a, f_b, off, _ = uniform_design(g, 1200, rng)
+    a_first = rng.random(f_a.size) < 0.5
+    y = lis.respond("L", f_a, f_b, off, a_first)
+    with_order = fit_probit(Trials(f_a, f_b, off, y, np.where(a_first, 1.0, -1.0)), g)
+    without = fit_probit(Trials(f_a, f_b, off, y), g)
+    assert abs(with_order.bias_db - 1.2) < 3 * with_order.bias_sd and with_order.bias_sd < 0.3
+    assert without.bias_db == 0.0
+    # Ignoring the bias shows up as extra judgment noise.
+    assert with_order.sigma0 < without.sigma0
+    err = with_order.L - (truth.level(g) - truth.level(g).mean())
+    x = np.log2(g)
+    shape = err - np.polyval(np.polyfit(x, err, 1), x)  # uniform pairs pin overall tilt weakly
+    assert np.sqrt(np.mean(shape**2)) < 0.9
+
+
+def test_trials_order_defaults_to_unknown():
+    t = Trials([1000.0], [2000.0], [0.0], [True])
+    assert t.order.tolist() == [0.0]
+    both = Trials.concat([t, Trials([1000.0], [1100.0], [1.0], [False], [-1.0])])
+    assert both.order.tolist() == [0.0, -1.0]

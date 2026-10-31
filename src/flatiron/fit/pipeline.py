@@ -33,8 +33,8 @@ class CorrectionSettings:
     max_boost_narrow_db: float = 4.0
     max_boost_broad_db: float = 6.0
     f_lo: float = 1000.0
-    f_hi: float = 14000.0
-    taper_oct: float = 1 / 3
+    f_hi: float = 13000.0  # trials near the top of the range are hard to judge; don't go below 12 kHz
+    taper_oct: float = 1 / 3  # fade beyond [f_lo, f_hi], limited by the measured margin
     bands: int = 10
     q_min: float = 0.7
     q_max: float = 16.0
@@ -80,13 +80,13 @@ class EarCorrection:
         return self.fit.filters
 
 
-def taper(freqs, f_lo, f_hi, width_oct) -> np.ndarray:
-    """1 well inside [f_lo, f_hi], raised-cosine to 0 at the edges, 0 outside,
-    so nothing is corrected outside the range."""
+def taper(freqs, f_lo, f_hi, width_lo_oct, width_hi_oct) -> np.ndarray:
+    """1 inside [f_lo, f_hi], raised-cosine to 0 over the given widths outside
+    it (DESIGN.md step 6), 0 beyond. A zero width is a hard edge."""
     x = np.log2(freqs)
     a, b = np.log2(f_lo), np.log2(f_hi)
-    up = np.clip((x - a) / width_oct, 0, 1)
-    down = np.clip((b - x) / width_oct, 0, 1)
+    up = np.clip((x - a) / width_lo_oct + 1, 0, 1) if width_lo_oct > 0 else (x >= a).astype(float)
+    down = np.clip((b - x) / width_hi_oct + 1, 0, 1) if width_hi_oct > 0 else (x <= b).astype(float)
     return 0.5 * (1 - np.cos(np.pi * np.minimum(up, down)))
 
 
@@ -131,7 +131,10 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     C = build_target(feats, R, settings)
     freqs = log_grid(g[0], g[-1], FINE_STEP_OCT)
     m = interp_matrix(g, freqs)
-    target = (m @ C) * taper(freqs, settings.f_lo, settings.f_hi, settings.taper_oct)
+    # Fade out beyond the range, within the measured margin (850 Hz-15 kHz by default).
+    w_lo = min(settings.taper_oct, max(np.log2(settings.f_lo / g[0]), 0.0))
+    w_hi = min(settings.taper_oct, max(np.log2(g[-1] / settings.f_hi), 0.0))
+    target = (m @ C) * taper(freqs, settings.f_lo, settings.f_hi, w_lo, w_hi)
     sd = np.sqrt(np.einsum("ij,jk,ik->i", m, cov_R, m))
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, settings.q_max, settings.max_gain_db)
     ff = fit_filters(freqs, target, sd, settings.bands, bounds, settings.stop_z, settings.min_gain_db)

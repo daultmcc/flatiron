@@ -12,12 +12,12 @@ from flatiron.model.probit import Priors, ProbitFit, Trials, fit_probit
 from flatiron.session.store import Profile, Session, now_iso
 
 MIN_SESSION_TRIALS = 60  # per ear, for a session to enter the consistency check
-CACHE_VERSION = "1"
+CACHE_VERSION = "2"  # 2: time-order bias
 
 
 def _key(trials: Trials, grid: np.ndarray, priors: Priors, extra: str = "") -> str:
     h = hashlib.sha256(CACHE_VERSION.encode())
-    for a in (trials.f_a, trials.f_b, trials.offset, trials.a_louder.astype(np.int8), grid):
+    for a in (trials.f_a, trials.f_b, trials.offset, trials.a_louder.astype(np.int8), trials.order, grid):
         h.update(np.ascontiguousarray(a).tobytes())
     h.update(repr(priors).encode() + extra.encode())
     return h.hexdigest()[:20]
@@ -26,17 +26,19 @@ def _key(trials: Trials, grid: np.ndarray, priors: Priors, extra: str = "") -> s
 def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
                init: ProbitFit | None = None, fit_hyper: bool = True) -> ProbitFit:
     """The perceptual fit depends only on the trials, so it's cached on disk."""
-    extra = "" if fit_hyper else f"fixed:{init.sigma0:.6g},{init.d0:.6g},{init.lapse:.6g}"
+    extra = "" if fit_hyper else f"fixed:{init.sigma0:.6g},{init.d0:.6g},{init.lapse:.6g},{init.bias_db:.6g}"
     path = profile.dir / "cache" / f"probit-{_key(trials, grid, priors, extra)}.npz"
     if path.exists():
         z = np.load(path)
         return ProbitFit(z["grid"], z["L"], z["cov"], float(z["sigma0"]), float(z["d0"]), float(z["lapse"]),
-                         int(z["n_trials"]), float(z["nlp"]), bool(z["converged"]))
+                         int(z["n_trials"]), float(z["nlp"]), bool(z["converged"]),
+                         bias_db=float(z["bias"]), bias_sd=float(z["bias_sd"]))
     fit = fit_probit(trials, grid, priors, init=init, fit_hyper=fit_hyper)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.stem + ".tmp.npz")
     np.savez(tmp, grid=fit.grid, L=fit.L, cov=fit.cov, sigma0=fit.sigma0, d0=fit.d0, lapse=fit.lapse,
-             n_trials=fit.n_trials, nlp=fit.neg_log_post, converged=fit.converged)
+             n_trials=fit.n_trials, nlp=fit.neg_log_post, converged=fit.converged,
+             bias=fit.bias_db, bias_sd=fit.bias_sd)
     tmp.replace(path)
     return fit
 
@@ -74,7 +76,8 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
     if save:
         summary = corr.summary()
         summary.update(fitted=now_iso(), sessions=[s.id for s in sessions],
-                       noise={e: {"sigma0": f.sigma0, "d0": f.d0, "lapse": f.lapse, "trials": f.n_trials}
+                       noise={e: {"sigma0": f.sigma0, "d0": f.d0, "lapse": f.lapse, "trials": f.n_trials,
+                                  "time_order_bias_db": f.bias_db, "time_order_bias_sd": f.bias_sd}
                               for e, f in fits.items()})
         profile.update(fit=summary)
     return ProfileFit(corr, fits, sessions, used)

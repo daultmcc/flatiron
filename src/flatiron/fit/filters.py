@@ -22,7 +22,7 @@ from flatiron.audio.biquad import PeakingFilter, bw_oct_to_q, peaking_db_fast
 @dataclass(frozen=True)
 class FilterBounds:
     f_lo: float = 1000.0
-    f_hi: float = 14000.0
+    f_hi: float = 13000.0
     q_min: float = 0.7
     q_max: float = 16.0
     max_gain_db: float = 12.0

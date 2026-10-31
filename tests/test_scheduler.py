@@ -96,3 +96,16 @@ def test_adaptive_beats_uniform(adaptive_vs_uniform):
     a = adaptive_vs_uniform["adaptive"][1]
     u = adaptive_vs_uniform["uniform"][1]
     assert a.rmse < 0.8 * u.rmse
+
+
+
+def test_scheduler_compensates_for_time_order_bias():
+    lis = SimulatedListener({"L": design_example()}, seed=8, order_bias_db=1.5)
+    sch, fits = run(lis, 400, SchedulerConfig(), seed=8)
+    st = sch.ears["L"]
+    assert abs(fits["L"].bias_db - 1.5) < 0.6
+    # Once the bias is known, Δ is aimed at the 50% point as heard, so the
+    # listener stops favouring the first interval.
+    order, a_louder = np.array(st.order[200:]), np.array(st.a_louder[200:])
+    chose_first = np.where(order > 0, a_louder, ~a_louder)
+    assert abs(chose_first.mean() - 0.5) < 0.08

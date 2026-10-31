@@ -107,7 +107,7 @@ class Session:
     def trials_for(self, ear: str) -> Trials:
         ts = [t for t in self.trials if t.ear == ear and not t.undone]
         return Trials([t.f_a for t in ts], [t.f_b for t in ts], [t.offset for t in ts],
-                      [t.a_louder for t in ts])
+                      [t.a_louder for t in ts], [1.0 if t.a_first else -1.0 for t in ts])
 
 
 class Profile:

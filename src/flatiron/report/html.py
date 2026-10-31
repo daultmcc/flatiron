@@ -84,7 +84,9 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
                    f'<img src="{light}" alt="{EAR_NAMES[e]} ear: measured level, residual and correction">'
                    f"</picture></div>")
-        out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB, lapse rate {f.lapse:.1%}. '
+        out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB, lapse rate {f.lapse:.1%}, '
+                   f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
+                   f"{'louder' if f.bias_db >= 0 else 'quieter'}; fitted, so it doesn't distort the curve). "
                    f"Filter fit: χ² per point {c.fit.chi2:.2f}"
                    + (f"; {c.sessions_checked} sessions in the reseat check" if c.sessions_checked
                       else "; reseat consistency not checked (needs two sessions with "

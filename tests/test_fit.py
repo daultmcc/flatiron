@@ -128,10 +128,13 @@ def test_preamp():
 
 
 def test_taper():
-    f = np.array([800, 1000, 1150, 5000, 12500, 14000, 16000.0])
-    w = taper(f, 1000, 14000, 1 / 3)
-    assert w[0] == 0 and w[1] == 0 and w[-1] == 0 and w[-2] == 0
-    assert w[3] == 1 and 0 < w[2] < 1 and 0 < w[4] < 1
+    f = np.array([700, 900, 1000, 5000, 13000, 14000, 16500.0])
+    w = taper(f, 1000, 13000, 1 / 3, 1 / 3)
+    assert w[0] == 0 and w[-1] == 0  # beyond the fade
+    assert w[2] == 1 and w[3] == 1 and w[4] == 1  # full correction across [f_lo, f_hi]
+    assert 0 < w[1] < 1 and 0 < w[5] < 1
+    hard = taper(f, 1000, 13000, 0, 0)
+    assert hard.tolist() == [0, 0, 1, 1, 1, 0, 0]
 
 
 # -- end to end ------------------------------------------------------------
@@ -152,7 +155,7 @@ def simulated():
 def test_ear_matching_the_reference_gets_no_correction(simulated):
     lis, fit = simulated["null"]
     c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False))
-    assert np.max(np.abs(response(c.filters, c.freqs))) < 1.0
+    assert np.max(np.abs(response(c.filters, c.freqs))) < 1.5  # FALSE_DB: the agreed 1.5 dB tolerance
 
 
 def test_design_features_are_corrected_in_the_right_direction(simulated):
