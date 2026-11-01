@@ -62,7 +62,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     st = corr.settings
     label = profile.read()["label"]
     now = datetime.now()
-    path = path or profile.dir / "report.html"  # the latest fit; overwritten each time
+    path = path or profile.dir / "cache" / "report.html"  # overwritten each time
     path.parent.mkdir(parents=True, exist_ok=True)
 
     notes = []
@@ -100,7 +100,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
             comp = {id(x) for x in c.compensation}
             kept = {id(x) for x in c.fixed}
             rows = [(f"{flt.fc:,.0f}", f"{flt.gain_db:+.1f}", f"{flt.q:.2f}",
-                     "kept from before" if id(flt) in kept else
+                     "checkpoint" if id(flt) in kept else
                      "tonality compensation" if id(flt) in comp else f"{ctb:.2f}")
                     for flt, ctb in zip(c.filters, c.fit.contributions)]
             out.append(_table(["Fc (Hz)", "gain (dB)", "Q", "χ² if removed"], rows, (0, 1, 2)))

@@ -69,7 +69,7 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
     xr = g[-1]
     m = interp_matrix(g, c.freqs)
     R_f, sd_f = m @ c.R, c.sd
-    H = response(c.added, c.freqs)  # incremental fits: R already includes the kept filters
+    H = response(c.added, c.freqs)  # with a checkpoint, R already includes its filters
 
     ax = axes[0]
     _style(ax, t, g[0], g[-1])
@@ -98,7 +98,7 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
         _label_end(ax, c.freqs[-1], y, text, col, t, dy=(k - 1) * span * 0.12)
     for f0 in (f_lo, f_hi):
         ax.axvline(f0, color=t["axis"], linewidth=0.8)
-    ax.set_title(("Residual with the current correction (±1 SD), added filters and predicted result"
+    ax.set_title(("Residual with the checkpoint filters (±1 SD), added filters and predicted result"
                   if c.fixed else "Residual (±1 SD), correction and predicted result")
                  + " · shaded: corrected features", color=t["ink"], fontsize=10, loc="left")
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)

@@ -87,6 +87,7 @@ class TrialRunner:
             stimulus=asdict(settings.stimulus), level_dbfs=self.level_dbfs,
             gap_s=settings.gap_s, seed=self.seed, scheduler=asdict(config),
             preview=settings.preview.to_json() if settings.preview is not None else None)
+        self._apply_tone_marks()
         self._save()
 
     # -- setup steps -------------------------------------------------------
@@ -109,6 +110,31 @@ class TrialRunner:
                 self.scheduler.seed_grid(ear, new)
         self._save()
         return added
+
+    def _apply_tone_marks(self) -> None:
+        """Refine the grids around tone-generator marks no session has used
+        yet (a mark whose session was deleted, e.g. left before any trials,
+        counts as unused)."""
+        marks = self.profile.marks()
+        existing = {s.id for s in self.profile.sessions()}
+        pending = [m for m in marks if m.get("session") not in existing]
+        if not pending:
+            return
+        for e in EARS:
+            fs = [m["freq"] for m in pending if e in m["ear"]]
+            if fs:
+                old = self.scheduler.ears[e].grid
+                new = refine_around(old, fs)
+                if new.size > old.size:
+                    self.scheduler.seed_grid(e, new)
+        for m in pending:
+            m["session"] = self.session.id
+        self.session.tone_marks = pending
+        self.profile.update(marks=marks)
+
+    def set_sweep_eq(self, fit_hash: str | None) -> None:
+        self.session.sweep_eq = fit_hash
+        self._save()
 
     # -- trials ------------------------------------------------------------
 

@@ -14,7 +14,7 @@ from flatiron import FS
 from flatiron.audio.stimulus import raised_cosine_gate
 
 F_LO, F_HI = 1000.0, 14_000.0
-DURATION_S = 40.0  # each direction
+DURATION_S = 30.0  # each direction (40 s was slow enough to blur peaks)
 GAP_S = 1.0
 TONES = 9
 SPREAD_OCT = 1 / 24  # tones spread over ±this around the sweep frequency

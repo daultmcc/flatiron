@@ -2,7 +2,7 @@
 
 profiles/<slug>/profile.json
 profiles/<slug>/sessions/<timestamp>.json   every trial, written after each one
-profiles/<slug>/report.html                 the latest fit's report
+profiles/<slug>/cache/                      perceptual fits, the last HTML report
 """
 
 import json
@@ -91,6 +91,8 @@ class Session:
     level_changes: list = field(default_factory=list)  # {after_trial, from, to, at}
     preview: dict | None = None  # verify sessions: the correction applied to every burst (PreviewEQ JSON)
     sweep_marks: dict = field(default_factory=dict)  # ear -> list of {freq, kind}
+    sweep_eq: str | None = None  # fit hash of the correction applied during the sweep (it can be toggled)
+    tone_marks: list = field(default_factory=list)  # tone-generator marks this session's grid was refined around
     trials: list[TrialRecord] = field(default_factory=list)
     ended: str | None = None
     version: int = FORMAT_VERSION
@@ -124,7 +126,7 @@ class Profile:
         p = cls(slugify(label), root)
         if not p.path.exists():
             write_json(p.path, {"label": label, "slug": p.slug, "created": now_iso(),
-                                "fit": None, "version": FORMAT_VERSION})
+                                "version": FORMAT_VERSION})
         return p
 
     @classmethod
@@ -153,7 +155,26 @@ class Profile:
     def update(self, **kw) -> None:
         d = self.read()
         d.update(kw)
+        d.pop("fit", None)  # saved by the old `fit` command; fits are computed on demand now
         write_json(self.path, d)
+
+    def marks(self) -> list[dict]:
+        """Frequencies marked in the tone generator: {ear, freq, kind,
+        stimulus, at, session}. `session` is the trial session whose grid
+        was refined around the mark (None until one starts)."""
+        return self.read().get("marks", [])
+
+    def add_mark(self, ear: str, freq: float, kind: str, stimulus: str) -> None:
+        self.update(marks=self.marks() + [{"ear": ear, "freq": float(freq), "kind": kind,
+                                           "stimulus": stimulus, "at": now_iso(), "session": None}])
+
+    def remove_last_mark(self) -> dict | None:
+        m = self.marks()
+        if not m:
+            return None
+        last = m.pop()
+        self.update(marks=m)
+        return last
 
     def new_session(self, **kw) -> Session:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

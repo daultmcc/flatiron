@@ -18,19 +18,24 @@ uv run flatiron run -p "HD 600" --sweep          # first session: coarse sweep, 
 uv run flatiron run                              # later sessions (-p can go when there's one profile)
 uv run flatiron sessions                         # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --delete <id>           # e.g. a session left open by a crash
-uv run flatiron fit --open                       # filters per ear; opens report.html
-uv run flatiron audition                         # the saved fit on/off: pink noise, sweep, or --source song.wav
+uv run flatiron report -H                        # the current fit's filters; -H opens the HTML report
+uv run flatiron config                           # show the profile's fit settings
+uv run flatiron config --broad -s 50            # change them (every fit uses them from now on)
+uv run flatiron audition                         # the fit on/off: pink noise, sweep, or --source song.wav
+uv run flatiron config --checkpoint              # fix the current filters; later fits only add to them
 uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
-uv run flatiron fit --increment                  # keep the filters, add ones for what verify found
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire; -m preset.txt
-uv run flatiron probe                            # hunt by hand: a band at a chosen freq/ear
+uv run flatiron tone -p "HD 600"                 # tone generator: glide by hand, mark peaks and dips
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run pytest
 ```
 
 `run` options: `--device N`, `--minutes` (at most 15), `--stimulus noise|warble|tone`,
 `--bands-per-octave 12|24`, `--active-eq preset.txt` (system EQ in effect while
-measuring, as Equalizer APO / AutoEQ text), `--dry-run` (no audio).
+measuring, as Equalizer APO / AutoEQ text), `--dry-run` (no audio), `--sweep`
+(tap at peaks and dips in a slow sweep first; once there's a fit, the sweep
+plays through it, Q toggling it, so you hear what it hasn't fixed),
+`--sweep-seconds` (each way, default 30).
 
 Leave the system volume at your usual listening level. Each session opens on a
 level screen (starting from the last session's level) where Flatiron's own
@@ -43,15 +48,30 @@ a warning; changes are logged), Q = save and quit, X = discard the session
 `~/.local/share/flatiron/profiles/<headphone>/sessions/` (macOS:
 `~/Library/Application Support/flatiron/`).
 
-`fit` options (all usable without new listening; the perceptual fit is
-cached): `--width` (max feature width W, octaves), `--reference iso226|diffuse|none|file.csv`,
-`--strength` (broad features, %), `--k`, `--k-broad`, `--bands`, `--boost-narrow`,
-`--boost-broad`, `--max-cut`, `--f-lo`, `--f-hi`, `--sessions`, `--no-consistency`.
-The design's default diffuse-field reference needs the ISO 389-7 table, which
-isn't sourced yet, so `iso226` (free field) is the default for now.
+There's no separate fit step: `report`, `export`, `audition`, `verify` and the
+sweep compute the fit when they need it, from all the profile's trials and its
+settings (the perceptual fit is cached, so this takes a few seconds only after
+new trials). `config` settings: `--width` (max feature width W, octaves),
+`--reference iso226|diffuse|none|file.csv`, `--broad` (also correct broad
+features toward the fixed target; by default only narrow features are corrected
+and the original broad shape is kept, leaving broad tonal changes to you),
+`-s/--broad-strength` (how much of each broad feature, %; needs `--broad`), `--k`, `--k-broad`, `--bands`, `--boost-narrow`,
+`--boost-broad`, `--max-cut`, `--f-lo`, `--f-hi`, `--no-consistency`,
+`--sessions id,id|all`; `--reset [name ...]` returns settings to the defaults.
+`--checkpoint` fixes the current filters: later fits keep them, whatever the
+settings, and only add filters (within `--bands`) for what's still
+significant, e.g. after `verify`. `--reset-checkpoint` drops it. The design's
+default diffuse-field reference needs the ISO 389-7 table, which isn't sourced
+yet, so `iso226` (free field) is the default for now.
 
-`export` uses the last `fit` (its filters are saved in the profile), so refit
-with different settings before exporting if you want them. LSP exports use filter mode
+`tone` keys: ←/→ frequency (a tap steps; holding glides, speeding up the longer
+it's held), ↑/↓ glide speed, G go to a frequency, E ear (left/right/both), S
+stimulus (pure tone, warble, 1/24, 1/12 and 1/3-octave noise), +/− level, Q
+correction on/off (with `-p`), P/D mark a peak/dip, U undo the last mark, Space
+pause, Esc quit. Marks are saved in the profile; the next `run` session
+refines its frequency grid around them.
+
+LSP exports use filter mode
 "APO (DR)", which matches Flatiron's filters exactly; when LSP's LADSPA build is
 installed, every LSP export is checked against the real plugin before it's
 written. `--merge` puts an Equalizer APO / AutoEQ preset (your preference EQ)
@@ -63,6 +83,6 @@ PipeWire (virtual sink and source; nothing plays on your devices).
 
 Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
 (grid, probit fit, refinement), `session/` (scheduler, runner, storage,
-sweep), `ui/` (Textual app), `fit/` (reference, baseline, features, filters,
+sweep), `ui/` (Textual apps: trials, audition, tone generator), `fit/` (reference, baseline, features, filters,
 pipeline), `export/` (APO text, LSP, LADSPA truth check), `report/` (figures, HTML), `sim/` (simulated listener, designs,
 validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).

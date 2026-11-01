@@ -10,7 +10,7 @@ from flatiron.ui.app import ChannelCheckScreen, FlatironApp, SessionEndScreen, S
 CFG = SchedulerConfig(block_size=20, min_trials_noise_fit=10_000)
 
 
-def make_app(tmp_path, sweep=False, minutes=12.0):
+def make_app(tmp_path, sweep=False, minutes=12.0, sweep_eq=None):
     prof = Profile.open("ui test", root=tmp_path)
     settings = RunSettings(session_minutes=minutes)
     runners = []
@@ -19,7 +19,8 @@ def make_app(tmp_path, sweep=False, minutes=12.0):
         runners.append(TrialRunner(prof, settings, config=CFG, seed=len(runners)))
         return runners[-1]
 
-    app = FlatironApp(make, NullPlayer(), sweep=sweep, sweep_timing=SweepTiming(duration=2.0, gap=0.2))
+    app = FlatironApp(make, NullPlayer(), sweep=sweep, sweep_timing=SweepTiming(duration=2.0, gap=0.2),
+                      sweep_eq=sweep_eq)
     return app, runners, prof
 
 
@@ -155,6 +156,35 @@ async def test_sweep_taps_become_marks(tmp_path):
         await wait_for(pilot, lambda: isinstance(app.screen, TrialScreen), 5)
     marks = runners[0].session.sweep_marks
     assert set(marks) == {"L", "R"} and all(len(m) == 1 and m[0]["kind"] == "dip" for m in marks.values())
+
+
+async def test_sweep_through_the_correction_toggles_it(tmp_path):
+    from flatiron.apo import ApoFilter
+    from flatiron.audio.preview import PreviewEQ
+
+    eq = PreviewEQ({"L": [ApoFilter("PK", 1500, -10, 2)], "R": [ApoFilter("PK", 1500, -10, 2)]}, -1.0, "fh")
+    app, runners, _ = make_app(tmp_path, sweep=True, sweep_eq=eq)
+    async with app.run_test() as pilot:
+        await pass_channel_check(app, pilot)
+        scr = app.screen
+        assert isinstance(scr, SweepScreen) and scr.eq_on
+        n = len(app.player.played)
+        await pilot.press("enter")
+        await pilot.pause()
+        on = app.player.played[n]
+        await pilot.press("q")
+        await pilot.pause()
+        off = app.player.played[n + 1]
+        assert on.shape == off.shape and not scr.eq_on
+        # Same scaling both ways: only the EQ differs. The cut at 1.5 kHz is
+        # early in the up pass; late in it, the two match.
+        k = slice(int(0.25 * scr.runner.fs), int(0.5 * scr.runner.fs))
+        rms = lambda x: np.sqrt(np.mean(x[k, 0] ** 2))
+        assert rms(on) < rms(off) * 0.5
+        k = slice(int(1.6 * scr.runner.fs), int(1.9 * scr.runner.fs))
+        assert abs(20 * np.log10(rms(on) / rms(off))) < 0.5
+        await pilot.press("escape")
+    assert runners[0].session.sweep_eq == "fh"
 
 
 async def test_replay_does_not_reset_reaction_time(tmp_path):

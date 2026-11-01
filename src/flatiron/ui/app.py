@@ -218,19 +218,27 @@ class ChannelCheckScreen(MessageScreen):
 
 
 class SweepScreen(MessageScreen):
-    """Phase 0: slow sweep per ear; tap at peaks and dips."""
+    """Phase 0: slow sweep per ear; tap at peaks and dips.
+
+    With `eq` (the profile's current correction), the sweep plays through it,
+    so what stands out is what the correction hasn't fixed; Q toggles it.
+    """
 
     BINDINGS = [
         Binding("enter", "begin", "Start"),
         Binding("up,p", "tap('peak')", "Peak (louder)"),
         Binding("down,d", "tap('dip')", "Dip (quieter)"),
+        Binding("q", "toggle_eq", "Correction on/off"),
         Binding("escape", "skip", "Skip sweep"),
     ]
 
-    def __init__(self, runner: TrialRunner, timing: SweepTiming = SweepTiming()):
+    def __init__(self, runner: TrialRunner, timing: SweepTiming = SweepTiming(), eq=None):
         super().__init__()
         self.runner = runner
         self.timing = timing
+        self.eq = eq
+        self.eq_on = eq is not None
+        self.buffers: dict[bool, np.ndarray] = {}
         self.ears = list(EARS)
         self.playing = False
         self.t0 = 0.0
@@ -239,23 +247,51 @@ class SweepScreen(MessageScreen):
         self.results: dict[str, int] = {}
 
     def on_mount(self):
+        if self.eq is not None:
+            self.runner.set_sweep_eq(self.eq.fit_hash)
         self.intro()
+
+    def eq_state(self) -> str:
+        if self.eq is None:
+            return ""
+        return f"Correction {'ON' if self.eq_on else 'OFF'} (Q switches)"
 
     def intro(self):
         ear = self.ears[0]
+        eq = ("\nYour current correction is applied, so what stands out is what it hasn't fixed. "
+              "Q turns it off and on." if self.eq is not None else "")
         self.say(f"Sweep: {EAR_NAMES[ear]} ear",
                  "A slow narrowband sweep plays from 1 to 14 kHz, then back down.\n"
                  "Tap ↑ (or P) whenever it gets suddenly louder, ↓ (or D) when it gets quieter.\n"
-                 "Tap on the way down too: averaging the two cancels your reaction time.",
+                 "Tap on the way down too: averaging the two cancels your reaction time." + eq,
                  "Enter: start   Esc: skip the sweep")
+
+    def render_buffers(self, ear: str) -> dict[bool, np.ndarray]:
+        """Plain and corrected versions, scaled alike (switching between them
+        changes only the EQ). The correction's preamp isn't applied: the level
+        screen set the level for the uncorrected sound."""
+        x = sweep_signal(self.timing, self.runner.fs, seed=self.runner.seed) * db_to_amp(self.runner.level_dbfs)
+        versions = {False: x}
+        if self.eq is not None:
+            versions[True] = self.eq.filter(x, ear, self.runner.fs)
+        gain = min(limit(v).gain_db for v in versions.values())
+        return {k: monaural(limit(v * db_to_amp(gain)).signal, ear) for k, v in versions.items()}
+
+    def action_toggle_eq(self):
+        if self.eq is None:
+            return
+        self.eq_on = not self.eq_on
+        if self.playing:
+            self.app.player.switch(self.buffers[self.eq_on])
+        else:
+            self.say(status=self.eq_state())
 
     def action_begin(self):
         if self.playing or not self.ears:
             return
         ear = self.ears[0]
-        x = sweep_signal(self.timing, self.runner.fs, seed=self.runner.seed)
-        res = limit(x * db_to_amp(self.runner.level_dbfs))
-        self.app.player.start(monaural(res.signal, ear))
+        self.buffers = self.render_buffers(ear)
+        self.app.player.start(self.buffers[self.eq_on])
         self.playing, self.taps = True, []
         self.t0 = time.monotonic() + self.app.player.latency
         self.timer = self.set_interval(0.25, self.tick)
@@ -268,7 +304,7 @@ class SweepScreen(MessageScreen):
         where = self.timing.freq_at(t)
         arrow = "▲ going up" if where and where[1] == "up" else "▼ coming down" if where else "…"
         self.say(message=f"{arrow}\n\n{int(t)} s of {int(self.timing.total)} s",
-                 status=f"{len(self.taps)} taps")
+                 status=f"{len(self.taps)} taps" + (f"   ·   {self.eq_state()}" if self.eq is not None else ""))
 
     def action_tap(self, kind: str):
         if self.playing:
@@ -570,8 +606,10 @@ class FlatironApp(App):
     ENABLE_COMMAND_PALETTE = False
 
     def __init__(self, make_runner: Callable[[], TrialRunner], player, sweep: bool = False,
-                 sweep_timing: SweepTiming = SweepTiming(), clock: Callable[[], float] = time.monotonic):
+                 sweep_timing: SweepTiming = SweepTiming(), clock: Callable[[], float] = time.monotonic,
+                 sweep_eq=None):
         super().__init__()
+        self.sweep_eq = sweep_eq
         self.make_runner = make_runner
         self.player = player
         self.do_sweep = sweep
@@ -597,7 +635,7 @@ class FlatironApp(App):
 
     def after_channel_check(self, ok):
         if self.do_sweep and self.sessions_run == 0:
-            self.push_screen(SweepScreen(self.runner, self.sweep_timing), lambda _: self.start_trials())
+            self.push_screen(SweepScreen(self.runner, self.sweep_timing, self.sweep_eq), lambda _: self.start_trials())
         else:
             self.start_trials()
 

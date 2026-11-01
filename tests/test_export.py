@@ -12,6 +12,15 @@ LSP_GOLDEN = FIXTURES / "lsp" / "para_equalizer_x32_lr-1.2.35.cfg"
 EE_GOLDEN = FIXTURES / "easyeffects" / "preset-split.json"
 
 
+def use_fit(monkeypatch, fit):
+    """Stand in for the profile's computed fit."""
+    from types import SimpleNamespace
+
+    import flatiron.cli as cli
+
+    monkeypatch.setattr(cli, "_current", lambda prof: SimpleNamespace(summary=lambda: fit))
+
+
 def fit_entry(left, right, preamp=-0.5):
     return {"preamp_db": preamp, "ears": {
         "L": {"filters": [{"fc": a, "gain_db": b, "q": c} for a, b, c in left]},
@@ -76,9 +85,9 @@ def test_export_cli(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.chdir(tmp_path)
     prof = Profile.open("HD 600")
-    assert main(["export", "-t", "apo"]) == 1  # the only profile, but no fit yet
-    assert "flatiron fit" in capsys.readouterr().out
-    prof.update(fit=fit_entry([(6150, -4.2, 6.5)], [(7020, -3.1, 8.0)], -0.5))
+    assert main(["export", "-t", "apo"]) == 1  # the only profile, but no trials to fit yet
+    assert "Can't fit 'HD 600' yet" in capsys.readouterr().out
+    use_fit(monkeypatch, fit_entry([(6150, -4.2, 6.5)], [(7020, -3.1, 8.0)], -0.5))
     # -o names the file; APO gets one per channel.
     capsys.readouterr()
     assert main(["export", "-t", "lsp", "-o", "out/hd600.cfg"]) == 1  # no such folder: say so, don't create it
@@ -188,7 +197,8 @@ def test_export_preamp_override(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.chdir(tmp_path)
-    Profile.open("HD 600").update(fit=fit_entry([(6150, -4.2, 6.5), (9000, 3, 4)], [(7020, -3.1, 8.0)], -3.5))
+    Profile.open("HD 600")
+    use_fit(monkeypatch, fit_entry([(6150, -4.2, 6.5), (9000, 3, 4)], [(7020, -3.1, 8.0)], -3.5))
     assert main(["export", "-t", "apo", "-o", "safe"]) == 0
     assert (tmp_path / "safe_L.txt").read_text().startswith("Preamp: -3.50 dB")
     capsys.readouterr()

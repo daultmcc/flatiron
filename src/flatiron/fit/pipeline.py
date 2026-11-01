@@ -43,10 +43,12 @@ class CorrectionSettings:
     stop_z: float = 2.0  # filter fit stops when no point is off by more than this many SDs
     consistency: bool = True
     consistency_p: float = 0.01
-    # Keep the broad shape of the original response: correct narrow features
-    # only, then add broad compensation so the correction's own average over
-    # about max_width_oct (W) is zero. Broad tonal changes are left to the user.
-    preserve_tonality: bool = False
+    # Keep the broad shape of the original response (the default): correct
+    # narrow features only, then add broad compensation so the correction's own
+    # average over about max_width_oct (W) is zero. Broad tonal changes are left
+    # to the user. False: correct to the fixed target, broad features included
+    # (scaled by broad_strength).
+    preserve_tonality: bool = True
 
     def __post_init__(self):
         if not 1 / 3 - 1e-9 <= self.max_width_oct <= 2 + 1e-9:
@@ -164,7 +166,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         for f in feats:
             if f.accepted and f.kind == BROAD:
                 f.accepted = False
-                f.reason = "left as tonality (--preserve-tonality)"
+                f.reason = "broad: kept as tonality (correct it with --broad)"
         ff, comp = add_tonality_compensation(ff, freqs, settings, w_lo, w_hi, len(fixed))
     if fixed:
         contrib = dict(zip(map(id, ff.filters), ff.contributions))

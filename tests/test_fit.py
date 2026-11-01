@@ -154,7 +154,7 @@ def simulated():
 
 def test_ear_matching_the_reference_gets_no_correction(simulated):
     lis, fit = simulated["null"]
-    c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False))
+    c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
     assert np.max(np.abs(response(c.filters, c.freqs))) < 1.5  # FALSE_DB: the agreed 1.5 dB tolerance
 
 
@@ -162,7 +162,7 @@ def test_design_features_are_corrected_in_the_right_direction(simulated):
     from flatiron.sim.validate import validate
 
     lis, fit = simulated["design"]
-    c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False))
+    c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
     v = validate(lis.ears["L"], c)
     # Every feature gets a correction of the right sign near the right place;
     # the strict DESIGN.md criteria (1/24 octave, 1 dB) aren't met yet.
@@ -172,7 +172,7 @@ def test_design_features_are_corrected_in_the_right_direction(simulated):
     assert v.worst_false_db < 1.5
 
 
-def test_fit_cli_writes_profile_and_report(tmp_path, monkeypatch, capsys):
+def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     from flatiron.cli import main
     from flatiron.session.scheduler import SchedulerConfig
     from flatiron.session.store import Profile
@@ -186,28 +186,73 @@ def test_fit_cli_writes_profile_and_report(tmp_path, monkeypatch, capsys):
                      config=SchedulerConfig(min_trials_noise_fit=10_000))
     opened = []
     monkeypatch.setattr("webbrowser.open", opened.append)
-    assert main(["fit", "--open"]) == 0  # the only profile
+    assert main(["report", "-H"]) == 0  # the only profile; the fit is computed on demand
     out = capsys.readouterr().out
-    assert "L ear: 160 trials" in out and "preamp" in out
-    report = prof.dir / "report.html"
+    assert "Fitting the new trials" in out and "L ear: 160 trials" in out and "preamp" in out
+    report = prof.dir / "cache" / "report.html"
     assert opened == [report.as_uri()]
     html = report.read_text()
     assert html.count("<picture>") == 2 and "Left ear" in html and "Settings" in html
-    saved = prof.read()["fit"]
-    assert set(saved["ears"]) == {"L", "R"} and len(saved["sessions"]) == 2
-    # The perceptual fits are cached: a refit with other settings doesn't redo them.
+    assert main(["report"]) == 0 and len(opened) == 1  # no -H: text only
+    assert "Fitting" not in capsys.readouterr().out  # cached
+
+    # Settings live in the profile; only changes from the defaults are stored.
+    assert main(["config", "-s", "50"]) == 1  # broad strength needs broad correction
+    assert "add --broad" in capsys.readouterr().out and "settings" not in prof.read()
+    assert main(["config", "-w", "0.5", "--broad", "-s", "50"]) == 0
+    out = capsys.readouterr().out
+    assert "width: 1 -> 0.5" in out and "broad-strength: 100 -> 50" in out and "broad: off -> on" in out
+    assert prof.read()["settings"] == {"max_width_oct": 0.5, "broad_strength": 0.5, "preserve_tonality": False}
+    assert main(["config", "-s", "60"]) == 0  # broad is already on
+    assert main(["config"]) == 0
+    out = capsys.readouterr().out
+    assert "* width" in out and "(default 1)" in out and "  bands" in out and "checkpoint: none" in out
+    assert "unused" not in out
+    assert main(["config", "--reset", "width"]) == 0
+    assert "max_width_oct" not in prof.read()["settings"]
+    assert main(["config", "--reset", "nonsense"]) == 1
+    assert main(["config", "-w", "5"]) == 1  # invalid: nothing saved
+    assert main(["config", "-r", "no-such.csv"]) == 1
+    assert prof.read()["settings"] == {"broad_strength": 0.6, "preserve_tonality": False}
+    assert main(["config", "--no-broad"]) == 0
+    capsys.readouterr()
+    assert main(["config"]) == 0 and "(unused without --broad)" in capsys.readouterr().out
+    assert main(["config", "--reset", "broad-strength"]) == 0
+    assert prof.read()["settings"] == {}
+    capsys.readouterr()
+
+    # Changing settings doesn't redo the perceptual fits.
     import flatiron.fit.run as run_mod
 
     monkeypatch.setattr(run_mod, "fit_probit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
-    assert main(["fit", "--profile", "Sim", "--width", "0.5", "--no-report"]) == 0
-    assert json.loads(prof.path.read_text())["fit"]["settings"]["max_width_oct"] == 0.5
+    assert main(["config", "-b", "2"]) == 0
+    assert main(["report"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("PK ") <= 4
+
+    # A checkpoint fixes the current filters; later settings only add to them.
+    assert main(["config", "--checkpoint"]) == 0
+    fixed = run_mod.checkpoint(prof)
+    assert main(["config", "-b", "6"]) == 0
+    pf = run_mod.current_fit(prof)
+    for e, c in pf.correction.ears.items():
+        assert c.fixed == fixed[e] and all(f in c.filters for f in fixed[e])
+    assert main(["config", "--reset-checkpoint"]) == 0 and run_mod.checkpoint(prof) is None
+
+    ids = [s.id for s in prof.sessions()]
+    assert main(["config", "--sessions", "nope"]) == 1
+    monkeypatch.undo()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert main(["config", "--sessions", ids[0]]) == 0
+    assert run_mod.current_fit(prof).fits["L"].n_trials == 80
+    assert main(["config", "--sessions", "all"]) == 0 and run_mod.profile_session_ids(prof) is None
 
 
 def test_preserve_tonality_keeps_the_broad_shape(simulated):
     from flatiron.fit.pipeline import smooth_log
 
     lis, fit = simulated["design"]
-    plain = correct_ear("L", fit, CorrectionSettings(broad_strength=0, consistency=False))
+    plain = correct_ear("L", fit, CorrectionSettings(broad_strength=0, consistency=False, preserve_tonality=False))
     kept = correct_ear("L", fit, CorrectionSettings(preserve_tonality=True, consistency=False))
     f = kept.freqs
     w = taper(f, 1000, 13000, 0.234, 0.206)

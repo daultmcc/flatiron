@@ -125,11 +125,13 @@ class StreamPlayer:
 
     `latency` is the stream's output latency (s), so the UI can line panel
     lights and reaction times up with what the listener actually hears.
+    `source` replaces the buffer mixer with anything that has render(frames)
+    and stop() (the tone generator's synth).
     """
 
-    def __init__(self, device=None, fs: int = FS):
+    def __init__(self, device=None, fs: int = FS, source=None):
         self.fs = fs
-        self.mixer = Mixer(fs=fs)
+        self.mixer = source if source is not None else Mixer(fs=fs)
         self.lock = threading.Lock()
         self.stream = sd().OutputStream(samplerate=fs, channels=2, dtype="float32", device=device,
                                         latency="low", callback=self._callback)
