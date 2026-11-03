@@ -214,18 +214,23 @@ class Scheduler:
         st.since_refit += 1
         st.since_block += 1
         if st.since_block >= self.cfg.block_size:
-            self._end_block(plan.ear)
+            # Every ear's block ends together: ears alternate, so ending only
+            # this one would put the other's (slow) block-end refit on the very
+            # next trial, a second pause in a row.
+            for e, other in self.ears.items():
+                if other.since_block:
+                    self._end_block(e)
         elif st.since_refit >= self.cfg.refit_every and self.cfg.adaptive:
             st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit, fit_hyper=False)
             st.since_refit = 0
 
     def _end_block(self, ear: str) -> None:
         st = self.ears[ear]
-        st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit,
-                            fit_hyper=len(st.f_a) >= self.cfg.min_trials_noise_fit)
         st.since_refit = st.since_block = 0
         if not self.cfg.adaptive:
-            return
+            return  # uniform pairs use no fit and no refinement (final_fit fits at the end)
+        st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit,
+                            fit_hyper=len(st.f_a) >= self.cfg.min_trials_noise_fit)
         new = refine_grid(st.fit, self.cfg.refine_k, self.cfg.min_step_oct)
         if new.size > st.grid.size:
             self.refinements.append((ear, len(st.f_a), new.size - st.grid.size))

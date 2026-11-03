@@ -50,16 +50,20 @@ def verified(tmp_path_factory):
     """A profile with an incomplete (1-band) correction and a verify session."""
     from flatiron.fit.pipeline import CorrectionSettings
     from flatiron.fit.run import current_fit, set_checkpoint, set_profile_settings
+    from flatiron.session.scheduler import SchedulerConfig
     from flatiron.sim.listener import design_example
     from flatiron.sim.profile import simulate_profile
 
     prof = Profile.open("sim", root=tmp_path_factory.mktemp("v"))
     truth = {e: design_example(e) for e in "LR"}
-    simulate_profile(prof, truth, sessions=3, trials_per_ear=200, seed=3)
+    # These tests are about leftovers and checkpoints, not the scheduler: it
+    # refits every 10 answers and keeps the noise at the prior, much quicker.
+    quick = SchedulerConfig(refit_every=10, min_trials_noise_fit=10_000)
+    simulate_profile(prof, truth, sessions=3, trials_per_ear=200, seed=3, config=quick)
     set_profile_settings(prof, CorrectionSettings(bands=1, preserve_tonality=False))
     pf = current_fit(prof)
     set_checkpoint(prof, pf)
-    simulate_profile(prof, truth, sessions=1, trials_per_ear=75, seed=4,
+    simulate_profile(prof, truth, sessions=1, trials_per_ear=75, seed=4, config=quick,
                      preview=PreviewEQ.from_fit(pf.summary()))
     return prof
 
@@ -84,7 +88,11 @@ def test_checkpoint_keeps_the_filters_and_adds_new_ones(verified):
     for e, c in pf.correction.ears.items():
         assert c.fixed == before[e] and all(f in c.filters for f in before[e])
         assert len(c.added) >= 1 and len(c.filters) <= 8
-        assert any(abs(np.log2(f.fc / 8400 * (1 if e == "L" else 2 ** (-1 / 12)))) < 1 / 12 for f in c.added)
+        # The design's 6.2 kHz peak and 8.4 kHz dip (1/12 octave higher on the
+        # right): whichever the 1-band checkpoint didn't take gets a filter now.
+        near = lambda fs, f0: any(abs(np.log2(f.fc / (f0 * (1 if e == "L" else 2 ** (1 / 12))))) < 1 / 12 for f in fs)
+        missed = [f0 for f0 in (6200, 8400) if not near(before[e], f0)]
+        assert missed and all(near(c.added, f0) for f0 in missed)
 
 
 def test_commands_that_need_a_fit_need_trials(tmp_path, monkeypatch, capsys):

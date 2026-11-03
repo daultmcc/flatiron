@@ -126,7 +126,7 @@ def build_target(features, R, settings: CorrectionSettings) -> np.ndarray:
     for f in features:
         if not f.accepted:
             continue
-        seg = -(R[f.span] if f.residual is None else f.residual)
+        seg = -(R[f.span] if f.residual is None else f.residual) * f.scale
         if f.kind == BROAD:
             if settings.preserve_tonality:
                 continue
@@ -359,7 +359,8 @@ class Correction:
                 "features": [
                     {"fc": f.fc, "kind": f.kind, "peak_db": f.peak_db, "width_oct": f.width_oct,
                      "z": f.z, "accepted": f.accepted, "reason": f.reason,
-                     "consistency_p": f.consistency_p, "inside_broad": f.inside_broad}
+                     "consistency_p": f.consistency_p, "inside_broad": f.inside_broad,
+                     "scale": f.scale}
                     for f in c.features],
             }
         return out

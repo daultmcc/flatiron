@@ -27,7 +27,7 @@ uv run flatiron verify                           # ~150 trials with the correcti
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; -m preset.txt
 uv run flatiron tone -p "HD 600"                 # tone generator: glide by hand, mark peaks and dips
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
-uv run pytest
+uv run pytest                                    # in parallel (pytest-xdist); -n0 for one process
 ```
 
 `run` options: `--device N`, `--minutes` (at most 15), `--stimulus noise|warble|tone`,

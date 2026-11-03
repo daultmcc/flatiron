@@ -10,9 +10,12 @@ if its mean exceeds k_broad times the SD of that mean. (A broad lobe is never
 re-tested point by point: its errors are correlated, so a pointwise test would
 pass the top of a hump whose mean isn't significant.)
 
-Kept features can then be checked across reseat sessions: a feature whose
+Kept features can then be checked across reseat sessions. A feature whose
 per-session means disagree by more than their noise allows (Cochran's Q) is
-dropped as fit-dependent.
+fit-dependent: it's corrected only to the median session's level (weighted
+by precision), and dropped if that's under MIN_SCALE of the pooled level
+(most seatings show little of it). Dropping it outright threw away a 9 dB
+resonance that one seating in three didn't show.
 """
 
 from dataclasses import dataclass, field
@@ -21,6 +24,16 @@ import numpy as np
 from scipy.stats import chi2
 
 NARROW, BROAD = "narrow", "broad"
+MIN_SCALE = 0.2
+
+
+def weighted_median(values, weights) -> float:
+    """Midpoint rule: each value's weight is centred on it."""
+    v, w = np.asarray(values, float), np.asarray(weights, float)
+    order = np.argsort(v)
+    v, w = v[order], w[order]
+    cum = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return float(np.interp(0.5, cum, v))
 
 
 @dataclass
@@ -43,6 +56,7 @@ class Feature:
     residual: np.ndarray | None = None
     residual_sd: np.ndarray | None = None
     inside_broad: bool = False
+    scale: float = 1.0  # share of the residual corrected (below 1: inconsistent across reseats)
     run: int = -1  # which same-sign stretch of the residual it was split from
 
     def shifted(self, n: int) -> "Feature":
@@ -165,5 +179,12 @@ def check_consistency(features: list[Feature], grid, r, session_residuals, p_min
         f.consistency_p = float(chi2.sf(q, len(ms) - 1))
         f.session_means = [(float(a), float(b)) for a, b in ms]
         if f.consistency_p < p_min:
-            f.accepted = False
-            f.reason = f"inconsistent across reseats (p = {f.consistency_p:.3g})"
+            w = np.gradient(x)[lo:hi + 1]
+            level = float(w @ r[lo:hi + 1] / w.sum())  # the pooled residual over the same core
+            f.scale = float(np.clip(weighted_median(m, 1 / v) / level, 0, 1)) if level else 0.0
+            why = f"inconsistent across reseats (p = {f.consistency_p:.3g})"
+            if f.scale < MIN_SCALE:
+                f.accepted, f.scale = False, 0.0
+                f.reason = f"{why}: most sessions show little of it"
+            else:
+                f.reason = f"{why}: corrected to the median session's level, {f.scale:.0%}"

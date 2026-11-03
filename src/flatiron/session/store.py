@@ -21,6 +21,7 @@ from flatiron.model.probit import Trials
 from flatiron.paths import data_dir
 
 FORMAT_VERSION = 1
+fsync = os.fsync  # the tests swap in a no-op: their files are throwaway
 RESERVED = ("none",)  # profile names the CLI uses as keywords
 
 
@@ -42,7 +43,7 @@ def write_json(path: Path, obj) -> None:
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=1)
         f.flush()
-        os.fsync(f.fileno())
+        fsync(f.fileno())
     os.replace(tmp, path)
 
 

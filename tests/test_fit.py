@@ -96,6 +96,23 @@ def test_consistency_drops_features_that_move_between_sessions():
     nine = min(feats, key=lambda f: abs(f.fc - 9000))
     assert six.accepted and six.consistency_p > 0.05
     assert not nine.accepted and "inconsistent" in nine.reason
+    assert "show little of it" in nine.reason  # it's only where the pooled fit puts it in one session of three
+
+
+def test_a_feature_missing_from_one_seating_is_corrected_to_the_median_session():
+    sd = 0.3
+    cov = np.eye(G.size) * sd**2
+    pooled = bump(7000, 0.2, 8.0)
+    feats = find_features(G, pooled, cov)
+    sessions = [(bump(7000, 0.2, h), cov * 3) for h in (0.5, 6.0, 7.0)]
+    check_consistency(feats, G, pooled, sessions)
+    f = min(feats, key=lambda f: abs(f.fc - 7000))
+    assert f.accepted and "median session" in f.reason
+    assert 6.0 / 8.0 - 0.1 < f.scale < 6.0 / 8.0 + 0.1
+    from flatiron.fit.pipeline import build_target
+
+    c = build_target(feats, pooled, CorrectionSettings(max_cut_db=24))
+    assert c.min() == pytest.approx(-pooled.max() * f.scale)
 
 
 # -- filters ---------------------------------------------------------------
@@ -139,29 +156,38 @@ def test_taper():
 
 # -- end to end ------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def simulated():
+def _simulate(name):
     from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
     from flatiron.sim.run import run
 
-    out = {}
-    for name, truth in (("design", design_example()), ("null", EarTruth(tilt_db_per_oct=-1.0))):
-        lis = SimulatedListener({"L": truth}, seed=11)
-        _, fits = run(lis, 600, seed=3)
-        out[name] = (lis, fits["L"])
-    return out
+    truth = design_example() if name == "design" else EarTruth(tilt_db_per_oct=-1.0)
+    lis = SimulatedListener({"L": truth}, seed=11)
+    _, fits = run(lis, 600, seed=3)
+    return lis, fits["L"]
 
 
-def test_ear_matching_the_reference_gets_no_correction(simulated):
-    lis, fit = simulated["null"]
+# One fixture per listener, so tests needing different ones can run on
+# different workers.
+@pytest.fixture(scope="module")
+def sim_design():
+    return _simulate("design")
+
+
+@pytest.fixture(scope="module")
+def sim_null():
+    return _simulate("null")
+
+
+def test_ear_matching_the_reference_gets_no_correction(sim_null):
+    lis, fit = sim_null
     c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
     assert np.max(np.abs(response(c.filters, c.freqs))) < 1.5  # FALSE_DB: the agreed 1.5 dB tolerance
 
 
-def test_design_features_are_corrected_in_the_right_direction(simulated):
+def test_design_features_are_corrected_in_the_right_direction(sim_design):
     from flatiron.sim.validate import validate
 
-    lis, fit = simulated["design"]
+    lis, fit = sim_design
     c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
     v = validate(lis.ears["L"], c)
     # Every feature gets a correction of the right sign near the right place;
@@ -248,10 +274,10 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     assert main(["config", "--sessions", "all"]) == 0 and run_mod.profile_session_ids(prof) is None
 
 
-def test_preserve_tonality_keeps_the_broad_shape(simulated):
+def test_preserve_tonality_keeps_the_broad_shape(sim_design):
     from flatiron.fit.pipeline import smooth_log
 
-    lis, fit = simulated["design"]
+    lis, fit = sim_design
     plain = correct_ear("L", fit, CorrectionSettings(broad_strength=0, consistency=False, preserve_tonality=False))
     kept = correct_ear("L", fit, CorrectionSettings(preserve_tonality=True, consistency=False))
     f = kept.freqs

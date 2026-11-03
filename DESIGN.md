@@ -111,7 +111,7 @@ Two optional ways to tell the scheduler where to look:
 3. **Residual.** R = D − baseline, with its full covariance.
 4. **Features.** R is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. A lobe narrower than 1/2 octave at half height is *narrow*: it's kept if at least two adjacent points exceed k·SD (k = 2). A wider lobe is *broad*: it's kept if its mean exceeds k\_broad times the SD of that mean (k\_broad = 2.5). Features outside \[f\_lo, f\_hi\] are dropped.
    **Inside broad regions.** A broad lobe that isn't corrected as a whole (kept as tonality, the default, or not significant) can still carry narrow features. It's searched again: together with the same-sign pieces it was split from at a valley that stays clear of zero (beyond k SD), so the flank beside a narrow dip isn't taken for a feature of its own. The region's residual is taken against a Gaussian-weighted local linear smooth over the region alone (FWHM 1/2 octave; local linear, so it doesn't lag at the region's ends), and every lobe of that is given the narrow test. Features found this way are corrected against the local smooth, with its (smaller) error bars, and checked for consistency the same way.
-5. **Consistency.** With two or more sessions in the check (each with at least 60 trials in the ear), each kept feature's mean over its half-height core is compared across sessions (Cochran's Q). A feature with p < 0.01 is dropped as fit-dependent.
+5. **Consistency.** With two or more sessions in the check (each with at least 60 trials in the ear), each kept feature's mean over its half-height core is compared across sessions (Cochran's Q). A feature with p < 0.01 is fit-dependent: it's corrected only to the median session's level (the sessions weighted by precision), as a share of the pooled level, and dropped if that's under 20% (most seatings show little of it). Dropping every such feature outright threw away a 9 dB resonance that one seating in three didn't show.
 6. **Target.** C = −R over kept features, cuts limited to 12 dB. Boosts are capped at +4 dB for narrow features (often fit-dependent cancellations) and +6 dB for broad ones. With `--broad`, the broad part is scaled by the strength (0 to 100%, default 100%). Without it, broad features aren't in the target at all.
 7. **Taper.** C fades to 0 with a raised cosine over up to 1/3 octave beyond \[f\_lo, f\_hi\], limited by the measured margin.
 8. **Filters.** On a 1/96-octave grid, weighted by 1/SD: greedily place a peaking filter on the largest weighted error (Q from its half-height width), then refit all filters jointly with bounded least squares over (log Fc, gain, log Q). Bounds: Fc within \[f\_lo, f\_hi\], Q 0.7 to 16, |gain| ≤ 12 dB. Stop when no point is off by more than 2 SD, or the band budget (default 20 per channel, at most 32) is used up. Filters under 0.5 dB are dropped and the rest refitted. If the budget binds, the frequency ranges still off by more than k SD are reported.
@@ -194,7 +194,7 @@ By default files are written to the current directory, named `<profile>-<fit has
 
 ## Architecture
 
-A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It's intended to run unchanged on Linux and macOS.
+A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It's intended to run unchanged on Linux and macOS. Its matrices are small (a few hundred rows), so it limits BLAS to one thread before numpy loads: threading made fits about 8× slower on a 16-core machine.
 
 | Concern | Choice |
 | --- | --- |
@@ -202,7 +202,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 | DSP and fitting | `numpy`, `scipy` |
 | UI | `textual` |
 | Report | `matplotlib` figures embedded in a static HTML page |
-| Tests | `pytest` |
+| Tests | `pytest` with `pytest-xdist` (parallel by default; `-n0` for one process) |
 
 ### Modules
 

@@ -75,14 +75,15 @@ def test_refinement_adds_midpoints_only_at_bends():
                                          np.ones(fine.size - 1)), fine), k=0).size == fine.size
 
 
+def _run_design(adaptive: bool):
+    lis = SimulatedListener({"L": design_example()}, seed=100)
+    sch, fits = run(lis, 600, SchedulerConfig(adaptive=adaptive), seed=0)
+    return fits["L"], score(lis, "L", fits["L"]), sch
+
+
 @pytest.fixture(scope="module")
 def adaptive_vs_uniform():
-    out = {}
-    for name, cfg in [("adaptive", SchedulerConfig()), ("uniform", SchedulerConfig(adaptive=False))]:
-        lis = SimulatedListener({"L": design_example()}, seed=100)
-        sch, fits = run(lis, 600, cfg, seed=0)
-        out[name] = (fits["L"], score(lis, "L", fits["L"]), sch)
-    return out
+    return {"adaptive": _run_design(True), "uniform": _run_design(False)}
 
 
 def test_adaptive_recovers_noise_and_curve(adaptive_vs_uniform):
@@ -112,3 +113,18 @@ def test_scheduler_compensates_for_time_order_bias():
     order, a_louder = np.array(st.order[200:]), np.array(st.a_louder[200:])
     chose_first = np.where(order > 0, a_louder, ~a_louder)
     assert abs(chose_first.mean() - 0.5) < 0.08
+
+
+def test_block_ends_for_both_ears_at_once(monkeypatch):
+    """One pause per block for the block-end refits, not one per ear on
+    consecutive trials."""
+    sch = Scheduler(SchedulerConfig(block_size=10, min_trials_noise_fit=10_000), seed=2)
+    ended = []
+    real = sch._end_block
+    monkeypatch.setattr(sch, "_end_block", lambda ear: (ended.append((n, ear)), real(ear))[1])
+    for n in range(60):
+        p = sch.next_trial()
+        sch.record(p, bool(sch.rng.random() < 0.5))
+    trials = sorted({n for n, _ in ended})
+    assert len(trials) >= 3 and all(b - a > 1 for a, b in zip(trials, trials[1:]))
+    assert all(sorted(e for m, e in ended if m == n) == ["L", "R"] for n in trials)

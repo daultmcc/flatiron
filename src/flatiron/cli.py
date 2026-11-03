@@ -484,6 +484,10 @@ def _print_fit(pf):
                                                          + ")" for x in acc))
             if rej and kind == "narrow":
                 print("  dropped as inconsistent across reseats: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
+            scaled = [x for x in acc if x.scale < 1]
+            if scaled:
+                print(f"  {kind}, inconsistent across reseats, corrected to the median session's level: "
+                      + ", ".join(f"{x.fc:.0f} Hz ({x.scale:.0%})" for x in scaled))
         for a, b, m in c.left_out:
             print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
     print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")

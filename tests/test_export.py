@@ -187,7 +187,12 @@ def test_pipewire_truth_check(tmp_path):
 
     plan = ExportPlan({"L": [ApoFilter("PK", 6150, -4.2, 6.5), ApoFilter("HS", 10000, -3, 0.7)],
                        "R": [ApoFilter("PK", 7020, -3.1, 8.0), ApoFilter("PK", 11000, 6, 12)]}, -6.5, True, "x")
-    assert max(check_pipewire(plan, tmp_path).values()) < 0.3
+    # A real-time capture: with every core busy running the other tests in
+    # parallel it can drop audio, so one retry.
+    errs = [max(check_pipewire(plan, tmp_path).values())]
+    if errs[0] >= 0.3:
+        errs.append(max(check_pipewire(plan, tmp_path).values()))
+    assert errs[-1] < 0.3, errs
 
 
 def test_export_preamp_override(tmp_path, monkeypatch, capsys):

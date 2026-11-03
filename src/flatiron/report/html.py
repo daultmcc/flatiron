@@ -52,7 +52,8 @@ def _table(head, rows, num_cols=()):
 def _features_table(feats):
     rows = [(f"{f.fc:,.0f} Hz", f"{f.width_oct:.2f}", f"{f.peak_db:+.1f}", f"{f.z:.1f}",
              "" if f.consistency_p is None else f"{f.consistency_p:.2f}",
-             ("yes, inside a broad region" if f.inside_broad else "yes") if f.accepted else f"no: {f.reason}")
+             ("yes" + (", inside a broad region" if f.inside_broad else "")
+              + (f"; {f.reason}" if f.scale < 1 else "")) if f.accepted else f"no: {f.reason}")
             for f in sorted(feats, key=lambda f: f.fc)]
     return _table(["centre", "width (oct)", "residual dB", "z", "reseat p", "corrected"], rows, (1, 2, 3, 4))
 

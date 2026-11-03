@@ -19,6 +19,7 @@ flatiron = "flatiron.cli:main"
 dev = [
     "pytest>=8",
     "pytest-asyncio>=1.4.1",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -30,5 +31,6 @@ packages = ["src/flatiron"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-n auto"  # pytest-xdist; -n0 to run in one process (e.g. with --pdb)
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
