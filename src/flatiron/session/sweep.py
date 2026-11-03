@@ -1,4 +1,4 @@
-"""Optional coarse sweep (phase 0, DESIGN.md).
+"""Optional coarse sweep (DESIGN.md, "Sweep and tone-generator marks").
 
 A slow narrowband sweep, up then down, per ear. The listener taps at each peak
 or dip. A tap lands a reaction time after the true crossing, so an up-sweep tap

@@ -96,7 +96,7 @@ class EarCorrection:
 
 def taper(freqs, f_lo, f_hi, width_lo_oct, width_hi_oct) -> np.ndarray:
     """1 inside [f_lo, f_hi], raised-cosine to 0 over the given widths outside
-    it (DESIGN.md step 6), 0 beyond. A zero width is a hard edge."""
+    it (DESIGN.md step 7), 0 beyond. A zero width is a hard edge."""
     x = np.log2(freqs)
     a, b = np.log2(f_lo), np.log2(f_hi)
     up = np.clip((x - a) / width_lo_oct + 1, 0, 1) if width_lo_oct > 0 else (x >= a).astype(float)

@@ -165,7 +165,7 @@ def test_design_features_are_corrected_in_the_right_direction(simulated):
     c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
     v = validate(lis.ears["L"], c)
     # Every feature gets a correction of the right sign near the right place;
-    # the strict DESIGN.md criteria (1/24 octave, 1 dB) aren't met yet.
+    # not every feature meets the full criteria (DESIGN.md, "Validation").
     for fc in v.features[:3]:
         assert np.sign(fc.corrected_db) == -np.sign(fc.gain_db)
         assert abs(fc.freq_err_oct) < 1 / 12

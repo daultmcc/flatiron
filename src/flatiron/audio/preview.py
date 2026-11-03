@@ -1,5 +1,5 @@
 """Flatiron's own copy of a correction, applied in software (DESIGN.md,
-"Fit and audition" and "Verify"). Built from the same export plan as the
+"Audition and verify"). Built from the same export plan as the
 exporters, so what you audition or verify is what an export would do."""
 
 from dataclasses import dataclass

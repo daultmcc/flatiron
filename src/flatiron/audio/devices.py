@@ -1,4 +1,4 @@
-"""Output device listing and checks (DESIGN.md, "Setup")."""
+"""Output device listing and checks (DESIGN.md, "Session flow")."""
 
 from dataclasses import dataclass, field
 

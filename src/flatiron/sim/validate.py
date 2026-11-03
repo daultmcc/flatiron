@@ -10,7 +10,7 @@ from flatiron.fit.pipeline import EarCorrection
 from flatiron.sim.listener import EarTruth
 
 FREQ_TOL_OCT = 1 / 24
-DEPTH_TOL_DB = 1.5  # DESIGN.md asked for 1 dB; relaxed: listener discrimination limits it first
+DEPTH_TOL_DB = 1.5  # relaxed from 1 dB: listener discrimination limits it first
 FALSE_DB = 1.5  # relaxed with DEPTH_TOL_DB
 SEARCH_OCT = 1 / 6
 

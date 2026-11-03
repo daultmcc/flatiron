@@ -1,5 +1,5 @@
 """What gets exported: per-channel filter lists plus one preamp
-(DESIGN.md, "Measurement context" and "Band budget").
+(DESIGN.md, "Measurement context" and "Export formats").
 
 Correction only: Flatiron's filters, to stack after an existing EQ.
 Merged: the user's preference layer (APO text, per channel) first, then the

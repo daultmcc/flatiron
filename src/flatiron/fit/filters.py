@@ -1,4 +1,4 @@
-"""Fit peaking filters to a target (DESIGN.md, pipeline steps 7-9).
+"""Fit peaking filters to a target (DESIGN.md, pipeline steps 8 and 10).
 
 Greedy start: put a filter on the largest remaining weighted error, then refit
 all filters jointly (bounded least squares over log Fc, gain, log Q, weighted
@@ -6,9 +6,9 @@ by 1/SD). Repeat until the error is within noise everywhere (no point off by
 more than `stop_z` SDs) or the band budget is used up. Filters under
 `min_gain_db` are dropped.
 
-(DESIGN.md stops on chi² per point ≤ 1.5. Averaged over the whole range that
-let a whole accepted feature go unfitted, since one feature barely moves the
-mean, so the stop is pointwise; chi² is still reported.)
+The stop is pointwise rather than on chi² per point: averaged over the whole
+range, chi² let a whole accepted feature go unfitted, since one feature barely
+moves the mean. chi² is still reported.
 """
 
 from dataclasses import dataclass

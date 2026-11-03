@@ -1,6 +1,6 @@
 """Truth checks: run an exported LSP .cfg through LSP's own LADSPA build
-and compare with Flatiron's prediction (DESIGN.md, "Exporter truth checks").
-Tolerance there: 0.3 dB from 1 to 14 kHz."""
+and compare with Flatiron's prediction (DESIGN.md, "Export formats").
+Tolerance: 0.3 dB from 1 to 14 kHz."""
 
 import re
 from pathlib import Path
@@ -161,10 +161,13 @@ def check_pipewire(plan: ExportPlan, workdir, f_lo=1000.0, f_hi=14000.0, fs=48_0
     chain = subprocess.Popen(["pipewire", "-c", str(conf)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(1.5)
-        rec = subprocess.Popen(["pw-record", "--target", f"effect_output.flatiron_check_{tag}", "--rate", str(fs),
+        # Pinned to the test chain: an EQ app that moves new streams onto its
+        # own sink (TinCan does) would otherwise take them.
+        pin = ["-P", "{ node.dont-move = true }"]
+        rec = subprocess.Popen(["pw-record", *pin, "--target", f"effect_output.flatiron_check_{tag}", "--rate", str(fs),
                                 "--channels", "2", "--format", "f32", str(out)], stderr=subprocess.DEVNULL)
         time.sleep(0.8)
-        subprocess.run(["pw-play", "--target", f"effect_input.flatiron_check_{tag}", str(d / "in.wav")],
+        subprocess.run(["pw-play", *pin, "--target", f"effect_input.flatiron_check_{tag}", str(d / "in.wav")],
                        check=True, timeout=30, stderr=subprocess.DEVNULL)
         time.sleep(0.8)
         rec.terminate()

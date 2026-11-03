@@ -1,347 +1,254 @@
-# Flatiron — design doc for a by-ear headphone EQ tool
+# Flatiron — by-ear headphone resonance EQ
 
-Oct 30, 2026 · @Dathan
+Flatiron is a local tool that finds peaks and dips in a headphone's upper mids and treble, separately for each ear, using only the listener's "which is louder?" judgments. It fits a perceived-level curve per ear, picks out the features that are significant and narrower than about an octave, turns them into RBJ peaking filters, and exports them for an EQ host: Equalizer APO / AutoEQ text, LSP Parametric Equalizer x32 LeftRight, EasyEffects (and through it Equaliser on macOS), a PipeWire filter-chain drop-in, and TinCan.
 
-## Summary
+This document describes how Flatiron works as built. The README covers day-to-day use.
 
-Flatiron is a local tool that finds peaks and dips in a headphone's upper mids and treble, separately for each ear, using only the listener's "which is louder?" judgments. It targets everything from narrow resonances up to features about an octave wide, such as an excess in the ear-gain region around 4 kHz. It turns them into up to 32 peaking filters per channel and exports them for PipeWire, LSP and Equaliser (macOS); broad bass/treble tilt is left to the user.
+## Scope
 
-### Goals
+Flatiron does:
 
-- Find peaks and dips from about 1/12 octave wide up to a configurable maximum width (default 1 octave), between 1 kHz and 14 kHz (both limits configurable).
-- Tell the listener's normal ear gain apart from excess caused by the headphone, so broad features near 3 to 4 kHz are corrected relative to a reference instead of flattened.
+- Find features from about 1/12 octave wide up to a configurable maximum width W (default 1 octave), between 1 kHz and 13 kHz by default.
 - Measure left and right independently. A feature in one ear doesn't leak into the other.
 - Use a two-alternative forced-choice task ("A or B louder?"), never knob-matching.
-- Report how confident it is in each feature, and only correct features it is sure of.
-- Export per-channel filter sets in PipeWire `param_eq`, LSP Parametric Equalizer x32 LeftRight, EasyEffects JSON (the route into Equaliser) and Equalizer APO text.
-- Keep every raw trial, so the curve can be refit with different settings without retesting.
+- Report how confident it is in each feature, and correct only features it is sure of.
+- Keep every raw trial, so the correction can be recomputed with different settings without retesting.
 
-### Non-goals
+Flatiron doesn't:
 
-- Broad tilt, bass or overall target-curve correction: anything wider than the maximum feature width.
-- Flattening to equal perceived loudness (see Key design decisions).
-- Hearing-loss compensation or anything audiometric.
-- Real-time system audio processing. Flatiron generates configs; the user's existing EQ host does the processing.
+- Correct broad tilt, bass or overall target curve. By default it keeps the headphone's broad shape and only removes narrow features (see Tonality).
+- Flatten to equal perceived loudness.
+- Do hearing-loss compensation or anything audiometric.
+- Process system audio. It writes configs; an EQ host does the processing.
 
 ## Key design decisions
 
-The core idea: measure perceived loudness, remove the part normal hearing explains plus anything broader than about an octave, and correct what's left.
+1. **Reference, then detrend.** What gets measured is headphone response + the listener's equal-loudness contour (ear gain included) + fit-dependent resonances. Flattening all of that would cut the listener's natural ear gain. Flatiron subtracts a reference contour, then removes anything that varies more slowly than W. What's left is a candidate for correction.
+2. **Keep the tonality by default.** Broad features (wider than 1/3 octave) in the ear-gain region depend on the reference, and individual ears differ from ISO 226 by several dB there. By default Flatiron corrects narrow features only and adds broad compensation filters so the correction averages to zero over about W. The headphone's broad tonal balance stays as it was, and broad changes are left to the user's own EQ. `--broad` switches to correcting broad features toward the fixed target as well, scaled by a strength control.
+3. **Compare neighbours, fit globally.** Comparing nearby frequencies is easier and less noisy than comparing far-apart ones. Every judgment goes into one maximum-likelihood fit per ear, which avoids the random-walk error of chaining neighbour comparisons. Judgment noise grows with frequency separation, so long-range comparisons count for less.
+4. **Redundant comparison graph.** Each grid point is compared against points 1 to 3 steps away, plus about 25% longer jumps of up to an octave. The longer jumps pin down broad features that a chain of neighbour comparisons would smear out.
+5. **Narrowband noise by default.** Pure sines inside headphones are very sensitive to seal and standing waves, and can fall between the peaks of a narrow notch. The default stimulus is 1/12-octave band noise; 1/24-octave noise, warble tones and pure tones are options. The model accounts for each trial's stimulus bandwidth, so sessions with different stimuli pool.
+6. **Adaptive grid.** Start at 1/24 octave and refine to 1/48 where the fitted curve bends sharply (or around frequencies the listener marked), so narrow features don't fall between test points.
+7. **Reseat and repeat.** Treble resonances move when the headphone moves. Sessions are short, with a reseat between them, and features whose level disagrees across sessions are dropped.
+8. **One filter definition everywhere.** The fit, Flatiron's own preview EQ and every export use RBJ-cookbook peaking biquads. Each exporter writes the target's matching mode, and the formats that can be run locally are checked against the real implementation before they're written.
+9. **Lazy fits from per-profile settings.** There is no separate fit step and no saved fit. Every command that needs the correction recomputes it from the profile's trials, settings and checkpoint. The expensive part, the perceptual fit, depends only on the trials and is cached, so a correction takes about 0.1 s once the cache is warm.
 
-1. **Reference first, then detrend.** What gets measured is headphone response + the listener's normal equal-loudness contour (ear gain included) + fit-dependent resonances. Flattening all of that would cut the listener's natural ear gain. Equal-loudness contours are measured in the sound field with ear gain already included, and they still aren't flat. So perceptually flat is not diffuse-field flat. Flatiron first subtracts a reference contour (default: a diffuse-field equal-loudness contour, matching a flat diffuse-field target). Then it removes anything that varies more slowly than the maximum feature width (default 1 octave, configurable). What's left gets corrected: narrow resonances, and broader excesses like a 4 kHz bump about 1.5 kHz wide.
-2. **The ear-gain region is the hard case.** Features 1/2 to 1 octave wide around 2 to 5 kHz overlap the normal contour's own ear-gain peak, and individual ears differ from ISO 226 by several dB there. Corrections in that region depend on the reference, so: the reference is configurable, broad features get their own confidence threshold and a strength control (default 100%), and the report lists them separately from narrow ones.
-3. **Compare neighbours, fit globally.** Comparing nearby frequencies is easier and less noisy than comparing far-apart ones. Judgments are pooled into one maximum-likelihood fit over all frequencies at once, which avoids the random-walk error you'd get from chaining neighbour comparisons. The model lets judgment noise grow with frequency separation, so long-range comparisons count for less.
-4. **Redundant comparison graph.** Each grid point is compared against points 1, 2 and 3 steps away, plus about 25% longer jumps of up to an octave. The longer jumps pin down broad features that a chain of neighbour comparisons would smear out.
-5. **Narrowband stimuli by default.** Pure sines inside headphones are very sensitive to seal and standing waves, and can fall between the peaks of a narrow notch. The default stimulus is band-limited noise. Warble tones and pure tones are options.
-6. **Adaptive grid.** Start coarse, then refine where the fitted curve bends sharply, so narrow features don't fall between test points.
-7. **Reseat and repeat.** Treble resonances move when the headphone moves. Flatiron asks for several short sessions with the headphones taken off and put back on in between. It corrects only features that show up consistently across reseats.
-8. **One filter definition everywhere.** Flatiron's preview, its fit and every export use RBJ-cookbook peaking biquads. Each exporter maps to the target's equivalent mode and is verified against it (see Validation).
-9. **Budget: 32 bands per channel.** LSP x32 LeftRight is the tightest target, at 32 bands per channel. PipeWire `param_eq` and Equaliser (up to 64 bands) are looser. Flatiron also counts any broad-EQ bands the user wants merged into the same instance against that 32.
+## Measurement
 
-## Measurement method
-
-Each trial plays two short narrowband bursts in one ear and asks which was louder. A probit model fitted to every trial gives a perceived-level curve per ear, with error bars.
+Each trial plays two short narrowband bursts in one ear and asks which was louder.
 
 ### Frequency grid
 
-- Default range 1 kHz to 14 kHz (both configurable). Measure a little past each end (0.85 to 15 kHz) so the detrend baseline isn't distorted at the edges.
+- Measured range 850 Hz to 15 kHz, a little past the default correction range (1 to 13 kHz) so the baseline and taper aren't distorted at the edges.
 - Initial grid: 1/24-octave log spacing, about 100 points per ear.
-- Refinement: insert midpoints (down to 1/48 octave) where the fitted curve bends significantly (see Adaptive selection).
+- Refinement: log midpoints, down to 1/48 octave (see Adaptive selection). Each session saves its final grid per ear; the next session starts from it.
 
 ### Stimuli
 
 | Parameter | Default | Options |
 | --- | --- | --- |
 | Type | Band-limited noise, 1/12 octave around the centre | 1/24-octave noise, warble tone (±1/24 octave FM at 8 Hz), pure tone |
-| Noise token | Frozen per (frequency, seed); a new seed per session | Fresh per presentation |
-| Burst length | 400 ms | 200 to 800 ms |
+| Noise token | Frozen per (frequency, seed); a new random seed per session | — |
+| Burst length | 400 ms | — |
 | Ramps | 20 ms raised cosine | — |
-| Gap between A and B | 300 ms | 150 to 600 ms |
+| Gap between A and B | 300 ms | — |
 | Presentation | Monaural: one ear only, other channel digital silence | — |
-| Sample rate | 48 kHz, float32 | Device native |
-| Peak level | ≤ −18 dBFS after all offsets | Hard limiter at −12 dBFS |
+| Sample rate | 48 kHz, float32 | — |
+| Level | Set per session on the level screen (default −30 dBFS RMS, at most −24) | — |
 
-Generate noise bands in the frequency domain (shape an FFT, then inverse) for steep band edges. Normalise each band to equal RMS before any offset.
+Noise bands are generated in the frequency domain (shaped FFT, then inverse) for steep band edges, and every stimulus is normalised to unit RMS before any level is applied. A trial's whole A-gap-B buffer is scaled under a −12 dBFS ceiling (then hard-clipped there as a last guard), so the limiter never changes the A/B difference.
+
+The system volume stays at the listener's usual setting. Each session opens on a level screen that loops bands across the range and adjusts Flatiron's own level, starting from the last session's. The level can be changed mid-session with a warning; changes are logged and every trial records its level.
+
+Audio goes through one persistent PortAudio output stream with a fixed 40 ms buffer. PortAudio's "low" latency (about 9 ms) underflowed on PipeWire. The trial UI offsets its panel lights and reaction times by the stream's reported latency.
 
 ### Trial
 
-1. Pick an ear, a pair of grid points (i, j) and a level offset Δ (in dB, applied to one interval).
-2. Randomise which stimulus plays first, and add a small whole-trial level rove (±2 dB) so the listener can't anchor on absolute level.
-3. Play A, gap, B. The listener presses A or B. Replay is allowed and logged.
-4. About 5% of trials are catch trials: the same frequency with a ±6 dB offset. These track attention and the lapse rate.
+1. The scheduler picks an ear (alternating), a pair of grid points and a level offset Δ, applied to one randomly chosen interval.
+2. Which stimulus plays first is random, and a whole-trial level rove (±2 dB) keeps the listener from anchoring on absolute level.
+3. A, gap, B play; the listener answers A or B. Replays are allowed and logged. The answer can be undone (the trial is kept on file, marked undone, and left out of fits).
+4. About 5% of trials are catch trials: the same frequency with a ±6 dB offset. They track attention.
+5. Reaction time is logged from the end of B. Answers under 150 ms are flagged.
 
 ### Perceptual model
 
-For each ear, the unknowns are the perceived levels L at the grid points (dB), a noise scale σ and a lapse rate λ. The probability that interval A is judged louder:
+Per ear, the unknowns are the perceived levels L at the grid points (dB), a time-order bias b, and the noise parameters σ₀, d₀ and λ:
 
 ```latex
-P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{L_a - L_b + \Delta_a - \Delta_b}{\sigma}\right)
+P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{\bar L_a - \bar L_b + o + b\cdot s}{\sigma(d)}\right),
+\qquad \sigma(d) = \sigma_0 \sqrt{1 + (d/d_0)^2}
 ```
 
-- Fit by MAP with SciPy (L-BFGS). Use a weak Gaussian prior on second differences of L in log-frequency (smoothness) and fix the gauge with mean(L) = 0.
-- σ is fit jointly as a function of the pair's separation d in octaves, σ(d) = σ₀·√(1 + (d/d₀)²), with priors around σ₀ = 1 dB and d₀ = 0.5 octave. λ has a prior around 2%, informed by the catch trials.
-- Error bars come from the Laplace approximation (inverse Hessian). Every displayed curve carries a ±1 SD band.
-- Sessions are fitted jointly, with a free per-session offset per ear. A flag lets a session be fitted on its own so reseats can be compared.
+- o is every known level difference between A and B: Δ\_a − Δ\_b, plus the gain of any EQ in effect (an active system EQ recorded for the session, or the preview EQ of a verify session).
+- L̄ is L averaged in dB over the trial's stimulus spectrum (11 points across a noise band; one point for tones), interpolated linearly in log-frequency from the grid.
+- s = +1 when A played first and −1 when B did; b is how many dB louder the first interval sounds. (The user's real data showed a strong first-interval preference, about +1 dB.) b has a N(0, 3 dB) prior and is a fixed effect, so its uncertainty is part of L's error bars.
+- d is the pair's separation in octaves.
+- Priors: smoothness, as a grid-independent curvature penalty equivalent to a 1 dB SD on second differences at 1/24 octave; a very weak N(0, 100 dB) prior on each level so the fit is well-posed with few trials; log-normal priors around σ₀ = 1 dB and d₀ = 0.5 octave; λ around 2%. The gauge is fixed by mean(L) = 0.
+- σ₀, d₀ and λ are set by maximising the Laplace-approximated marginal likelihood with L integrated out (empirical Bayes, Nelder–Mead started from both the prior means and the warm start). A joint MAP over L and the noise overfits: with a few trials per point, L separates the answers and σ₀ collapses. Below 200 trials per ear the noise stays at the prior, because the evidence underestimates σ₀ with fewer trials. L is then the MAP given the noise.
+- Error bars come from the Laplace approximation (inverse Fisher information), projected onto the gauge. Every displayed curve carries a ±1 SD band.
+- All of an ear's sessions are fitted jointly, with no per-session offset (it would cancel within an ear). Each session with at least 60 trials in an ear is also fitted on its own, with the noise held at the joint fit's values, for the consistency check.
 
 ### Adaptive selection
 
-- Candidate pairs: |i − j| ≤ 3 grid steps, plus about 25% longer jumps (up to one octave) to tie the graph together and pin down broad features.
-- Score each candidate by the posterior variance of (L\_i − L\_j), weighted up where the current curve bends sharply. Draw from the top candidates at random so the sequence isn't predictable.
-- Δ = −(L̂\_i − L̂\_j) plus jitter of ±1 posterior SD. That puts trials near the 50% point, where each answer carries the most information, while still constraining σ.
-- Refinement: after each block of about 50 trials, insert a midpoint wherever the second difference of L̂ exceeds 2 SD. Stop refining at 1/48 octave.
-- Interleave ears and frequency regions trial by trial.
+- Candidate pairs: up to 3 grid steps apart, or (with probability 0.25) a longer jump of up to one octave.
+- Each candidate is scored by how much one answer would shrink the posterior variance of L\_i − L\_j, weighted up where the curve bends (by 0.5 per SD of curvature, capped at 4 SD). Pairs in the same quarter-octave region as the previous trial are skipped. The pair is drawn at random from the top 8.
+- Δ aims at the 50% point as the listener hears it, time-order bias included, plus jitter of ±1 posterior SD of the difference (at most 4 dB). |Δ| is capped at 12 dB.
+- L is refitted after every answer with the noise fixed. Every 50 trials per ear, the full fit (noise included) is redone, and a midpoint is inserted on both sides of every point whose second difference exceeds 2 SD, down to 1/48 octave.
 
-### Optional coarse sweep (phase 0)
+### Sweep and tone-generator marks
 
-A slow narrowband sweep per ear: 1 to 14 kHz over about 40 s, played up and then down. The listener taps a key at each dip or peak they hear. Averaging the up and down taps cancels reaction-time lag. The marks seed grid refinement before any forced-choice trials.
+Two optional ways to tell the scheduler where to look:
 
-### Effort estimate (to tune)
-
-At about 6 comparisons per grid point, that's around 1,200 trials for both ears. At roughly 2.5 s per trial, that's about 50 minutes, split into four or more reseat sessions of 10 to 15 minutes, with breaks enforced at 15 minutes. The simulator should show whether the lower octave can get by with a coarser grid.
+- **Sweep** (`run --sweep`, first session only): a slow narrowband sweep (a cluster of nine tones spread over ±1/24 octave) from 1 to 14 kHz and back, 30 s each way by default. The listener taps at each peak or dip. Up and down taps are paired and averaged, which cancels reaction-time lag, and the grid is refined around them. If the profile already has a fit, the sweep plays through it (Q toggles it), so what's left is what the correction hasn't fixed.
+- **Tone generator** (`tone`): a continuous tone or noise band, glided by hand. Marks made there are saved in the profile and refine the grid of the next trial session that starts (each mark is stamped with that session, so it's used once).
 
 ## From measurements to filters
 
-The correction targets significant deviations from the reference that are narrower than the maximum feature width, and caps boosts harder than cuts.
+### Pipeline (per ear)
+
+1. **Reference.** D(f) = L̂(f) − E(f), where E is the perceived-level shape a reference-correct headphone would produce, with its mean removed. Options: `iso226` (default: the negated ISO 226 frontal free-field contour at 60 phon, configurable), `diffuse` (ISO 226 plus a diffuse-minus-free-field threshold difference, read from a user-supplied CSV, because the ISO 389-7 table isn't openly available), `none`, or a CSV of perceived-level shape.
+2. **Baseline.** A penalised cubic B-spline in log2 f with knots every 2W (penalty 0.1, relative to the data weight). It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly.
+3. **Residual.** R = D − baseline, with its full covariance.
+4. **Features.** R is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. A lobe narrower than 1/3 octave at half height is *narrow*: it's kept if at least two adjacent points exceed k·SD (k = 2). A wider lobe is *broad*: it's kept if its mean exceeds k\_broad times the SD of that mean (k\_broad = 2.5). Features outside \[f\_lo, f\_hi\] are dropped.
+5. **Consistency.** With two or more sessions in the check, each kept feature's mean over its half-height core is compared across sessions (Cochran's Q). A feature with p < 0.01 is dropped as fit-dependent.
+6. **Target.** C = −R over kept features, cuts limited to 12 dB. Boosts are capped at +4 dB for narrow features (often fit-dependent cancellations) and +6 dB for broad ones. With `--broad`, the broad part is scaled by the strength (0 to 100%, default 100%). Without it, broad features aren't in the target at all.
+7. **Taper.** C fades to 0 with a raised cosine over up to 1/3 octave beyond \[f\_lo, f\_hi\], limited by the measured margin.
+8. **Filters.** On a 1/96-octave grid, weighted by 1/SD: greedily place a peaking filter on the largest weighted error (Q from its half-height width), then refit all filters jointly with bounded least squares over (log Fc, gain, log Q). Bounds: Fc within \[f\_lo, f\_hi\], Q 0.7 to 16, |gain| ≤ 12 dB. Stop when no point is off by more than 2 SD, or the band budget (default 20 per channel, at most 32) is used up. Filters under 0.5 dB are dropped and the rest refitted. If the budget binds, the frequency ranges still off by more than k SD are reported.
+9. **Tonality compensation** (the default). Broad peaking filters (Q ≤ 1.5, at most 4, from the bands left over) are fitted to the negative of the narrow filters' own response, smoothed over W. The corrected response then keeps the original broad shape to within about 0.5 dB. Filters at nearly the same frequency and Q are merged.
+10. **Preamp.** −max(0, peak) − 0.5 dB, where peak is the highest point of the combined response from 20 Hz to 20 kHz. It's one value for both channels, which keeps the L/R balance.
+
+### Settings
+
+Every setting is downstream of the cached perceptual fit, so changing it needs no new trials. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
+
+| Setting | Default | `config` option |
+| --- | --- | --- |
+| Max feature width W | 1 octave (1/3 to 2) | `-w` |
+| Reference, listening level | `iso226`, 60 phon | `-r`, `--phon` |
+| Significance k, k\_broad | 2, 2.5 SD | `-k`, `--k-broad` |
+| Broad correction, strength | off, 100% | `--broad`, `-s` (needs `--broad`) |
+| Band budget | 20 per channel | `-b` |
+| Boost caps, cut cap | +4 narrow, +6 broad, −12 dB | `--boost-narrow`, `--boost-broad`, `--max-cut` |
+| Correction range | 1 to 13 kHz | `--f-lo`, `--f-hi` |
+| Reseat consistency check | on | `--consistency` / `--no-consistency` |
+| Sessions included | all | `--sessions` |
+
+The correction range can only move within the measured range, and the measured range, grid and stimulus are fixed when the trials are collected. Features wider than about an octave are only as well constrained as the longest jumps (1 octave).
+
+### Checkpoints
+
+`config --checkpoint` fixes the current filters per ear. Later fits run the pipeline on the corrected curve (L̂ plus the fixed filters' response) and only add filters for what's still significant, within the bands left over. This holds whatever the settings become. `--reset-checkpoint` drops it. The usual use is to checkpoint before a verify session, so its results add to the filters that were verified instead of reshuffling them.
 
 ### Measurement context
 
-Flatiron treats EQ as three layers: whatever system EQ is active while measuring, the correction Flatiron fits, and an optional preference layer the user owns. Both workflows (correcting on top of an existing broad EQ, or correcting first and adding tonality after) use the same data. Only the export mode differs.
+Flatiron treats EQ as three layers: any system EQ active while measuring, the correction Flatiron fits, and an optional preference layer the user owns.
 
-- **Active EQ is known, not measured.** Each session records the system EQ in effect (imported as APO text, or "none"). Its gain at each stimulus frequency enters the model as a known offset, the same way verify sessions handle the preview EQ. So L̂ always describes the raw headphone, and intentional broad EQ is never "corrected away", even when it's narrower than W.
-- **Overlap check.** Filters in the active EQ narrower than W (common in AutoEQ presets) are flagged. The user chooses to keep each one in the preference layer, or drop it and let Flatiron's correction replace it.
-- **Export modes.** *Correction only*: filters to stack after the existing EQ or in a separate instance. *Merged*: preference layer plus correction in one filter set, with the preamp computed over both.
+- **Active EQ is known, not measured.** A session can record the system EQ in effect (`run --active-eq`, as APO text). Its gain at each stimulus frequency enters the model as a known offset, so L̂ always describes the raw headphone.
+- **Export modes.** *Correction only* (default): filters to stack after the existing EQ or in their own instance. *Merged* (`export -m`, or `--merge-left`/`--merge-right`): the preference layer's APO text first, then the correction sorted by frequency, with the preamp computed over both.
 
-### Pipeline (per ear)
+## Audition and verify
 
-1. **Reference.** D(f) = L̂(f) − E(f), where E is the perceived-level shape a reference-correct headphone would produce: the negated diffuse-field equal-loudness contour at the assumed listening level (default 60 phon), with its mean removed over the range. Build it as ISO 226 (frontal free field) plus the diffuse-minus-free-field difference in reference thresholds from ISO 389-7. Options: ISO 226 free field, no reference, or a user-supplied CSV.
-2. **Baseline.** Fit a smooth baseline to D that can't follow anything narrower than about twice the maximum feature width W (default W = 1 octave; options 1/3 to 2 octaves). Use a penalised cubic spline in log2-frequency with knots every 2W, refit with robust (Huber) weights so the features themselves don't drag it. Gaussian smoothing is out, because it eats about half the depth of features close to its width.
-3. **Residual.** R(f) = D(f) − baseline(f), with its SD carried through.
-4. **Significance mask.** Narrow features (under 1/3 octave): keep regions where |R| > k·SD (default k = 2) over at least two adjacent grid points. Broad features: test the mean residual over the feature's width against its SD, with k\_broad = 2.5 (configurable). Everything else gets a target of 0 dB.
-5. **Target.** C(f) = −R(f), with cuts limited to −12 dB. Boosts are capped at +4 dB for narrow features (often fit-dependent cancellations) and +6 dB for broad ones; both caps are configurable. A strength control (0 to 100%, default 100%) scales the broad part of the target only.
-6. **Taper.** Fade C to 0 over 1/3 octave outside \[f\_lo, f\_hi\], so nothing is corrected above 14 kHz.
-7. **Fit filters.** Greedy initialisation: place a peaking filter at the largest |C| feature, then repeat on what's left. Then do a joint bounded least-squares fit (SciPy `least_squares`) over every filter's (Fc, gain, Q). Evaluate on a 1/96-octave grid, weighted by 1/SD². Bounds: Fc within range, Q from 0.7 to 16, |gain| ≤ 12 dB. Drop any filter under 0.5 dB.
-8. **Stop** when the weighted residual is within noise (χ² per point ≤ 1.5) or the band budget is used up.
-9. **Preamp.** Compute the combined response (Flatiron filters plus any merged broad EQ) from 20 Hz to 20 kHz. Set the preamp to −max(0, peak) − 0.5 dB.
+- **Preview EQ.** Flatiron's own software copy of a correction, built from the same export plan as the exporters, so what's auditioned or verified is what an export does.
+- **Audition** (`audition`): pink noise, the slow sweep, or the user's WAV files, with Space flipping the correction on and off at the same playback position. The preamp applies to both states, so they're level-matched. A blind mode hides which is which until revealed.
+- **Verify** (`verify`): a short session (150 answers by default) with the preview EQ applied to every burst. Each burst's level change from the EQ is recorded as a known offset, so verify trials pool with ordinary ones and stay valid if the settings change later. Afterwards Flatiron refits with the applied filters fixed and reports any feature still significant.
 
-### Band budget
+## Tone generator
 
-- Default: 10 correction bands per channel. The maximum is 32 minus the preference-layer bands when exporting merged to LSP.
-- The preference layer is imported per channel from Equalizer APO / AutoEQ text and edited outside Flatiron. In merged mode its bands come first, then correction bands sorted by frequency. Exports refuse to go over 32 bands per channel when the LSP target is selected.
-- When the budget binds, keep the filters that reduce weighted error the most, and report what was left out.
+`tone` is a real-time signal generator for hunting by hand. It renders block by block in the audio callback:
+
+- Stimuli: pure tone, warble, and 1/24, 1/12 and 1/3-octave noise. Noise is white noise through a per-block 2nd-order Butterworth band-pass whose state carries over, normalised by its equivalent noise bandwidth.
+- Frequency (50 Hz to 18 kHz) glides with a 20 ms one-pole smoother in log-frequency. Level, ear, correction on/off and pauses ramp over 10 ms; a stimulus change fades out, swaps and fades in.
+- Motion: terminals report no key releases, so a key counts as held while its auto-repeats keep arriving (a gap over 0.12 s means it was released). A tap steps by speed × 1/8 s. Holding glides at the speed (1/48 to 4/3 octave/s), accelerating smoothly up to 3× after half a second.
+- With `-p`, the profile's correction (without its preamp) is applied per channel and can be toggled, and P/D marks are saved to the profile (see Sweep and tone-generator marks).
 
 ## Export formats
 
-Four writers cover all three targets. EasyEffects JSON is the route into Equaliser, and APO text doubles as an input for PipeWire and REW.
+All exporters work from one export plan: per-channel filter lists and a preamp. LSP and EasyEffects output is checked against LSP's own LADSPA build before writing, when it's installed. PipeWire output can be checked with `--check`. The tolerance is 0.3 dB from 1 to 14 kHz.
 
-| Target | File written | Per-channel mechanism | Band limit | Q expressed as |
+| Target | File | Per-channel mechanism | Limit | Checked against |
 | --- | --- | --- | --- | --- |
-| PipeWire filter-chain, builtin `param_eq` | Drop-in `.conf` for `~/.config/pipewire/pipewire.conf.d/` | `filters1` (L) and `filters2` (R) | No hard limit found; Flatiron caps at 32 | Q |
-| LSP Parametric Equalizer x32 LeftRight | LSP settings `.cfg` | Separate left/right port sets | 32 per channel | Q (mode-dependent; verify) |
-| Equaliser (macOS, cvknage/equaliser) | EasyEffects preset `.json` | `split-channels: true`, `left` / `right` objects | 64 per channel | `q` in JSON; the app shows bandwidth (verify conversion) |
-| Equalizer APO / AutoEQ text | `flatiron_L.txt`, `flatiron_R.txt` | One file per channel | — | Q |
+| Equalizer APO / AutoEQ text | `<name>_L.txt`, `<name>_R.txt` | One file per channel | — | — |
+| LSP Parametric Equalizer x32 LeftRight | LSP settings `.cfg` | Separate left/right bands | 32 per channel | LSP LADSPA, offline |
+| EasyEffects (and Equaliser, macOS) | Preset `.json` | `split-channels`, `left`/`right` | 32 per channel | LSP LADSPA, offline |
+| PipeWire filter-chain, builtin `param_eq` | Drop-in `.conf` | `filters1` (L), `filters2` (R) | — | A private filter-chain (`--check`) |
+| TinCan | Preset `.toml` | `channel` per filter | 256 filters | — |
 
-### PipeWire
+By default files are written to the current directory, named `<profile>-<fit hash>`. TinCan presets go straight into TinCan's preset folder. A folder that doesn't exist is an error, never created. `--preamp safe|DB` overrides the preamp (`0` keeps the uncorrected level for A/B comparison; a warning is printed if boosts can then clip).
 
-`param_eq` takes either a filename or a `filters` array. `filenameX` or `filtersX` (X = channel 1 to 8) give per-channel configs. Its filter objects take `type`, `freq`, `gain` and `q`, with types such as `bq_peaking` ([PipeWire filter-chain docs](https://docs.pipewire.org/devel/page_module_filter_chain.html)). Sketch of the generated drop-in:
+- **APO text.** A `Preamp:` line, then `Filter n: ON PK Fc … Hz Gain … dB Q …`. PipeWire `param_eq` reads it through `filename1`/`filename2`, and REW-style importers accept it.
+- **LSP.** Written over a template exported from LSP 1.2.35, changing only band, gain and mode lines. Bands use filter mode 6, "APO (DR)", which matches the RBJ filters within 0.01 dB (the default RLC (BT) mode differs by up to 1.7 dB on narrow bells). The preamp is the input gain; LSP doesn't auto-balance.
+- **EasyEffects.** Written over an EasyEffects 7 split-channel preset, with bands in "APO (DR)" mode and the preamp as input gain. EasyEffects runs LSP's equalizer, so the same LADSPA check applies. Equaliser (macOS) imports this format; how it maps Q and mode on import hasn't been verified.
+- **PipeWire.** A filter-chain module with `param_eq` filters inline, `bq_peaking` (and shelves) in RBJ form. The preamp is a `bq_highshelf` at frequency 0, which is a broadband gain. Installed by copying it to `~/.config/pipewire/pipewire.conf.d/` and restarting PipeWire, which adds a "Flatiron <profile>" sink. `--check` plays a log sweep through a private copy (virtual sink and source, nothing on real devices) and compares the recording with the prediction.
+- **TinCan.** TinCan's preset format 1: `format`, `name`, and `[[filter]]` tables with `type`, `channel` (L, R or LR), `frequency`, `gain`, `q` and `enabled`. TinCan's bells are RBJ peaking filters. Presets carry no preamp, since TinCan sets one for everything loaded, so `--preamp` is refused. A filter identical in both channels (e.g. a merged preference shelf) is written once as LR. The preset is named "<profile> Flatiron <fit hash>", saved under TinCan's file-name rule into `$XDG_DATA_HOME/tincan/presets/`, or written to `-o FILE` for TinCan's import. Values outside TinCan's ranges are refused rather than clamped.
 
-```
-context.modules = [
-  { name = libpipewire-module-filter-chain
-    args = {
-      node.description = "Flatiron resonance EQ"
-      audio.channels = 2
-      audio.position = [ FL FR ]
-      filter.graph = {
-        nodes = [
-          { type = builtin name = eq label = param_eq
-            config = {
-              filters1 = [ { type = bq_peaking, freq = 6150.0, gain = -4.2, q = 6.5 } ]
-              filters2 = [ { type = bq_peaking, freq = 7020.0, gain = -3.1, q = 8.0 } ]
-            }
-          }
-        ]
-        inputs  = [ "eq:In 1" "eq:In 2" ]
-        outputs = [ "eq:Out 1" "eq:Out 2" ]
-      }
-      capture.props  = { node.name = "effect_input.flatiron" media.class = Audio/Sink }
-      playback.props = { node.name = "effect_output.flatiron" node.passive = true }
-    }
-  }
-]
-```
+## Architecture
 
-Preamp: write it as an extra filter if `param_eq` accepts a broadband-gain spelling. If it doesn't, use the file variant (`filename1` / `filename2` pointing at the APO text files), which carries a `Preamp:` line. Also offer an "APO files only" mode for users who already have a filter-chain config.
+A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It's intended to run unchanged on Linux and macOS.
 
-### LSP Parametric Equalizer x32 LeftRight
-
-Per-band controls exist separately for left and right: filter type, mode, frequency, gain and Q. GStreamer's listing names them like `fl-20` (Frequency Left 20) and `fml-0` / `fmr-0` (Filter mode Left/Right 0) ([GStreamer LV2 listing](https://gstreamer.freedesktop.org/documentation/lv2/lsp-plug-in-plugins-lv2-para-equalizer-x32-lr.html)). The `.cfg` writer fills bands 0 to N−1 per side, sets type Bell and slope x1, and turns unused bands off.
-
-- Key spelling in `.cfg` files (underscore vs hyphen), gain units (dB vs linear) and the off/Bell enum values must come from a golden file. The user exports one from their own LSP install with known settings (see Open questions).
-- Mode: pick the mode whose bell matches the RBJ peaking filter, if the installed version has one. Otherwise use RLC (BT), and have the validation step measure the mismatch and refit Q to compensate.
-
-### Equaliser (macOS)
-
-Equaliser has independent left/right EQ, up to 64 parametric bands, and imports both EasyEffects presets and REW filter settings. It needs macOS 15 or later on Apple Silicon ([cvknage/equaliser](https://github.com/cvknage/equaliser)). Flatiron writes an EasyEffects-format preset. That format carries `left` and `right` band objects with `frequency`, `gain`, `q`, `type` ("Bell"), `mode` (for example "RLC (BT)") and `slope` ("x1"), plus `split-channels` and `num-bands` ([example preset](https://gist.github.com/ryuukk/1702e352b4de3217cad1e971cb46e181)). Because EasyEffects' equalizer uses LSP-style band parameters, the same file also works in EasyEffects on Linux.
-
-- Verify that Equaliser's importer honours `split-channels` and maps `q` correctly to its bandwidth control. Fallback: two REW-format text imports, one per channel.
-
-### Equalizer APO / AutoEQ text
-
-One file per channel: a `Preamp: -X dB` line, then lines like `Filter 1: ON PK Fc 6150 Hz Gain -4.2 dB Q 6.50`. PipeWire `param_eq` reads this format directly through `filename` / `filenameX`, and REW-style importers accept it too.
-
-## Architecture, stack, data model
-
-Recommended: a Python 3.11+ package with a keyboard-driven terminal UI, running on Linux (PipeWire) and macOS (CoreAudio) unchanged.
-
-### Stack
-
-| Concern | Choice | Why |
-| --- | --- | --- |
-| Playback | `sounddevice` (PortAudio) | One API across PipeWire/ALSA/JACK and CoreAudio; exclusive device choice |
-| DSP and fitting | `numpy`, `scipy` (`signal.sosfilt`, `optimize`) | Biquads, MAP fit, bounded least squares |
-| Trial UI | `textual` TUI | Instant key response, no browser audio stack in the way |
-| Plots and report | `matplotlib` → PNG + a static HTML report | Curves with SD bands, filter overlays |
-| Packaging | `pyproject.toml` + `uv`; `pytest` | Reproducible local install |
+| Concern | Choice |
+| --- | --- |
+| Playback | `sounddevice` (PortAudio) |
+| DSP and fitting | `numpy`, `scipy` |
+| UI | `textual` |
+| Report | `matplotlib` figures embedded in a static HTML page |
+| Tests | `pytest` |
 
 ### Modules
 
-- `audio/`: device selection, the output stream, stimulus synthesis, limiter, and the preview EQ (RBJ peaking biquads as SOS).
-- `session/`: the trial scheduler, adaptive selector, catch trials, break timer and persistence.
-- `model/`: the probit MAP fit, Laplace SDs, grid refinement and joint multi-session fits.
-- `fit/`: baseline, residual, significance mask, filter optimiser, budget handling and preamp.
-- `export/`: `pipewire.py`, `lsp.py`, `easyeffects.py`, `apo.py`, each with golden-file tests.
-- `report/`: plots and the HTML summary.
-- `cli.py`: subcommands `devices`, `level`, `sweep`, `run`, `fit`, `preview`, `export`, `report`.
+- `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
+- `model/`: grids, the probit fit, and grid refinement.
+- `session/`: the adaptive scheduler, the trial runner (scheduler + stimuli + session file, without UI), storage, and the sweep.
+- `fit/`: reference, baseline, features, filter fitting, the correction pipeline, and the per-profile fit (cache, settings, checkpoint).
+- `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
+- `report/`: figures and the HTML report.
+- `ui/`: the trial app (level, channel check, sweep, trials, end screen), audition, and the tone generator.
+- `sim/`: the simulated listener, non-adaptive designs, and validation.
+- `cli.py`: `devices`, `tone`, `run`, `verify`, `audition`, `profiles`, `sessions`, `config`, `report`, `export`, `simulate`.
 
 ### Data on disk
 
-Everything lives under `~/.local/share/flatiron/` (Linux) or `~/Library/Application Support/flatiron/` (macOS), as plain JSON.
+Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically.
 
-- `profiles/<headphone-slug>/profile.json`: headphone label, fit settings, and the latest fitted curves and filters per ear.
-- `profiles/<headphone-slug>/sessions/<timestamp>.json`: device, sample rate, EQ-context note, stimulus settings, level, RNG seed, grid, and every trial (ear, f\_a, f\_b, Δ\_a, Δ\_b, play order, rove, response, response time, replays, catch flag).
-- `profiles/<headphone-slug>/exports/`: generated configs, named by target and fit hash.
+- `profiles/<slug>/profile.json`: label, settings (only changes from the defaults), the sessions used (if not all), the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks.
+- `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, and every trial. A trial records the ear, both frequencies, Δ for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
+- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, grid, priors and model version) and the last HTML report.
 
-Fits and exports are pure functions of the session files plus the settings, so re-running `fit` with a different detrend width needs no new listening.
+## Session flow
 
-The perceptual fit (L̂ and its SD) depends only on the trials, so it's cached. Every correction setting downstream of it can be changed freely:
+1. **Setup.** `devices` flags Bluetooth, mono and sample-rate problems.
+2. **Each session** (`run`, at most 15 minutes, 12 by default):
+   - The level screen.
+   - The channel check: a burst in each ear in random order, and the listener says which side it was in.
+   - The sweep (first session, if asked).
+   - Trials until time is up or the listener quits.
+   - The end screen asks for a reseat before the next session.
 
-| Setting | Change without new trials? | Limit |
-| --- | --- | --- |
-| Max feature width W | Yes | Features wider than about an octave are only as well constrained as the longest jumps measured (1 octave) |
-| Broad-feature strength | Yes | — |
-| Reference contour and listening level | Yes | — |
-| Significance thresholds k, k\_broad | Yes | — |
-| Boost/cut caps, Q bounds, band budget | Yes | — |
-| Correction range f\_lo to f\_hi | Yes, inside the measured range | Going below about 1 kHz needs new trials there |
-| Which sessions are included | Yes | — |
-| Measured range, grid, stimulus type and bandwidth, jump lengths | No | Fixed when the trials are collected |
+   The fitted curve is never shown during trials. Trial keys: ←/1 = A louder, →/2 = B louder, Space = replay, U = undo, P = pause, L = level, Q = save and quit, X = discard the session.
+3. **Look** (`report`, `report -H`): per ear, L̂ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. Checkpoint filters are labelled.
+4. **Adjust** (`config`), **listen** (`audition`), **verify** (`verify`, ideally after `config --checkpoint`), and **export**.
 
-## UI and session flow
+## Validation
 
-The whole loop runs from the keyboard: set up once, run several short reseat sessions, fit, audition, then verify with the EQ applied.
+### Simulated listener
 
-&#91;embedded content: session flow · 6 steps, 1 decision\]
+A simulated listener exercises the scheduler, perceptual fit and correction pipeline. `flatiron simulate` reports how well the perceptual fit recovers it, and `sim/validate.py` checks the criteria below end to end. The ground truth per ear is a smooth tilt, plus the ISO 226 contour, plus a +4 dB excess 1/2 octave wide at 4 kHz, a +5 dB peak at 6.2 kHz (Q 6), a −3 dB dip at 8.4 kHz (Q 10) and a +3 dB peak at 11 kHz (Q 4). Answers come from the same probit model, with σ₀ = 1 dB, d₀ = 0.5 octave and λ = 3%.
 
-Each verify pass either confirms the correction or feeds a small incremental refit back into the fit step.
+The criteria: each feature recovered within 1/24 octave in frequency and 1.5 dB in depth, and no false correction above 1.5 dB, after 600 trials per ear. The depth tolerances were relaxed from 1 dB, since the listener's own loudness discrimination is the practical limit. These aren't all met yet: very narrow features (Q 12 to 16) and those near the top of the range (around 11 kHz) come out about 1 to 2 dB shallow, and a null ear can get stray filters up to about 1.3 dB.
 
-### Setup (once per headphone and device)
+### Unit and truth tests
 
-1. **Device check.** List output devices and flag Bluetooth, mono, or sample-rate mismatches. Recommend a wired output at 48 kHz.
-2. **Channel check.** Play a burst in L, then in R. The listener confirms which side they heard.
-3. **Level.** Loop a 4 kHz band at −40 dBFS while the listener raises system volume to a comfortable, moderate level. Store the setting and remind the listener to keep the volume fixed for every session.
+- The peaking biquad matches the RBJ cookbook.
+- Stimuli stay in band at unit RMS, and nothing leaves above the ceiling.
+- The filter fit recovers known filters, and the tone synth glides and ramps without steps.
+- Exporters match golden files from real LSP and EasyEffects installs byte for byte.
+- When available locally, the LSP and EasyEffects output runs through LSP's LADSPA plugin, and the PipeWire drop-in through a private filter-chain, compared with Flatiron's prediction.
 
-### Trial screen
+## Known limitations
 
-- Two large panels, A and B, each lighting up while its interval plays.
-- Keys: ← or 1 = A louder, → or 2 = B louder, Space = replay, P = pause, Q = save and quit.
-- Show progress, trials left in the block and the break timer. Don't show the curve during trials, so the listener isn't biased.
-- Reaction time is logged for every trial; very fast answers (under 150 ms after B ends) are flagged.
-
-### Between sessions
-
-- Prompt the listener to take the headphones off, put them back on, and rerun the channel check.
-- A short quick-look plot is available on request only.
-
-### Fit and audition
-
-- A report per ear: L̂ with its SD band, the reference, the baseline, the residual with its significance mask, the fitted filters and the predicted corrected curve. Broad and narrow corrections are listed separately. A per-session overlay shows whether features hold up across reseats.
-- **Tune mode:** live controls for W, broad strength, reference, k and caps. Each change reruns only the correction pipeline on the cached fit (target: under 1 s) and updates the preview EQ immediately, so the effect can be A/B'd on music right away. Settings save as named presets per headphone, and export uses the active preset.
-- Audition: toggle Flatiron's preview EQ on and off (preamp applied to both states, so they're level-matched). Sources: a slow narrowband sweep, pink noise, or a WAV the user supplies.
-
-### Verify
-
-A short session (about 150 trials) with the preview EQ applied to every stimulus. The residual should come out flat within noise. Any significant leftovers can be fitted again as an increment, within the band budget.
-
-Verify trials record the exact preview filters that were applied. The model adds their known gain at each stimulus frequency, so verify trials pool with ordinary ones and stay valid after the tune settings change.
-
-## Validation and test plan
-
-Prove the method on a simulated listener before any real listening, then prove each exporter by measuring what the target actually does.
-
-### Simulated listener (before any real listening)
-
-- Ground truth per ear: a smooth tilt, plus the ISO 226 contour, plus four features. For example: a +4 dB excess 1/2 octave wide at 4 kHz, a −5 dB peak at 6.2 kHz (Q 6), a −3 dB dip at 8.4 kHz (Q 10), and a +3 dB peak at 11 kHz (Q 4).
-- Simulated responses use the same probit model, with σ₀ = 1 dB, d₀ = 0.5 octave and λ = 3%.
-- Pass criteria: each feature recovered within 1/24 octave in frequency and 1 dB in depth, with no false features above 1 dB, after 600 trials per ear or fewer. When the simulated ear matches the reference exactly, nothing should be corrected in the ear-gain region.
-- Robustness: add individual deviations from ISO 226 (±3 dB, about an octave wide) and report how much of them shows up as broad correction. That number goes in the report as the broad-feature uncertainty.
-- Use the simulator to tune the grid spacing, adaptive weights, refinement thresholds, k, k\_broad, W and the trial budget. Compare against uniform random pairs as a baseline.
-- Test a reseat model: shift features by ±1/48 octave per session, and check that inconsistent ones get dropped.
-
-### Unit tests
-
-- Flatiron's peaking biquad matches the RBJ cookbook formulas to 0.01 dB.
-- Each stimulus's spectrum stays inside its band (> 40 dB rejection one octave out), RMS is normalised, and the limiter never lets output exceed its ceiling.
-- Filter fit recovers a target built from known peaking filters.
-- Exporters match golden files byte for byte (fixtures from Open questions).
-
-### Exporter truth checks (on the real targets)
-
-- **PipeWire:** load the generated drop-in, play a log sweep through the filter sink, record the output via a loopback (`pw-record`), and compare with Flatiron's predicted response.
-- **LSP:** load the `.cfg` in the user's host and measure the same way, or compare against LSP's own response graph at a dozen spot frequencies.
-- **Equaliser:** import the JSON and compare the app's displayed curve (or a loopback capture, if available) for L and R separately.
-- Tolerance: within 0.3 dB of prediction from 1 to 14 kHz. If a target's bell differs systematically (Q definition, transform), add a per-target Q mapping and retest.
-
-### Real-listener checks
-
-- Two full runs on different days for the same headphone: features that get corrected should appear in both.
-- The verify session after correction shows no significant residual features.
-
-## Milestones
-
-Build in this order. The simulator comes before the trial UI, so the method is proven before anyone spends time listening.
-
-1. **Audio core.** Device listing, a stream, stimulus synthesis, limiter, `flatiron devices` and `flatiron level`. Includes a manual probe mode (play a band at a chosen frequency and ear), which is useful on its own for hunting by hand.
-2. **Model and simulator.** Probit MAP fit, Laplace SDs, the simulated listener, and recovery tests passing.
-3. **Scheduler.** Adaptive pair and Δ selection, grid refinement and catch trials, all tuned against the simulator.
-4. **Trial UI and persistence.** The `textual` trial screen, session JSON, breaks, reseat prompts and the optional sweep (phase 0).
-5. **Fit pipeline.** Baseline, mask, filter optimiser, budget, preamp and the HTML report.
-6. **Exporters.** APO text first, then PipeWire, EasyEffects/Equaliser and LSP, each with a golden file and a truth check.
-7. **Audition and verify.** Preview EQ A/B, the verify session and incremental refits.
-
-- [ ] User supplies the format fixtures listed below before milestone 6 starts.
-
-## Open questions and things to verify locally
-
-### Decisions for the user
-
-- Will Flatiron itself run on the Linux machine, the Mac, or both? (It affects which truth checks are practical.)
-- Terminal UI, or a small desktop window?
-- Reference contour: diffuse-field (default, for a flat diffuse-field target) or free-field ISO 226? The ISO 389-7 diffuse/free-field threshold table is paywalled, so the values need sourcing before milestone 5.
-- Should an optional interaural balance step (L vs R at the same frequency) feed into the correction, or stay off as it is by default?
-- Default resonance budget per channel (10 proposed), and the boost caps (+4 dB narrow, +6 dB broad proposed).
-
-### Fixtures to collect before writing exporters
-
-- [ ] LSP x32 LeftRight: save a `.cfg` with band 0 = Bell, 1000 Hz, −3 dB, Q 2 (left) and band 1 = Bell, 5000 Hz, +2 dB, Q 4 (right), the rest off. This fixes key names, gain units and enum values. Note the LSP version and which filter modes it lists.
-- [ ] EasyEffects: export a preset with split channels and two bands, as above.
-- [ ] Equaliser: import that EasyEffects preset and confirm that L and R come in separately. Note how Q shows up as bandwidth, and export a native preset for reference.
-- [ ] PipeWire: version (`pipewire --version`). Confirm `filters1` / `filters2`, and find out whether a broadband-gain filter is accepted in `param_eq`.
-
-### Risks
-
-- Broad corrections in the ear-gain region are only as good as the reference. Individual ears can sit several dB off ISO 226 there. Mitigation: a separate strength control, a separate report section, and a sanity check against a published measurement of the same headphone.
-- Fit variability may swamp features above about 8 kHz. Mitigation: reseat sessions and the consistency mask. If it's still too variable, lower the upper limit or widen the stimuli.
-- Fatigue makes later trials noisier. Mitigation: 15-minute caps, catch trials, and a lapse rate per session.
-- Targets may differ in how they define Q. Mitigation: per-target truth checks and Q mapping.
+- Broad corrections (with `--broad`) are only as good as the reference. Individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
+- Fit variability above about 8 kHz is high. Reseats and the consistency check mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
+- The diffuse-field reference needs a user-supplied ISO 389-7 difference table.
+- Equaliser's (macOS) handling of imported Q and filter mode is unverified.
 
 ### Sources
 

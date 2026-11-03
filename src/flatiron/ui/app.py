@@ -1,4 +1,4 @@
-"""Keyboard-driven trial UI (DESIGN.md, "UI and session flow").
+"""Keyboard-driven trial UI (DESIGN.md, "Session flow").
 
 Flow per session: channel check → optional sweep (first session only) →
 trials until the time limit or Q → end screen (reseat, then next session).

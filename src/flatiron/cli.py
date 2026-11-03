@@ -641,7 +641,7 @@ def main(argv=None):
     s = sub.add_parser("run", help="run forced-choice sessions")
     session_args(s)
     s.add_argument("-s", "--sweep", action="store_true",
-                   help="start with the coarse sweep (phase 0), through the current correction if there is one")
+                   help="start with the coarse sweep, through the current correction if there is one")
     s.add_argument("--sweep-seconds", type=float, help="sweep length each way (default 30)")
     s.set_defaults(func=cmd_run)
 

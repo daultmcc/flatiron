@@ -1,5 +1,5 @@
-"""Audition: play a source with the correction on or off (DESIGN.md, "Fit and
-audition"). Space flips between the two at the same playback position; the
+"""Audition: play a source with the correction on or off (DESIGN.md, "Audition
+and verify"). Space flips between the two at the same playback position; the
 preamp applies to both, so the comparison is level-matched. Blind mode hides
 which is which until you reveal it."""
 

@@ -1,6 +1,6 @@
 """Tone generator: glide through frequencies by ear, with the profile's
 correction switchable, and mark peaks and dips for the next trial session's
-grid (DESIGN.md's manual probe, made continuous)."""
+grid (DESIGN.md, "Tone generator")."""
 
 import time
 
