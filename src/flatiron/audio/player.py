@@ -16,6 +16,11 @@ from flatiron.audio.devices import sd
 from flatiron.audio.limiter import CEILING_DB, db_to_amp
 
 FADE_S = 0.01
+# Output buffer (s). PortAudio's "low" setting (~9 ms, ~2 ms callbacks) underflows
+# on PipeWire: a quarter of the callbacks came too late even with nothing else
+# running, which crackles. 20 ms was clean; 40 ms leaves room for the UI thread
+# holding the GIL. The trial UI compensates for it (StreamPlayer.latency).
+LATENCY_S = 0.04
 
 
 def _guard(buf: np.ndarray, ceiling_db: float = CEILING_DB) -> np.ndarray:
@@ -134,7 +139,7 @@ class StreamPlayer:
         self.mixer = source if source is not None else Mixer(fs=fs)
         self.lock = threading.Lock()
         self.stream = sd().OutputStream(samplerate=fs, channels=2, dtype="float32", device=device,
-                                        latency="low", callback=self._callback)
+                                        latency=LATENCY_S, callback=self._callback)
         self.stream.start()
         self.latency = float(self.stream.latency)
 

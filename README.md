@@ -24,7 +24,7 @@ uv run flatiron config --broad -s 50            # change them (every fit uses th
 uv run flatiron audition                         # the fit on/off: pink noise, sweep, or --source song.wav
 uv run flatiron config --checkpoint              # fix the current filters; later fits only add to them
 uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
-uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire; -m preset.txt
+uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; -m preset.txt
 uv run flatiron tone -p "HD 600"                 # tone generator: glide by hand, mark peaks and dips
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run pytest
@@ -80,9 +80,13 @@ The preamp defaults to enough headroom that no boost can clip; `--preamp 0`
 keeps the uncorrected level, which is easier to A/B against. `-t pipewire
 --check` measures the filters through a private filter-chain on the running
 PipeWire (virtual sink and source; nothing plays on your devices).
+`-t tincan` saves a TinCan preset named "<profile> Flatiron <fit>" straight
+into TinCan's presets (or to `-o FILE`, for TinCan's import). TinCan presets
+carry no preamp, since TinCan sets one for everything loaded, so `--preamp`
+doesn't apply; filters identical in both channels are written once, as LR.
 
 Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
 (grid, probit fit, refinement), `session/` (scheduler, runner, storage,
 sweep), `ui/` (Textual apps: trials, audition, tone generator), `fit/` (reference, baseline, features, filters,
-pipeline), `export/` (APO text, LSP, LADSPA truth check), `report/` (figures, HTML), `sim/` (simulated listener, designs,
+pipeline), `export/` (APO text, LSP, EasyEffects, PipeWire, TinCan, truth checks), `report/` (figures, HTML), `sim/` (simulated listener, designs,
 validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).

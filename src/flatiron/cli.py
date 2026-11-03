@@ -468,7 +468,7 @@ def cmd_export(args):
     from pathlib import Path
 
     from flatiron.apo import parse_apo
-    from flatiron.export import apo, easyeffects, lsp, pipewire
+    from flatiron.export import apo, easyeffects, lsp, pipewire, tincan
     from flatiron.export.plan import build_plan, response_db
 
     prof = _profile(args)
@@ -490,7 +490,11 @@ def cmd_export(args):
     if pf is None:
         return 1
     plan = build_plan(pf.summary(), pref)
-    if args.preamp != "safe":
+    if args.target == "tincan" and args.preamp is not None:
+        print("TinCan presets carry no preamp: TinCan sets one for all loaded presets "
+              "(match bypass, safe or manual, in its main window). Leave out --preamp.")
+        return 1
+    if args.preamp not in (None, "safe"):
         try:
             plan.preamp_db = float(args.preamp)
         except ValueError:
@@ -500,9 +504,19 @@ def cmd_export(args):
         if peak > 0:
             print(f"Note: with this preamp the EQ boosts up to {peak:+.1f} dB at its peak, so loud "
                   "material in that band can clip.")
-    ext = {"apo": ".txt", "lsp": ".cfg", "easyeffects": ".json", "pipewire": ".conf"}[args.target]
-    out = Path(args.output) if args.output else Path(
-        f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
+    ext = {"apo": ".txt", "lsp": ".cfg", "easyeffects": ".json", "pipewire": ".conf", "tincan": ".toml"}[args.target]
+    label = prof.read()["label"]
+    preset_name = f"{label} Flatiron {plan.fit_hash}{' merged' if plan.merged else ''}"
+    if args.output:
+        out = Path(args.output)
+    elif args.target == "tincan":
+        out = tincan.presets_dir() / f"{tincan.slug(preset_name)}.toml"
+        if not out.parent.is_dir():
+            print(f"Can't find TinCan's preset folder ({out.parent}): start TinCan once to create it, "
+                  "or write the preset elsewhere with -o and import it in TinCan's Manage presets.")
+            return 1
+    else:
+        out = Path(f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
     if not out.suffix:
         out = out.with_suffix(ext)
     if not out.parent.is_dir():
@@ -526,7 +540,10 @@ def cmd_export(args):
                 if worst > 0.3:
                     print("Not writing it: PipeWire doesn't do what Flatiron predicts.")
                     return 1
-            out.write_text(pipewire.write(plan, prof.read()["label"], prof.slug))
+            out.write_text(pipewire.write(plan, label, prof.slug))
+            written.append(out)
+        elif args.target == "tincan":
+            out.write_text(tincan.write(plan, preset_name))
             written.append(out)
         elif args.target == "apo":
             # One file per channel: name_L.txt, name_R.txt.
@@ -554,8 +571,12 @@ def cmd_export(args):
         print(e)
         return 1
     bands = " / ".join(f"{e} {len(fs)}" for e, fs in plan.channels.items())
-    print(f"{'Merged' if plan.merged else 'Correction-only'} export, bands {bands}, preamp {plan.preamp_db:+.2f} dB")
-    if not plan.merged:
+    preamp = "" if args.target == "tincan" else f", preamp {plan.preamp_db:+.2f} dB"
+    print(f"{'Merged' if plan.merged else 'Correction-only'} export, bands {bands}{preamp}")
+    if args.target == "tincan":
+        print(f"TinCan preset \"{preset_name}\"" + (": add it from the main window's preset list."
+                                                     if not args.output else ": import it in Manage presets."))
+    elif not plan.merged:
         print("Stack it after any EQ you already use (or in its own instance).")
     if args.target == "pipewire":
         print("Install: copy it to ~/.config/pipewire/pipewire.conf.d/ and restart PipeWire "
@@ -666,15 +687,17 @@ def main(argv=None):
 
     s = sub.add_parser("export", help="write the current fit's correction for an EQ host")
     s.add_argument("-p", "--profile", help="default: the only profile")
-    s.add_argument("-t", "--target", choices=("apo", "lsp", "easyeffects", "pipewire"), required=True,
+    s.add_argument("-t", "--target", choices=("apo", "lsp", "easyeffects", "pipewire", "tincan"), required=True,
                    help="apo: Equalizer APO / AutoEQ text per channel (also PipeWire param_eq files); "
                         "lsp: LSP Parametric Equalizer x32 LeftRight settings; "
                         "easyeffects: EasyEffects preset, the format Equaliser (macOS) imports; "
-                        "pipewire: filter-chain drop-in for ~/.config/pipewire/pipewire.conf.d/")
+                        "pipewire: filter-chain drop-in for ~/.config/pipewire/pipewire.conf.d/; "
+                        "tincan: TinCan preset, saved straight into TinCan's presets")
     s.add_argument("-m", "--merge", metavar="APO_TXT", help="preference preset to merge in front, both channels")
-    s.add_argument("--preamp", default="safe", metavar="safe|DB",
+    s.add_argument("--preamp", metavar="safe|DB",
                    help="safe (default): enough headroom that no boost can clip; or a gain in dB, "
-                        "e.g. 0 to keep the level of the uncorrected sound for A/B comparison")
+                        "e.g. 0 to keep the level of the uncorrected sound for A/B comparison "
+                        "(not for tincan, which sets its own)")
     s.add_argument("--check", action="store_true",
                    help="pipewire: measure the filters through a private filter-chain first "
                         "(virtual sink/source, a few seconds; nothing plays on your devices)")
@@ -682,7 +705,7 @@ def main(argv=None):
     s.add_argument("--merge-right", metavar="APO_TXT")
     s.add_argument("-o", "--output", metavar="FILE",
                    help="output file (apo: FILE_L.txt and FILE_R.txt); default: <profile>-<fit>.cfg/.txt "
-                        "in the current directory")
+                        "in the current directory; tincan: TinCan's preset folder")
     s.set_defaults(func=cmd_export)
 
     s = sub.add_parser("simulate", help="fit a simulated listener and report recovery")

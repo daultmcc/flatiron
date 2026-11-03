@@ -206,3 +206,46 @@ def test_export_preamp_override(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "zero_L.txt").read_text().startswith("Preamp: 0.00 dB")
     assert "can clip" in capsys.readouterr().out
     assert main(["export", "-t", "apo", "--preamp", "loud"]) == 1
+
+
+def test_tincan_preset_matches_the_plan():
+    import tomllib
+
+    from flatiron.export import tincan
+
+    pref = {e: parse_apo("Preamp: -6 dB\nFilter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.7\n") for e in "LR"}
+    plan = build_plan(fit_entry([(6150.4, -4.23, 6.5)], [(7020, -3.1, 8.0), (11000, 2, 4)]), pref)
+    doc = tomllib.loads(tincan.write(plan, 'HD 600 "merged"'))
+    assert doc["format"] == 1 and doc["name"] == 'HD 600 "merged"' and "preamp" not in str(doc)
+    # The shared shelf is written once, for both channels.
+    assert [(f["channel"], f["type"]) for f in doc["filter"]] == [
+        ("LR", "low_shelf"), ("L", "bell"), ("R", "bell"), ("R", "bell")]
+    kinds = {v: k for k, v in tincan.TYPE.items()}
+    for e in "LR":
+        back = [ApoFilter(kinds[f["type"]], f["frequency"], f["gain"], f["q"])
+                for f in doc["filter"] if e in f["channel"]]
+        np.testing.assert_allclose(response_db(back), response_db(plan.channels[e]), atol=1e-3)
+    with pytest.raises(ValueError, match="Q"):
+        tincan.write(build_plan(fit_entry([(6150, -4, 60)], [])), "x")
+    assert tincan.slug("  Sundara: Flatiron 1a2b ") == "sundara-flatiron-1a2b"
+
+
+def test_tincan_export_cli(tmp_path, monkeypatch, capsys):
+    from flatiron.cli import main
+    from flatiron.session.store import Profile
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    Profile.open("HD 600")
+    use_fit(monkeypatch, fit_entry([(6150, -4.2, 6.5)], [(7020, -3.1, 8.0)]))
+    assert main(["export", "-t", "tincan"]) == 1  # TinCan hasn't made its folder: say so, don't create it
+    assert "start TinCan once" in capsys.readouterr().out
+    presets = tmp_path / "data" / "tincan" / "presets"
+    presets.mkdir(parents=True)
+    assert main(["export", "-t", "tincan"]) == 0
+    (out,) = presets.glob("hd-600-flatiron-*.toml")
+    assert 'name = "HD 600 Flatiron ' in out.read_text()
+    assert "preamp" not in capsys.readouterr().out
+    assert main(["export", "-t", "tincan", "--preamp", "0"]) == 1
+    assert main(["export", "-t", "tincan", "-o", "mine.toml"]) == 0 and (tmp_path / "mine.toml").exists()
