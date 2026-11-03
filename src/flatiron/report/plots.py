@@ -4,7 +4,9 @@ Panels share a log-frequency axis:
   1. measured level relative to the reference (±1 SD) and the baseline
   2. residual (±1 SD), the correction, and the predicted result, with the
      corrected features shaded
-  3. (two or more sessions) each session's residual against the pooled one
+  3. (two or more sessions) each session's residual against the pooled one;
+     above MAX_SESSION_LINES sessions, the range holding the middle 90% of
+     them (weighted by their trials) instead of a line each
 Colors are the dataviz reference palette's first three categorical slots,
 validated all-pairs in both modes; lines are direct-labelled because the light
 aqua sits under 3:1 contrast.
@@ -31,6 +33,18 @@ THEMES = {
 }
 TICKS = [1000, 1500, 2000, 3000, 4000, 6000, 8000, 10000, 13000]
 EAR_NAMES = {"L": "Left", "R": "Right"}
+MAX_SESSION_LINES = 5
+
+
+def weighted_quantiles(values: np.ndarray, weights, qs) -> np.ndarray:
+    """Per column of `values` (sessions × points), the weighted quantiles qs
+    (midpoint rule: each session's weight is centred on its value)."""
+    w = np.asarray(weights, float)
+    order = np.argsort(values, axis=0)
+    v = np.take_along_axis(values, order, axis=0)
+    ws = w[order]
+    cum = (np.cumsum(ws, axis=0) - 0.5 * ws) / w.sum()
+    return np.array([[np.interp(q, cum[:, j], v[:, j]) for j in range(v.shape[1])] for q in qs])
 
 
 def _style(ax, t, f_lo, f_hi):
@@ -106,12 +120,22 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
     if with_sessions:
         ax = axes[2]
         _style(ax, t, g[0], g[-1])
-        for r in session_R:
-            ax.plot(g, r, color=t["muted"], linewidth=1, alpha=0.8)
-        ax.plot(g, c.R, color=t["s1"], linewidth=2)
-        _label_end(ax, xr, c.R[-1], "all sessions", t["s1"], t, dy=1.0)
-        _label_end(ax, xr, session_R[-1][-1], "each session", t["muted"], t, dy=-1.0)
-        ax.set_title("Residual per reseat session", color=t["ink"], fontsize=10, loc="left")
+        if len(session_R) > MAX_SESSION_LINES:
+            w = c.session_trials if len(c.session_trials) == len(session_R) else np.ones(len(session_R))
+            lo, hi = weighted_quantiles(np.array(session_R), w, (0.05, 0.95))
+            ax.fill_between(g, lo, hi, color=t["muted"], alpha=0.3, linewidth=0)
+            ax.plot(g, c.R, color=t["s1"], linewidth=2)
+            _label_end(ax, xr, c.R[-1], "all sessions", t["s1"], t, dy=1.0)
+            _label_end(ax, xr, hi[-1], "90% of sessions", t["muted"], t, dy=1.0)
+            title = f"Residual per reseat session: middle 90% of {len(session_R)} sessions, weighted by trials"
+        else:
+            for r in session_R:
+                ax.plot(g, r, color=t["muted"], linewidth=1, alpha=0.8)
+            ax.plot(g, c.R, color=t["s1"], linewidth=2)
+            _label_end(ax, xr, c.R[-1], "all sessions", t["s1"], t, dy=1.0)
+            _label_end(ax, xr, session_R[-1][-1], "each session", t["muted"], t, dy=-1.0)
+            title = "Residual per reseat session"
+        ax.set_title(title, color=t["ink"], fontsize=10, loc="left")
         ax.set_ylabel("dB", color=t["muted"], fontsize=8)
     axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
 

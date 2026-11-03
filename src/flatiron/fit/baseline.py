@@ -54,7 +54,10 @@ def fit_baseline(grid: np.ndarray, data: np.ndarray, sd: np.ndarray, max_width_o
     # Weight by interval width too, so refined (denser) regions don't dominate.
     dens = np.gradient(x)
     w0 = dens / sd**2
-    lam = penalty * w0.sum()
+    # The curvature penalty, not the knots, sets the stiffness, so it scales
+    # with W: a smoothing spline's scale goes as the fourth root of the
+    # penalty. (Unscaled, W moved the baseline by under 0.4 dB.)
+    lam = penalty * w0.sum() * max_width_oct**4
     def huber(r):
         return np.minimum(1.0, HUBER_C / np.maximum(np.abs(r), 1e-12))
 

@@ -3,7 +3,8 @@ settings and checkpoint. Nothing here is saved except the cache: the fit is
 recomputed whenever a command needs it."""
 
 import hashlib
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
+from datetime import datetime
 from typing import Callable
 
 import numpy as np
@@ -59,6 +60,7 @@ class ProfileFit:
     fits: dict[str, ProbitFit]
     sessions: list[Session]
     session_ids: dict[str, list[str]]  # per ear: sessions in the consistency check
+    pooled: list[str] = field(default_factory=list)  # labels of other profiles whose trials are included
 
     def summary(self) -> dict:
         """JSON-able: what export, audition and verify work from."""
@@ -112,13 +114,34 @@ class NotEnoughTrials(ValueError):
     pass
 
 
+# -- pooling (`flatiron config --pool`) ---------------------------------------
+
+def pooled_profiles(profile: Profile) -> list[Profile]:
+    """Other profiles (the same headphones) whose trials the fit includes."""
+    out = []
+    for slug in profile.read().get("pool") or []:
+        p = Profile(slug, profile.dir.parent.parent)
+        if not p.path.exists():
+            raise ValueError(f"Profile {slug!r} is pooled into {profile.read()['label']!r} but doesn't exist "
+                             "any more: flatiron config --pool none")
+        out.append(p)
+    return out
+
+
+def fit_sessions(profile: Profile) -> list[Session]:
+    """The profile's sessions and those of the profiles pooled into it, oldest
+    first (the newest session's grid is the one the fit uses)."""
+    sessions = profile.sessions() + [s for p in pooled_profiles(profile) for s in p.sessions()]
+    return sorted(sessions, key=lambda s: datetime.fromisoformat(s.started))
+
+
 def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSettings(),
                 session_ids: list[str] | None = None,
                 fixed: dict[str, list[PeakingFilter]] | None = None,
                 on_fit: Callable[[], None] | None = None) -> ProfileFit:
     """on_fit is called once if a perceptual fit isn't cached and has to be
     computed (it takes a few seconds)."""
-    sessions = profile.sessions()
+    sessions = fit_sessions(profile)
     if session_ids:
         missing = set(session_ids) - {s.id for s in sessions}
         if missing:
@@ -146,7 +169,7 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
                 per_session[e].append(fit(t, grid, init=fits[e], fit_hyper=False))
                 used[e].append(s.id)
     corr = correct(fits, settings, per_session, fixed)
-    return ProfileFit(corr, fits, sessions, used)
+    return ProfileFit(corr, fits, sessions, used, [p.read()["label"] for p in pooled_profiles(profile)])
 
 
 def current_fit(profile: Profile, on_fit: Callable[[], None] | None = None) -> ProfileFit:

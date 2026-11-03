@@ -21,6 +21,7 @@ from flatiron.model.probit import Trials
 from flatiron.paths import data_dir
 
 FORMAT_VERSION = 1
+RESERVED = ("none",)  # profile names the CLI uses as keywords
 
 
 def slugify(label: str) -> str:
@@ -124,6 +125,8 @@ class Profile:
     def open(cls, label: str, root: Path | None = None) -> "Profile":
         """Open a profile by label or slug, creating it if needed."""
         p = cls(slugify(label), root)
+        if p.slug in RESERVED and not p.path.exists():
+            raise ValueError(f"{label!r} can't be a profile name: `config --pool none` uses it")
         if not p.path.exists():
             write_json(p.path, {"label": label, "slug": p.slug, "created": now_iso(),
                                 "version": FORMAT_VERSION})

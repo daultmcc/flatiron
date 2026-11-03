@@ -38,6 +38,17 @@ class Feature:
     reason: str = ""
     consistency_p: float | None = None
     session_means: list = field(default_factory=list)
+    # Found inside a broad lobe, against a local smooth: its residual over
+    # the span (the pipeline's R includes the lobe's broad offset there).
+    residual: np.ndarray | None = None
+    residual_sd: np.ndarray | None = None
+    inside_broad: bool = False
+    run: int = -1  # which same-sign stretch of the residual it was split from
+
+    def shifted(self, n: int) -> "Feature":
+        self.lo += n
+        self.hi += n
+        return self
 
     @property
     def span(self) -> slice:
@@ -87,7 +98,7 @@ def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3) -> lis
     sd = np.sqrt(np.clip(np.diag(cov), 1e-12, None))
     sign = np.sign(r)
     feats = []
-    for lo, hi in (part for run in _sign_runs(sign) for part in _split_valleys(r, *run)):
+    for n, lo, hi in ((n, *part) for n, run in enumerate(_sign_runs(sign)) for part in _split_valleys(r, *run)):
         k_pk = lo + int(np.argmax(np.abs(r[lo:hi + 1])))
         width = _half_width(x, r, lo, hi, k_pk)
         mean, msd = _mean_stats(x, r, cov, lo, hi)
@@ -96,7 +107,7 @@ def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3) -> lis
         run_z = max((np.min(np.abs(r[a:b + 1]) / sd[a:b + 1]) for a, b in long_runs), default=0.0)
         kind = NARROW if width < narrow_max_oct else BROAD
         f = Feature(lo, hi, float(grid[k_pk]), float(r[k_pk]), float(width), kind,
-                    float(run_z if kind == NARROW else abs(mean) / msd), mean, msd)
+                    float(run_z if kind == NARROW else abs(mean) / msd), mean, msd, run=n)
         if kind == NARROW:
             f.accepted = bool(long_runs)
             f.reason = "" if f.accepted else f"no two adjacent points beyond {k:g} SD"

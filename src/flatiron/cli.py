@@ -16,7 +16,11 @@ def _profile(args, create: bool = False):
     from flatiron.session.store import Profile
 
     if args.profile:
-        prof = Profile.open(args.profile) if create else Profile.existing(args.profile)
+        try:
+            prof = Profile.open(args.profile) if create else Profile.existing(args.profile)
+        except ValueError as e:
+            print(e)
+            return None
         if prof is None:
             print(f"No profile {args.profile!r}. See: flatiron profiles")
         return prof
@@ -307,6 +311,13 @@ FIT_OPTIONS = [
     (("--f-hi",), "f_hi", dict(type=float, help="upper correction limit (Hz)")),
     (("--consistency",), "consistency",
      dict(action=argparse.BooleanOptionalAction, help="drop narrow features that move between reseats")),
+    (("--method",), "method",
+     dict(choices=("features", "smooth"),
+          help="features (default): correct the significant features found against the baseline; "
+               "smooth (experimental): the baseline is the curve smoothed over --smooth-width, and every "
+               "residual is corrected, with no feature detection (more correction, noise included)")),
+    (("--smooth-width",), "smooth_oct",
+     dict(type=float, help="smoothing width (FWHM) in octaves for --method smooth, 1/8 to 1")),
 ]
 
 
@@ -330,8 +341,9 @@ def cmd_config(args):
 
     from flatiron.fit.pipeline import CorrectionSettings
     from flatiron.fit.reference import reference
-    from flatiron.fit.run import checkpoint, profile_session_ids, profile_settings, set_checkpoint, \
-        set_profile_settings
+    from flatiron.fit.run import checkpoint, fit_sessions, profile_session_ids, profile_settings, \
+        set_checkpoint, set_profile_settings
+    from flatiron.session.store import Profile
 
     prof = _profile(args)
     if prof is None:
@@ -365,14 +377,39 @@ def cmd_config(args):
     if args.broad_strength is not None and new.preserve_tonality:
         print("--broad-strength only applies with broad-feature correction: add --broad (nothing changed).")
         return 1
+    if args.smooth_oct is not None and new.method != "smooth":
+        print("--smooth-width only applies with --method smooth (nothing changed).")
+        return 1
+    pool = None
+    if args.pool:
+        pool = [] if args.pool == "none" else [x.strip() for x in args.pool.split(",") if x.strip()]
+        for i, name in enumerate(pool):
+            try:
+                other = Profile.existing(name)
+            except ValueError:
+                other = None
+            if other is None:
+                print(f"No profile {name!r} to pool (nothing changed). See: flatiron profiles")
+                return 1
+            if other.slug == prof.slug:
+                print("A profile can't be pooled into itself (nothing changed).")
+                return 1
+            pool[i] = other.slug
     if changes:
         set_profile_settings(prof, new)
+    if pool is not None:
+        prof.update(pool=pool or None)
+        if pool:
+            print(f"Pooled: fits include the trials of {', '.join(Profile(s).read()['label'] for s in pool)} "
+                  "(their sessions stay in their own profiles).")
+        else:
+            print("Not pooled: fits use this profile's own trials.")
     if args.sessions:
         if args.sessions == "all":
             prof.update(sessions_used=None)
         else:
             ids = args.sessions.split(",")
-            missing = set(ids) - {s.id for s in prof.sessions()}
+            missing = set(ids) - {s.id for s in fit_sessions(prof)}
             if missing:
                 print(f"No such session(s): {', '.join(sorted(missing))}. See: flatiron sessions")
                 return 1
@@ -394,7 +431,7 @@ def cmd_config(args):
         if v != getattr(old, f):
             print(f"{_option_name(next(fl for fl, ff, *_ in FIT_OPTIONS if ff == f))}: "
                   f"{_show(f, getattr(old, f))} -> {_show(f, v)}")
-    if changes or args.sessions or args.checkpoint or args.reset_checkpoint:
+    if changes or args.sessions or args.checkpoint or args.reset_checkpoint or pool is not None:
         return 0
     # Nothing to change: show the settings.
     st, default = asdict(profile_settings(prof)), asdict(CorrectionSettings())
@@ -402,10 +439,13 @@ def cmd_config(args):
     for flags, f, *_ in FIT_OPTIONS:
         mark = "*" if st[f] != default[f] else " "
         dflt = "" if mark == " " else f"   (default {_show(f, default[f])})"
-        unused = "   (unused without --broad)" if f == "broad_strength" and st["preserve_tonality"] else ""
+        unused = ("   (unused without --broad)" if f == "broad_strength" and st["preserve_tonality"] else
+                  "   (unused without --method smooth)" if f == "smooth_oct" and st["method"] != "smooth" else "")
         print(f"  {mark} {_option_name(flags):18} {_show(f, st[f])}{dflt}{unused}")
     ids = profile_session_ids(prof)
     print(f"  sessions: {'all' if not ids else ', '.join(ids)}")
+    pooled = prof.read().get("pool") or []
+    print(f"  pooled with: {', '.join(pooled) if pooled else 'none'}")
     cp = prof.read().get("checkpoint")
     if cp:
         n = " / ".join(f"{e} {len(v)}" for e, v in cp["filters"].items())
@@ -418,6 +458,11 @@ def cmd_config(args):
 
 def _print_fit(pf):
     corr = pf.correction
+    if pf.pooled:
+        print(f"Pooled with {', '.join(pf.pooled)}: {len(pf.sessions)} sessions in all.")
+    if corr.settings.method == "smooth":
+        print(f"Method: smooth (experimental): every residual against a {corr.settings.smooth_oct:g}-octave "
+              "smooth is corrected; the features below are only what's significant.")
     for e, c in corr.ears.items():
         f = pf.fits[e]
         print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}, "
@@ -431,10 +476,12 @@ def _print_fit(pf):
         if not c.filters:
             print("  no correction needed")
         for kind in ("narrow", "broad"):
-            acc = [x for x in c.features if x.accepted and x.kind == kind]
+            acc = sorted((x for x in c.features if x.accepted and x.kind == kind), key=lambda x: x.fc)
             rej = [x for x in c.features if not x.accepted and x.reason.startswith("inconsistent")]
             if acc:
-                print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({-x.peak_db:+.1f} dB)" for x in acc))
+                print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({-x.peak_db:+.1f} dB"
+                                                         + (", inside a broad region" if x.inside_broad else "")
+                                                         + ")" for x in acc))
             if rej and kind == "narrow":
                 print("  dropped as inconsistent across reseats: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
         for a, b, m in c.left_out:
@@ -672,6 +719,9 @@ def main(argv=None):
     for flags, f, kw, *_ in FIT_OPTIONS:
         s.add_argument(*flags, dest=f, default=None, **kw)
     s.add_argument("--sessions", help="comma-separated session ids to fit, or 'all' (the default)")
+    s.add_argument("--pool", metavar="PROFILE[,PROFILE]|none",
+                   help="include other profiles' trials in this one's fits (the same headphones measured "
+                        "with another stimulus, say); none: stop")
     s.add_argument("--reset", nargs="*", metavar="SETTING",
                    help="back to the default: the named settings (e.g. width broad-strength), or all of them")
     s.add_argument("--checkpoint", action="store_true",

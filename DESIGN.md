@@ -24,7 +24,7 @@ Flatiron doesn't:
 ## Key design decisions
 
 1. **Reference, then detrend.** What gets measured is headphone response + the listener's equal-loudness contour (ear gain included) + fit-dependent resonances. Flattening all of that would cut the listener's natural ear gain. Flatiron subtracts a reference contour, then removes anything that varies more slowly than W. What's left is a candidate for correction.
-2. **Keep the tonality by default.** Broad features (wider than 1/3 octave) in the ear-gain region depend on the reference, and individual ears differ from ISO 226 by several dB there. By default Flatiron corrects narrow features only and adds broad compensation filters so the correction averages to zero over about W. The headphone's broad tonal balance stays as it was, and broad changes are left to the user's own EQ. `--broad` switches to correcting broad features toward the fixed target as well, scaled by a strength control.
+2. **Keep the tonality by default.** Broad features (wider than 1/2 octave) in the ear-gain region depend on the reference, and individual ears differ from ISO 226 by several dB there. By default Flatiron corrects narrow features only, including narrow features riding on a broad one, and adds broad compensation filters so the correction averages to zero over about W. The headphone's broad tonal balance stays as it was, and broad changes are left to the user's own EQ. `--broad` switches to correcting broad features toward the fixed target as well, scaled by a strength control.
 3. **Compare neighbours, fit globally.** Comparing nearby frequencies is easier and less noisy than comparing far-apart ones. Every judgment goes into one maximum-likelihood fit per ear, which avoids the random-walk error of chaining neighbour comparisons. Judgment noise grows with frequency separation, so long-range comparisons count for less.
 4. **Redundant comparison graph.** Each grid point is compared against points 1 to 3 steps away, plus about 25% longer jumps of up to an octave. The longer jumps pin down broad features that a chain of neighbour comparisons would smear out.
 5. **Narrowband noise by default.** Pure sines inside headphones are very sensitive to seal and standing waves, and can fall between the peaks of a narrow notch. The default stimulus is 1/12-octave band noise; 1/24-octave noise, warble tones and pure tones are options. The model accounts for each trial's stimulus bandwidth, so sessions with different stimuli pool.
@@ -107,10 +107,11 @@ Two optional ways to tell the scheduler where to look:
 ### Pipeline (per ear)
 
 1. **Reference.** D(f) = L̂(f) − E(f), where E is the perceived-level shape a reference-correct headphone would produce, with its mean removed. Options: `iso226` (default: the negated ISO 226 frontal free-field contour at 60 phon, configurable), `diffuse` (ISO 226 plus a diffuse-minus-free-field threshold difference, read from a user-supplied CSV, because the ISO 389-7 table isn't openly available), `none`, or a CSV of perceived-level shape.
-2. **Baseline.** A penalised cubic B-spline in log2 f with knots every 2W (penalty 0.1, relative to the data weight). It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly.
+2. **Baseline.** A penalised cubic B-spline in log2 f with knots every 2W. The curvature penalty sets its stiffness, so it scales as W⁴ (0.1 relative to the data weight at W = 1 octave); a smoothing spline's scale goes as the penalty's fourth root. It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly.
 3. **Residual.** R = D − baseline, with its full covariance.
-4. **Features.** R is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. A lobe narrower than 1/3 octave at half height is *narrow*: it's kept if at least two adjacent points exceed k·SD (k = 2). A wider lobe is *broad*: it's kept if its mean exceeds k\_broad times the SD of that mean (k\_broad = 2.5). Features outside \[f\_lo, f\_hi\] are dropped.
-5. **Consistency.** With two or more sessions in the check, each kept feature's mean over its half-height core is compared across sessions (Cochran's Q). A feature with p < 0.01 is dropped as fit-dependent.
+4. **Features.** R is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. A lobe narrower than 1/2 octave at half height is *narrow*: it's kept if at least two adjacent points exceed k·SD (k = 2). A wider lobe is *broad*: it's kept if its mean exceeds k\_broad times the SD of that mean (k\_broad = 2.5). Features outside \[f\_lo, f\_hi\] are dropped.
+   **Inside broad regions.** A broad lobe that isn't corrected as a whole (kept as tonality, the default, or not significant) can still carry narrow features. It's searched again: together with the same-sign pieces it was split from at a valley that stays clear of zero (beyond k SD), so the flank beside a narrow dip isn't taken for a feature of its own. The region's residual is taken against a Gaussian-weighted local linear smooth over the region alone (FWHM 1/2 octave; local linear, so it doesn't lag at the region's ends), and every lobe of that is given the narrow test. Features found this way are corrected against the local smooth, with its (smaller) error bars, and checked for consistency the same way.
+5. **Consistency.** With two or more sessions in the check (each with at least 60 trials in the ear), each kept feature's mean over its half-height core is compared across sessions (Cochran's Q). A feature with p < 0.01 is dropped as fit-dependent.
 6. **Target.** C = −R over kept features, cuts limited to 12 dB. Boosts are capped at +4 dB for narrow features (often fit-dependent cancellations) and +6 dB for broad ones. With `--broad`, the broad part is scaled by the strength (0 to 100%, default 100%). Without it, broad features aren't in the target at all.
 7. **Taper.** C fades to 0 with a raised cosine over up to 1/3 octave beyond \[f\_lo, f\_hi\], limited by the measured margin.
 8. **Filters.** On a 1/96-octave grid, weighted by 1/SD: greedily place a peaking filter on the largest weighted error (Q from its half-height width), then refit all filters jointly with bounded least squares over (log Fc, gain, log Q). Bounds: Fc within \[f\_lo, f\_hi\], Q 0.7 to 16, |gain| ≤ 12 dB. Stop when no point is off by more than 2 SD, or the band budget (default 20 per channel, at most 32) is used up. Filters under 0.5 dB are dropped and the rest refitted. If the budget binds, the frequency ranges still off by more than k SD are reported.
@@ -132,8 +133,18 @@ Every setting is downstream of the cached perceptual fit, so changing it needs n
 | Correction range | 1 to 13 kHz | `--f-lo`, `--f-hi` |
 | Reseat consistency check | on | `--consistency` / `--no-consistency` |
 | Sessions included | all | `--sessions` |
+| Other profiles pooled in | none | `--pool` |
+| Method | features | `--method features\|smooth`, `--smooth-width` |
 
 The correction range can only move within the measured range, and the measured range, grid and stimulus are fixed when the trials are collected. Features wider than about an octave are only as well constrained as the longest jumps (1 octave).
+
+### Pooling
+
+`config --pool OTHER` includes another profile's trials in this profile's fits: the same headphones measured with a different stimulus, for example. The model already accounts for each trial's stimulus, so the sessions pool directly. They stay in their own profile; new sessions there are included as they're run. Trial sessions still adapt to the profile's own trials only.
+
+### Experimental: the smooth method
+
+`config --method smooth` skips feature detection. The baseline is the curve smoothed with a Gaussian-weighted local linear fit over `--smooth-width` (FWHM, default 1/2 octave), and the whole residual within \[f\_lo, f\_hi\] is the target, with the usual caps, tonality compensation and 2 SD filter-fit stop. It corrects more, but with no significance test it also corrects noise: on noise drawn from real fits' error bars it fits about 3 filters per ear (1.5 to 3 dB), against about 0.8 for the features method. A smoothing window also takes part of any feature near its own width into the baseline (about 45% of a 1/4-octave resonance at 1/2 octave), which under-corrects it. The features are still reported, as what's significant, and verify uses them.
 
 ### Checkpoints
 
@@ -198,7 +209,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 - `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
 - `model/`: grids, the probit fit, and grid refinement.
 - `session/`: the adaptive scheduler, the trial runner (scheduler + stimuli + session file, without UI), storage, and the sweep.
-- `fit/`: reference, baseline, features, filter fitting, the correction pipeline, and the per-profile fit (cache, settings, checkpoint).
+- `fit/`: reference, baseline, features, filter fitting, the correction pipeline, and the per-profile fit (cache, settings, pooling, checkpoint).
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
 - `report/`: figures and the HTML report.
 - `ui/`: the trial app (level, channel check, sweep, trials, end screen), audition, and the tone generator.
@@ -209,7 +220,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 
 Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically.
 
-- `profiles/<slug>/profile.json`: label, settings (only changes from the defaults), the sessions used (if not all), the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks.
+- `profiles/<slug>/profile.json`: label, settings (only changes from the defaults), the sessions used (if not all), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, and every trial. A trial records the ear, both frequencies, Δ for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, grid, priors and model version) and the last HTML report.
 
@@ -224,7 +235,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
    - The end screen asks for a reseat before the next session.
 
    The fitted curve is never shown during trials. Trial keys: ←/1 = A louder, →/2 = B louder, Space = replay, U = undo, P = pause, L = level, Q = save and quit, X = discard the session.
-3. **Look** (`report`, `report -H`): per ear, L̂ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. Checkpoint filters are labelled.
+3. **Look** (`report`, `report -H`): per ear, L̂ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the pooled one; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled.
 4. **Adjust** (`config`), **listen** (`audition`), **verify** (`verify`, ideally after `config --checkpoint`), and **export**.
 
 ## Validation

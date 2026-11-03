@@ -57,7 +57,10 @@ features toward the fixed target; by default only narrow features are corrected
 and the original broad shape is kept, leaving broad tonal changes to you),
 `-s/--broad-strength` (how much of each broad feature, %; needs `--broad`), `--k`, `--k-broad`, `--bands`, `--boost-narrow`,
 `--boost-broad`, `--max-cut`, `--f-lo`, `--f-hi`, `--no-consistency`,
-`--sessions id,id|all`; `--reset [name ...]` returns settings to the defaults.
+`--sessions id,id|all`, `--pool OTHER[,OTHER]|none` (include another profile's trials, e.g. the same
+headphones measured with tones), `--method smooth` with `--smooth-width OCT` (experimental: correct every
+residual against a smoothed curve, no feature detection; corrects some noise too);
+`--reset [name ...]` returns settings to the defaults.
 `--checkpoint` fixes the current filters: later fits keep them, whatever the
 settings, and only add filters (within `--bands`) for what's still
 significant, e.g. after `verify`. `--reset-checkpoint` drops it. The design's

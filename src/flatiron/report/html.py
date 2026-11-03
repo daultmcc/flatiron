@@ -52,7 +52,7 @@ def _table(head, rows, num_cols=()):
 def _features_table(feats):
     rows = [(f"{f.fc:,.0f} Hz", f"{f.width_oct:.2f}", f"{f.peak_db:+.1f}", f"{f.z:.1f}",
              "" if f.consistency_p is None else f"{f.consistency_p:.2f}",
-             "yes" if f.accepted else f"no: {f.reason}")
+             ("yes, inside a broad region" if f.inside_broad else "yes") if f.accepted else f"no: {f.reason}")
             for f in sorted(feats, key=lambda f: f.fc)]
     return _table(["centre", "width (oct)", "residual dB", "z", "reseat p", "corrected"], rows, (1, 2, 3, 4))
 
@@ -70,6 +70,12 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         notes.append("Reference: ISO 226 free-field equal-loudness contour. The design's default (diffuse "
                      "field) needs the ISO 389-7 table, which hasn't been sourced yet; corrections near "
                      "3 to 5 kHz depend on this choice.")
+    if pf.pooled:
+        notes.append(f"Pooled: includes the trials of {', '.join(pf.pooled)}.")
+    if st.method == "smooth":
+        notes.append(f"Experimental smooth method: the baseline is the curve smoothed over {st.smooth_oct:g} "
+                     "octave, and every residual is corrected. The features listed are only what's "
+                     "significant; noise gets corrected too.")
     out = [f"<h1>Flatiron fit · {html.escape(label)}</h1>",
            f'<p class="meta">{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} sessions · '
            + " · ".join(f"{EAR_NAMES[e]} {f.n_trials} trials" for e, f in pf.fits.items())

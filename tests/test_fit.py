@@ -207,7 +207,7 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     assert main(["config"]) == 0
     out = capsys.readouterr().out
     assert "* width" in out and "(default 1)" in out and "  bands" in out and "checkpoint: none" in out
-    assert "unused" not in out
+    assert "unused without --broad" not in out and "(unused without --method smooth)" in out
     assert main(["config", "--reset", "width"]) == 0
     assert "max_width_oct" not in prof.read()["settings"]
     assert main(["config", "--reset", "nonsense"]) == 1
@@ -264,3 +264,120 @@ def test_preserve_tonality_keeps_the_broad_shape(simulated):
     assert not any(x.accepted and x.kind == BROAD for x in kept.features)
     narrow = [x for x in kept.filters if x not in kept.compensation]
     assert len(narrow) == len([x for x in plain.filters])  # same narrow corrections
+
+
+def _fit_of(L, sd=0.3):
+    from flatiron.model.probit import ProbitFit
+
+    g = log_grid()
+    return ProbitFit(g, L - L.mean(), np.eye(g.size) * sd**2, 1.0, 0.5, 0.02, 600, 0.0, True)
+
+
+def test_narrow_features_inside_a_broad_region_are_corrected():
+    g = G
+    # A broad 1-octave excess with a narrow dip on its flank, and a 0.4-octave peak.
+    L = bump(2500, 1.0, 6.0) + bump(2100, 0.12, -3.0) + bump(10000, 0.4, 7.0)
+    c = correct_ear("L", _fit_of(L), CorrectionSettings(reference="none"))
+    inner = [f for f in c.features if f.inside_broad and f.accepted]
+    assert any(abs(np.log2(f.fc / 2100)) < 1 / 12 and f.peak_db < 0 for f in inner)
+    broad = [f for f in c.features if f.kind == BROAD]
+    assert broad and not any(f.accepted for f in broad)  # the excess itself is kept as tonality
+    # The dip is filled; the 0.4-octave peak counts as narrow and is cut.
+    h = response(c.added, np.array([2100.0, 10000.0]))
+    assert h[0] > 1.5 and h[1] < -4
+    assert any(f.kind == NARROW and f.accepted and abs(np.log2(f.fc / 10000)) < 1 / 12 for f in c.features)
+    # With --broad the whole region is corrected instead, so it isn't searched.
+    c = correct_ear("L", _fit_of(L), CorrectionSettings(reference="none", preserve_tonality=False))
+    assert not any(f.inside_broad for f in c.features)
+
+
+def test_baseline_follows_the_max_feature_width():
+    g = G
+    D = bump(3000, 0.8, 6.0)
+    sd = np.full(g.size, 0.3)
+    wide, narrow = (fit_baseline(g, D, sd, w).values for w in (1.0, 1 / 3))
+    i = np.argmin(np.abs(g - 3000))
+    assert narrow[i] - wide[i] > 2  # the narrower W lets the baseline take more of a 0.8-octave bump
+
+
+def test_smooth_method_corrects_every_residual():
+    g = G
+    L = bump(2500, 1.0, 6.0) + bump(1800, 0.15, 2.0) + bump(7000, 0.2, 8.0)
+    st = CorrectionSettings(reference="none", method="smooth", smooth_oct=0.5)
+    c = correct_ear("L", _fit_of(L), st)
+    h = response(c.added, np.array([1800.0, 7000.0]))
+    assert h[0] < -0.5 and h[1] < -3
+    with pytest.raises(ValueError, match="--broad"):
+        CorrectionSettings(method="smooth", preserve_tonality=False)
+    with pytest.raises(ValueError):
+        CorrectionSettings(method="nonsense")
+
+
+def test_config_method_and_pool_cli(tmp_path, monkeypatch, capsys):
+    from flatiron.cli import main
+    from flatiron.session.scheduler import SchedulerConfig
+    from flatiron.session.store import Profile
+    from flatiron.sim.listener import design_example
+    from flatiron.sim.profile import simulate_profile
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "linux")
+    a, b = Profile.open("Noise"), Profile.open("Tone")
+    for p, seed in ((a, 3), (b, 4)):
+        simulate_profile(p, {e: design_example(e) for e in "LR"}, sessions=1, trials_per_ear=60, seed=seed,
+                         config=SchedulerConfig(min_trials_noise_fit=10_000))
+    assert main(["config", "-p", "Noise", "--smooth-width", "0.4"]) == 1  # needs --method smooth
+    assert main(["config", "-p", "Noise", "--method", "smooth", "--broad"]) == 1
+    assert main(["config", "-p", "Noise", "--method", "smooth", "--smooth-width", "0.4"]) == 0
+    assert a.read()["settings"] == {"method": "smooth", "smooth_oct": 0.4}
+    capsys.readouterr()
+    assert main(["report", "-p", "Noise"]) == 0
+    assert "Method: smooth (experimental)" in capsys.readouterr().out
+
+    assert main(["config", "-p", "Noise", "--pool", "Noise"]) == 1
+    assert main(["config", "-p", "Noise", "--pool", "Nope"]) == 1 and "pool" not in a.read()
+    assert main(["config", "-p", "Noise", "--pool", "Tone"]) == 0
+    assert a.read()["pool"] == ["tone"]
+    capsys.readouterr()
+    assert main(["report", "-p", "Noise"]) == 0
+    out = capsys.readouterr().out
+    assert "Pooled with Tone: 2 sessions" in out and "L ear: 120 trials" in out
+    assert main(["config", "-p", "Noise"]) == 0 and "pooled with: tone" in capsys.readouterr().out
+    assert main(["config", "-p", "Noise", "--pool", "none"]) == 0 and a.read()["pool"] is None
+    capsys.readouterr()
+    assert main(["report", "-p", "Noise"]) == 0 and "L ear: 60 trials" in capsys.readouterr().out
+
+
+def test_session_panel_shades_the_middle_90_percent_above_five_sessions(monkeypatch):
+    from flatiron.report import plots
+
+    vals = np.array([[0.0], [1.0], [2.0], [3.0]])
+    # Equal weights: the median is halfway; a heavy session pulls it.
+    assert plots.weighted_quantiles(vals, [1, 1, 1, 1], [0.5])[0, 0] == pytest.approx(1.5)
+    assert 1.8 < plots.weighted_quantiles(vals, [1, 1, 10, 1], [0.5])[0, 0] < 2.0
+
+    g = G
+    c = correct_ear("L", _fit_of(bump(7000, 0.2, 6.0)), CorrectionSettings(reference="none"))
+    fills = []
+    real_fill = plots.plt.Axes.fill_between
+    monkeypatch.setattr(plots.plt.Axes, "fill_between",
+                        lambda self, *a, **k: (fills.append(self.get_title()), real_fill(self, *a, **k))[1])
+    for n in (5, 6):
+        c.session_R = [c.R + 0.1 * i for i in range(n)]
+        c.session_trials = [100] * n
+        fills.clear()
+        assert plots.ear_figure(c, c.session_R)[:4] == b"\x89PNG"
+        # Panels 1 and 2 each shade ±1 SD; the session panel adds one band above five sessions.
+        assert len(fills) == (2 if n == 5 else 3)
+
+
+def test_none_is_not_a_profile_name(tmp_path, monkeypatch, capsys):
+    from flatiron.cli import main
+    from flatiron.session.store import Profile
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    with pytest.raises(ValueError, match="pool none"):
+        Profile.open("None")
+    assert main(["run", "-p", "none", "--dry-run"]) == 1
+    assert "can't be a profile name" in capsys.readouterr().out and not Profile.all()
+    assert main(["run", "-p", "!!!", "--dry-run"]) == 1  # no letters or digits: a message, not a traceback
