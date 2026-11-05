@@ -4,7 +4,7 @@ Panels share a log-frequency axis:
   1. measured level relative to the reference (±1 SD) and the baseline
   2. residual (±1 SD), the correction, and the predicted result, with the
      corrected features shaded
-  3. (two or more sessions) each session's residual against the pooled one;
+  3. (two or more sessions) each seating's residual against the average;
      above MAX_SESSION_LINES sessions, the range holding the middle 90% of
      them (weighted by their trials) instead of a line each
 Colors are the dataviz reference palette's first three categorical slots,
@@ -103,6 +103,9 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
             ax.axvspan(g[f.lo], g[f.hi], color=t["shade"], linewidth=0, zorder=0)
     ax.fill_between(c.freqs, R_f - sd_f, R_f + sd_f, color=t["s1"], alpha=0.18, linewidth=0)
     ax.plot(c.freqs, R_f, color=t["s1"], linewidth=2)
+    if c.consensus is not None:
+        ax.plot(g, c.consensus.m, color=t["muted"], linewidth=1.5, linestyle="--")
+        _label_end(ax, g[-1], c.consensus.m[-1], "consensus", t["muted"], t, dy=2.0)
     ax.plot(c.freqs, H, color=t["s2"], linewidth=2)
     ax.plot(c.freqs, R_f + H, color=t["s3"], linewidth=2)
     ends = sorted([(R_f[-1], "residual", t["s1"]), (H[-1], "correction", t["s2"]),
@@ -125,14 +128,14 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
             lo, hi = weighted_quantiles(np.array(session_R), w, (0.05, 0.95))
             ax.fill_between(g, lo, hi, color=t["muted"], alpha=0.3, linewidth=0)
             ax.plot(g, c.R, color=t["s1"], linewidth=2)
-            _label_end(ax, xr, c.R[-1], "all sessions", t["s1"], t, dy=1.0)
+            _label_end(ax, xr, c.R[-1], "average", t["s1"], t, dy=1.0)
             _label_end(ax, xr, hi[-1], "90% of sessions", t["muted"], t, dy=1.0)
             title = f"Residual per reseat session: middle 90% of {len(session_R)} sessions, weighted by trials"
         else:
             for r in session_R:
                 ax.plot(g, r, color=t["muted"], linewidth=1, alpha=0.8)
             ax.plot(g, c.R, color=t["s1"], linewidth=2)
-            _label_end(ax, xr, c.R[-1], "all sessions", t["s1"], t, dy=1.0)
+            _label_end(ax, xr, c.R[-1], "average", t["s1"], t, dy=1.0)
             _label_end(ax, xr, session_R[-1][-1], "each session", t["muted"], t, dy=-1.0)
             title = "Residual per reseat session"
         ax.set_title(title, color=t["ink"], fontsize=10, loc="left")

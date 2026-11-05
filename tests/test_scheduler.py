@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from flatiron.model.grid import MIN_STEP_OCT, log_grid, octaves
-from flatiron.model.probit import Priors, Trials, fit_probit
+from flatiron.model.hierarchical import fit_hierarchical
+from flatiron.model.probit import Priors, Trials
 from flatiron.model.refine import curvature_z, refine_grid
 from flatiron.session.scheduler import Scheduler, SchedulerConfig
 from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
@@ -58,7 +59,10 @@ def test_refinement_adds_midpoints_only_at_bends():
     i = rng.integers(0, g.size - 1, 3000)
     j = i + rng.integers(1, 4, 3000).clip(max=g.size - 1 - i)
     off = -(truth.level(g[i]) - truth.level(g[j])) + rng.normal(0, 1, i.size)
-    fit = fit_probit(Trials(g[i], g[j], off, lis.respond("L", g[i], g[j], off)), g)
+    # A small seating spread: with the prior's, one session's treble is too
+    # uncertain about seatings in general for a bend there to count.
+    fit = fit_hierarchical(Trials(g[i], g[j], off, lis.respond("L", g[i], g[j], off)), g,
+                           Priors(tau_lo=0.05, tau_hi=0.05))
     new = refine_grid(fit)
     added = np.setdiff1d(new, g)
     assert added.size > 0
@@ -71,7 +75,7 @@ def test_refinement_adds_midpoints_only_at_bends():
     assert np.any(octaves(added, 8400) < 1 / 24)
     # Already at the minimum spacing: nothing more to add.
     fine = log_grid(6000, 7000, MIN_STEP_OCT)
-    assert refine_grid(fit_probit(Trials(fine[:-1], fine[1:], np.zeros(fine.size - 1),
+    assert refine_grid(fit_hierarchical(Trials(fine[:-1], fine[1:], np.zeros(fine.size - 1),
                                          np.ones(fine.size - 1)), fine), k=0).size == fine.size
 
 

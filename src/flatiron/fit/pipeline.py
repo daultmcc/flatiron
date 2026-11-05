@@ -10,7 +10,8 @@ import numpy as np
 
 from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.baseline import fit_baseline
-from flatiron.fit.features import BROAD, NARROW, Feature, check_consistency, find_features
+from flatiron.fit.consensus import EarConsensus, Source, correction_rule
+from flatiron.fit.features import BROAD, NARROW, Feature, GroupCurve, find_features, seating_step
 from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
 from flatiron.fit.reference import reference
 from flatiron.model.grid import interp_matrix, log_grid
@@ -45,8 +46,7 @@ class CorrectionSettings:
     max_gain_db: float = 12.0
     min_gain_db: float = 0.5
     stop_z: float = 2.0  # filter fit stops when no point is off by more than this many SDs
-    consistency: bool = True
-    consistency_p: float = 0.01
+    consistency: bool = True  # the seating step: correct each feature to the median seating's level
     # Keep the broad shape of the original response (the default): correct
     # narrow features only, then add broad compensation so the correction's own
     # average over about max_width_oct (W) is zero. Broad tonal changes are left
@@ -59,8 +59,19 @@ class CorrectionSettings:
     # feature detection; it corrects more, noise included.
     method: str = "features"
     smooth_oct: float = 0.5
+    # Corrected against a consensus of these other profiles (ADDENDUM.md,
+    # Feature 1b); `reference` is still what their residuals are taken against.
+    consensus: tuple[str, ...] = ()
+    consensus_mode: str = "remove"  # remove: only what exceeds the consensus; match: all the way to it
 
     def __post_init__(self):
+        object.__setattr__(self, "consensus", tuple(self.consensus))
+        if self.consensus_mode not in ("remove", "match"):
+            raise ValueError("consensus mode must be remove or match")
+        if self.consensus and self.method != "features":
+            raise ValueError("a consensus reference needs --method features")
+        if self.consensus and not self.preserve_tonality:
+            raise ValueError("a consensus reference doesn't combine with --broad yet")
         if not 1 / 3 - 1e-9 <= self.max_width_oct <= 2 + 1e-9:
             raise ValueError("max feature width must be 1/3 to 2 octaves")
         if not 0 <= self.broad_strength <= 1:
@@ -94,11 +105,14 @@ class EarCorrection:
     sd: np.ndarray  # SD of the target on the fine grid
     fit: FilterFit
     left_out: list[tuple[float, float, float]] = field(default_factory=list)  # (f_lo, f_hi, max |err| dB)
-    sessions_checked: int = 0
-    session_R: list[np.ndarray] = field(default_factory=list)  # each session's residual, same baseline
+    sessions_checked: int = 0  # groups in the seating step
+    session_R: list[np.ndarray] = field(default_factory=list)  # each group's residual, same baseline
     session_trials: list[int] = field(default_factory=list)  # trials behind each of session_R
     compensation: list[PeakingFilter] = field(default_factory=list)  # tonality-preserving filters (in fit.filters)
     fixed: list[PeakingFilter] = field(default_factory=list)  # filters kept from before (incremental refit)
+    consensus: EarConsensus | None = None
+    excess: np.ndarray | None = None  # R minus the consensus
+    excess_sd: np.ndarray | None = None
 
     @property
     def filters(self) -> list[PeakingFilter]:
@@ -121,12 +135,21 @@ def taper(freqs, f_lo, f_hi, width_lo_oct, width_hi_oct) -> np.ndarray:
     return 0.5 * (1 - np.cos(np.pi * np.minimum(up, down)))
 
 
-def build_target(features, R, settings: CorrectionSettings) -> np.ndarray:
+def build_target(features, R, settings: CorrectionSettings, consensus: EarConsensus | None = None) -> np.ndarray:
     c = np.zeros_like(R)
     for f in features:
         if not f.accepted:
             continue
-        seg = -(R[f.span] if f.residual is None else f.residual) * f.scale
+        if consensus is not None:
+            own = R[f.span] if f.residual_R is None else f.residual_R
+            # Inside a broad region, both against the same local smooth.
+            m = consensus.m[f.span] if f.residual is None else own - f.residual
+            rule = correction_rule(own, m, consensus.mode)
+            seg = rule * f.scale
+            k = int(np.argmax(np.abs(rule)))
+            f.correction_db, f.shared_db = float(seg[k]), float(np.max(np.abs(own)) - abs(rule[k]))
+        else:
+            seg = -(R[f.span] if f.residual is None else f.residual) * f.scale
         if f.kind == BROAD:
             if settings.preserve_tonality:
                 continue
@@ -158,12 +181,13 @@ def broad_regions(feats: list[Feature], R, R_sd, settings: CorrectionSettings) -
     return out
 
 
-def inner_features(g, R, cov_R, lo: int, hi: int, settings: CorrectionSettings, per) -> list[Feature]:
+def inner_features(g, R, cov_R, lo: int, hi: int, settings: CorrectionSettings,
+                   groups: list[GroupCurve], own_R=None) -> list[Feature]:
     """Narrow features inside a broad region [lo, hi] (grid indices) that
     isn't corrected as a whole (it's kept as tonality, or not significant):
     the residual against a local smooth over the region alone, with the
-    narrow test on every part. per: each session's (R_s, cov_s), for the
-    consistency check."""
+    narrow test on every part. groups: each group's curve, for the seating step.
+    own_R: with a consensus R is the excess, and this the profile's own residual."""
     sl = slice(lo, hi + 1)
     gi = g[sl]
     if gi.size < 3:
@@ -173,21 +197,24 @@ def inner_features(g, R, cov_R, lo: int, hi: int, settings: CorrectionSettings, 
     r = M @ R[sl]
     cov = M @ cov_R[sl, sl] @ M.T
     found = [f for f in find_features(gi, r, cov, settings.k, settings.k_broad, np.inf) if f.accepted]
-    check_consistency(found, gi, r, [(M @ rs[sl], M @ c[sl, sl] @ M.T) for rs, c in per],
-                      settings.consistency_p)
+    seating_step(found, gi, r, cov, [GroupCurve(M @ c.r[sl], M @ c.cov[sl, sl] @ M.T, M @ c.u_cov[sl, sl] @ M.T)
+                                     for c in groups], settings.consistency)
     for f in found:
         f.kind, f.inside_broad, f.residual = NARROW, True, r[f.lo:f.hi + 1].copy()
+        if own_R is not None:
+            f.residual_R = (M @ own_R[sl])[f.lo:f.hi + 1]
         f.residual_sd = np.sqrt(np.clip(np.diag(cov)[f.lo:f.hi + 1], 1e-12, None))
         f.shifted(sl.start)
     return found
 
 
 def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = CorrectionSettings(),
-                session_fits: list[ProbitFit] | None = None,
-                fixed: list[PeakingFilter] | None = None) -> EarCorrection:
+                fixed: list[PeakingFilter] | None = None, consensus: EarConsensus | None = None) -> EarCorrection:
     """fixed: filters already in use (an incremental refit). The pipeline then
     runs on the corrected curve, L + fixed, and only adds filters for what's
-    still significant, within the bands left over."""
+    still significant, within the bands left over.
+    consensus: features are found on the excess over it, and corrected by the
+    remove-only rule (ADDENDUM.md, Feature 1b)."""
     g = fit.grid
     fixed = list(fixed or [])
     E = reference(settings.reference, g, settings.phon)
@@ -202,23 +229,35 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     R = M @ D
     cov_R = M @ fit.cov @ M.T
     R_sd = np.sqrt(np.clip(np.diag(cov_R), 1e-12, None))
+    # What's tested: the residual, or with a consensus what it adds to it. A
+    # checkpoint's filters are part of R but not of the consensus: a peak they
+    # already took out leaves nothing to correct.
+    T, cov_T = R, cov_R
+    excess = excess_sd = None
+    if consensus is not None:
+        T = R - consensus.m
+        cov_T = consensus.excess_cov(cov_R)
+        excess, excess_sd = T, np.sqrt(np.clip(np.diag(cov_T), 1e-12, None))
+    T_sd = R_sd if consensus is None else excess_sd
 
     # With the smooth method the features are only a report of what's
     # significant (verify's leftovers); the target is the whole residual.
-    feats = find_features(g, R, cov_R, settings.k, settings.k_broad, np.inf if smooth else settings.narrow_max_oct)
-    per = [(M @ (s.L + H_fixed - E), M @ s.cov @ M.T) for s in session_fits or []]
-    session_R = [r for r, _ in per]
-    checked = len(per) if settings.consistency else 0
-    if settings.consistency:
-        check_consistency(feats, g, R, per, settings.consistency_p)
+    feats = find_features(g, T, cov_T, settings.k, settings.k_broad, np.inf if smooth else settings.narrow_max_oct)
+    shift = 0.0 if consensus is None else consensus.m
+    groups = [GroupCurve(M @ (fit.L + fit.u[k] + H_fixed - E) - shift, M @ fit.group_cov[k] @ M.T,
+                         M @ fit.group_u_cov[k] @ M.T)
+              for k in np.flatnonzero(fit.group_trials)] if fit.group_trials is not None else []
+    session_R = [c.r + shift for c in groups]
+    checked = len(groups) if settings.consistency and len(groups) >= 2 else 0
+    seating_step(feats, g, T, cov_T, groups, settings.consistency)
     if not smooth:
-        for region in broad_regions(feats, R, R_sd, settings):
+        for region in broad_regions(feats, T, T_sd, settings):
             for f in region:
                 if f.kind == NARROW and f.accepted:
                     f.accepted = False
                     f.reason = "part of a broad region (searched inside it instead)"
-            feats += inner_features(g, R, cov_R, region[0].lo, region[-1].hi, settings,
-                                    per if settings.consistency else [])
+            feats += inner_features(g, T, cov_T, region[0].lo, region[-1].hi, settings, groups,
+                                    None if consensus is None else R)
 
     for f in feats:
         if f.accepted and not settings.f_lo <= f.fc <= settings.f_hi:
@@ -227,19 +266,24 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     if smooth:
         C = np.clip(-R, -settings.max_cut_db, settings.max_boost_narrow_db)
     else:
-        C = build_target(feats, R, settings)
+        C = build_target(feats, R, settings, consensus)
+    if consensus is not None:
+        for f in feats:
+            if f.accepted and f.correction_db is not None and abs(f.correction_db) < settings.min_gain_db:
+                f.accepted = False
+                f.reason = "shared with the consensus: nothing of it to remove"
     freqs = log_grid(g[0], g[-1], FINE_STEP_OCT)
     m = interp_matrix(g, freqs)
     # Fade out beyond the range, within the measured margin (850 Hz-15 kHz by default).
     w_lo = min(settings.taper_oct, max(np.log2(settings.f_lo / g[0]), 0.0))
     w_hi = min(settings.taper_oct, max(np.log2(g[-1] / settings.f_hi), 0.0))
     target = (m @ C) * taper(freqs, settings.f_lo, settings.f_hi, w_lo, w_hi)
-    sd = np.sqrt(np.einsum("ij,jk,ik->i", m, cov_R, m))
+    sd = np.sqrt(np.einsum("ij,jk,ik->i", m, cov_T, m))
     inner = [f for f in feats if f.accepted and f.residual_sd is not None]
     if inner:
         # The target there is the residual against the local smooth, whose
         # error is smaller than R's (the smooth takes the slow part of it).
-        sd_g = R_sd.copy()
+        sd_g = T_sd.copy()
         for f in inner:
             sd_g[f.span] = f.residual_sd
         sd = np.minimum(sd, m @ sd_g)
@@ -274,7 +318,18 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
             else:
                 i += 1
     return EarCorrection(ear, g, fit.L, fit.sd, E, S @ D, R, R_sd, feats, C, freqs, target, sd, ff,
-                         left, checked, session_R, [s.n_trials for s in session_fits or []], comp, fixed)
+                         left, checked, session_R,
+                         [] if fit.group_trials is None else [int(n) for n in fit.group_trials if n],
+                         comp, fixed, consensus, excess, excess_sd)
+
+
+def member_source(label: str, kind: str, fit: ProbitFit, settings: CorrectionSettings) -> Source:
+    """A profile's residual at someone else's W and reference (steps 1 to 3)."""
+    g = fit.grid
+    D = fit.L - reference(settings.reference, g, settings.phon)
+    S = fit_baseline(g, D, fit.sd, settings.max_width_oct, settings.baseline_penalty).smoother
+    M = np.eye(g.size) - S
+    return Source(label, g, M @ D, M @ fit.cov @ M.T, kind)
 
 
 def smoother_matrix(freqs, fwhm_oct, weights) -> np.ndarray:
@@ -359,17 +414,17 @@ class Correction:
                 "features": [
                     {"fc": f.fc, "kind": f.kind, "peak_db": f.peak_db, "width_oct": f.width_oct,
                      "z": f.z, "accepted": f.accepted, "reason": f.reason,
-                     "consistency_p": f.consistency_p, "inside_broad": f.inside_broad,
-                     "scale": f.scale}
+                     "level_db": f.level_db, "level_sd": f.level_sd, "seat_spread": f.seat_spread,
+                     "inside_broad": f.inside_broad, "scale": f.scale,
+                     "correction_db": f.correction_db, "shared_db": f.shared_db}
                     for f in c.features],
             }
         return out
 
 
 def correct(fits: dict[str, ProbitFit], settings: CorrectionSettings = CorrectionSettings(),
-            session_fits: dict[str, list[ProbitFit]] | None = None,
-            fixed: dict[str, list[PeakingFilter]] | None = None) -> Correction:
-    ears = {e: correct_ear(e, fits[e], settings, (session_fits or {}).get(e), (fixed or {}).get(e))
-            for e in fits}
+            fixed: dict[str, list[PeakingFilter]] | None = None,
+            consensus: dict[str, EarConsensus] | None = None) -> Correction:
+    ears = {e: correct_ear(e, fits[e], settings, (fixed or {}).get(e), (consensus or {}).get(e)) for e in fits}
     pre = min(preamp_db(c.filters) for c in ears.values())
     return Correction(settings, ears, pre)

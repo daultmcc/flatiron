@@ -26,7 +26,12 @@ uv run flatiron config --checkpoint              # fix the current filters; late
 uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; -m preset.txt
 uv run flatiron tone -p "HD 600"                 # tone generator: glide by hand, mark peaks and dips
+uv run flatiron report --compare A B C -H         # several profiles per ear: soft median, where one stands out
+uv run flatiron config -r consensus:B,C           # correct only what this profile doesn't share with B and C
+uv run flatiron report --csv curves.csv           # the level, reference, baseline and residual, per ear
+uv run flatiron profiles new "Etude" --kind iem   # or `profiles set NAME --kind ... --label ...`
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
+uv run flatiron simulate --scenario seating       # or consensus: the multi-session and multi-headphone checks
 uv run pytest                                    # in parallel (pytest-xdist); -n0 for one process
 ```
 
@@ -60,7 +65,9 @@ and the original broad shape is kept, leaving broad tonal changes to you),
 `--sessions id,id|all`, `--pool OTHER[,OTHER]|none` (include another profile's trials, e.g. the same
 headphones measured with tones), `--method smooth` with `--smooth-width OCT` (experimental: correct every
 residual against a smoothed curve, no feature detection; corrects some noise too);
-`--reset [name ...]` returns settings to the defaults.
+`--reset [name ...]` returns settings to the defaults. `-r consensus:A,B` corrects only narrow structure this
+profile doesn't share with the listed profiles (`--consensus-mode match` goes all the way to the consensus,
+importing what they share; not yet with `--broad` or `--method smooth`).
 `--checkpoint` fixes the current filters: later fits keep them, whatever the
 settings, and only add filters (within `--bands`) for what's still
 significant, e.g. after `verify`. `--reset-checkpoint` drops it. The design's
@@ -89,7 +96,7 @@ carry no preamp, since TinCan sets one for everything loaded, so `--preamp`
 doesn't apply; filters identical in both channels are written once, as LR.
 
 Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
-(grid, probit fit, refinement), `session/` (scheduler, runner, storage,
+(grid, the hierarchical perceptual fit, refinement), `session/` (scheduler, runner, storage,
 sweep), `ui/` (Textual apps: trials, audition, tone generator), `fit/` (reference, baseline, features, filters,
-pipeline), `export/` (APO text, LSP, EasyEffects, PipeWire, TinCan, truth checks), `report/` (figures, HTML), `sim/` (simulated listener, designs,
+pipeline, consensus), `export/` (APO text, LSP, EasyEffects, PipeWire, TinCan, truth checks), `report/` (figures, HTML), `sim/` (simulated listener, designs,
 validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).

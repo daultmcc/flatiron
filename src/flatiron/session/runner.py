@@ -72,7 +72,14 @@ class TrialRunner:
         self.scheduler = Scheduler(config, seed=self.seed, stimulus_key=stimulus_key(settings.stimulus))
         for e in EARS:
             if len(hist[e]) or e in grids:
-                self.scheduler.load_history(e, hist[e], grids.get(e))
+                # The history's fit is the one `report` would use, so it's the
+                # same cached fit: the spread is estimated once, between sessions.
+                fit = None
+                if e in grids and config.estimate_tau and len(hist[e]) >= 2:
+                    from flatiron.fit.run import cached_fit
+
+                    fit = cached_fit(profile, hist[e], np.asarray(grids[e], float))
+                self.scheduler.load_history(e, hist[e], grids.get(e), fit=fit)
         self.prior_trials = {e: len(hist[e]) for e in EARS}
         self.discarded = False
         self._lock = threading.Lock()

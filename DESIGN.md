@@ -2,7 +2,7 @@
 
 Flatiron is a local tool that finds peaks and dips in a headphone's upper mids and treble, separately for each ear, using only the listener's "which is louder?" judgments. It fits a perceived-level curve per ear, picks out the features that are significant and narrower than about an octave, turns them into RBJ peaking filters, and exports them for an EQ host: Equalizer APO / AutoEQ text, LSP Parametric Equalizer x32 LeftRight, EasyEffects (and through it Equaliser on macOS), a PipeWire filter-chain drop-in, and TinCan.
 
-This document describes how Flatiron works as built. The README covers day-to-day use.
+This document describes how Flatiron works as built. The README covers day-to-day use. ADDENDUM.md holds the design of the profile comparison, the consensus reference and the seating model, which are built, and of the speaker profiles, which aren't yet.
 
 ## Scope
 
@@ -29,7 +29,7 @@ Flatiron doesn't:
 4. **Redundant comparison graph.** Each grid point is compared against points 1 to 3 steps away, plus about 25% longer jumps of up to an octave. The longer jumps pin down broad features that a chain of neighbour comparisons would smear out.
 5. **Narrowband noise by default.** Pure sines inside headphones are very sensitive to seal and standing waves, and can fall between the peaks of a narrow notch. The default stimulus is 1/12-octave band noise; 1/24-octave noise, warble tones and pure tones are options. The model accounts for each trial's stimulus bandwidth, so sessions with different stimuli pool.
 6. **Adaptive grid.** Start at 1/24 octave and refine to 1/48 where the fitted curve bends sharply (or around frequencies the listener marked), so narrow features don't fall between test points.
-7. **Reseat and repeat.** Treble resonances move when the headphone moves. Sessions are short, with a reseat between them, and features whose level disagrees across sessions are dropped.
+7. **Reseat and repeat.** Treble resonances move when the headphone moves. Sessions are short, with a reseat between them, and each session is a group in a hierarchical model: more trials in a session say more about that seating and little about seatings in general.
 8. **One filter definition everywhere.** The fit, Flatiron's own preview EQ and every export use RBJ-cookbook peaking biquads. Each exporter writes the target's matching mode, and the formats that can be run locally are checked against the real implementation before they're written.
 9. **Lazy fits from per-profile settings.** There is no separate fit step and no saved fit. Every command that needs the correction recomputes it from the profile's trials, settings and checkpoint. The expensive part, the perceptual fit, depends only on the trials and is cached, so a correction takes about 0.1 s once the cache is warm.
 
@@ -72,28 +72,30 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 
 ### Perceptual model
 
-Per ear, the unknowns are the perceived levels L at the grid points (dB), a time-order bias b, and the noise parameters σ₀, d₀ and λ:
+Per ear, the unknowns are the average perceived levels L at the grid points (dB), each session g's deviation from them u\_g, a time-order bias b, and the parameters σ₀, d₀, λ and τ. A trial in session g depends on that seating's curve, L\_g = L + u\_g:
 
 ```latex
-P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{\bar L_a - \bar L_b + o + b\cdot s}{\sigma(d)}\right),
+P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{\bar L_{g,a} - \bar L_{g,b} + o + b\cdot s}{\sigma(d)}\right),
 \qquad \sigma(d) = \sigma_0 \sqrt{1 + (d/d_0)^2}
 ```
 
 - o is every known level difference between A and B: Δ\_a − Δ\_b, plus the gain of any EQ in effect (an active system EQ recorded for the session, or the preview EQ of a verify session).
-- L̄ is L averaged in dB over the trial's stimulus spectrum (11 points across a noise band; one point for tones), interpolated linearly in log-frequency from the grid.
+- L̄ is the curve averaged in dB over the trial's stimulus spectrum (11 points across a noise band; one point for tones), interpolated linearly in log-frequency from the grid.
 - s = +1 when A played first and −1 when B did; b is how many dB louder the first interval sounds. (The user's real data showed a strong first-interval preference, about +1 dB.) b has a N(0, 3 dB) prior and is a fixed effect, so its uncertainty is part of L's error bars.
 - d is the pair's separation in octaves.
 - Priors: smoothness, as a grid-independent curvature penalty equivalent to a 1 dB SD on second differences at 1/24 octave; a very weak N(0, 100 dB) prior on each level so the fit is well-posed with few trials; log-normal priors around σ₀ = 1 dB and d₀ = 0.5 octave; λ around 2%. The gauge is fixed by mean(L) = 0.
-- σ₀, d₀ and λ are set by maximising the Laplace-approximated marginal likelihood with L integrated out (empirical Bayes, Nelder–Mead started from both the prior means and the warm start). A joint MAP over L and the noise overfits: with a few trials per point, L separates the answers and σ₀ collapses. Below 200 trials per ear the noise stays at the prior, because the evidence underestimates σ₀ with fewer trials. L is then the MAP given the noise.
-- Error bars come from the Laplace approximation (inverse Fisher information), projected onto the gauge. Every displayed curve carries a ±1 SD band.
-- All of an ear's sessions are fitted jointly, with no per-session offset (it would cancel within an ear). Each session with at least 60 trials in an ear is also fitted on its own, with the noise held at the joint fit's values, for the consistency check.
+- u\_g is a Gaussian deviation with amplitude τ(f) and correlation width 1/12 octave (a squared-exponential correlation in log frequency), centred across frequency, because a constant offset cancels within a session. It also picks up anything else that changes between sessions: the noise token, the listener's state, or the stimulus when profiles are pooled. A session with few trials is pulled strongly toward the average, and a well-measured one can stand further from it.
+- τ has two values, below 5 kHz and above 8 kHz, log-interpolated between them, per ear and profile, with log-normal priors (medians 0.5 and 1.5 dB, log SD 0.7). With fewer than two sessions of at least 60 trials in the ear, τ stays at those medians, so a single session's error bars allow for seatings not yet measured.
+- σ₀, d₀ and λ, and then τ, are set by maximising the Laplace-approximated marginal likelihood with L and the u\_g integrated out (empirical Bayes, Nelder–Mead started from both the prior means and the warm start). A joint MAP over the curve and the noise overfits: with a few trials per point, the curve separates the answers and σ₀ collapses. Below 200 trials per ear the noise stays at the prior, because the evidence underestimates σ₀ with fewer trials. The noise is fitted with τ at its prior, then τ once with the noise fixed. Searching both together, or repeating the pass, runs away at sessions of about 110 trials: τ grows to several times the truth while σ₀ collapses. One pass leaves some of a large spread in σ₀, so a true 3 dB reads low. The curves are then the MAP given these.
+- The solve is Fisher scoring. Each u\_g is held in a whitened basis of the correlation's significant eigenvectors (about 85 unknowns), and sessions connect only through (L, b), so the matrix is block-arrow: eliminating each session in turn leaves a Schur complement on (L, b), and the work grows linearly with the number of sessions.
+- Error bars come from the Laplace approximation (inverse Fisher information), projected onto the gauge. L's SD includes τ² divided by the number of sessions, so it stops shrinking in proportion to trials once each seating is well known. Every displayed curve carries a ±1 SD band.
 
 ### Adaptive selection
 
 - Candidate pairs: up to 3 grid steps apart, or (with probability 0.25) a longer jump of up to one octave.
-- Each candidate is scored by how much one answer would shrink the posterior variance of L\_i − L\_j, weighted up where the curve bends (by 0.5 per SD of curvature, capped at 4 SD). Pairs in the same quarter-octave region as the previous trial are skipped. The pair is drawn at random from the top 8.
-- Δ aims at the 50% point as the listener hears it, time-order bias included, plus jitter of ±1 posterior SD of the difference (at most 4 dB). |Δ| is capped at 12 dB.
-- L is refitted after every answer with the noise fixed. Every 50 trials per ear, the full fit (noise included) is redone, and a midpoint is inserted on both sides of every point whose second difference exceeds 2 SD, down to 1/48 octave.
+- Each candidate is scored by how much one answer would shrink the posterior variance of L\_i − L\_j. An answer is about this session's curve, so that's the squared covariance of the L and L\_g differences over the L\_g difference's variance plus the answer's noise, which falls off once the current seating is well known at a pair. The score is weighted up where the curve L bends (by 0.5 per SD of curvature, capped at 4 SD). Pairs in the same quarter-octave region as the previous trial are skipped. The pair is drawn at random from the top 8.
+- Δ aims at the 50% point as the listener hears it, on this session's curve, time-order bias included, plus jitter of ±1 posterior SD of the difference (at most 4 dB). |Δ| is capped at 12 dB.
+- The curves are refitted after every answer with the noise and τ fixed (about 10 ms at 8 sessions of 150 trials on a 199-point grid). Every 50 trials per ear, the noise is re-estimated with τ fixed, and a midpoint is inserted on both sides of every point of L whose second difference exceeds 2 SD, down to 1/48 octave. τ is re-estimated with the noise in the cached fit of all the trials, the first time one is wanted after a session.
 
 ### Sweep and tone-generator marks
 
@@ -111,7 +113,7 @@ Two optional ways to tell the scheduler where to look:
 3. **Residual.** R = D − baseline, with its full covariance.
 4. **Features.** R is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. A lobe narrower than 1/2 octave at half height is *narrow*: it's kept if at least two adjacent points exceed k·SD (k = 2). A wider lobe is *broad*: it's kept if its mean exceeds k\_broad times the SD of that mean (k\_broad = 2.5). Features outside \[f\_lo, f\_hi\] are dropped.
    **Inside broad regions.** A broad lobe that isn't corrected as a whole (kept as tonality, the default, or not significant) can still carry narrow features. It's searched again: together with the same-sign pieces it was split from at a valley that stays clear of zero (beyond k SD), so the flank beside a narrow dip isn't taken for a feature of its own. The region's residual is taken against a Gaussian-weighted local linear smooth over the region alone (FWHM 1/2 octave; local linear, so it doesn't lag at the region's ends), and every lobe of that is given the narrow test. Features found this way are corrected against the local smooth, with its (smaller) error bars, and checked for consistency the same way.
-5. **Consistency.** With two or more sessions in the check (each with at least 60 trials in the ear), each kept feature's mean over its half-height core is compared across sessions (Cochran's Q). A feature with p < 0.01 is fit-dependent: it's corrected only to the median session's level (the sessions weighted by precision), as a share of the pooled level, and dropped if that's under 20% (most seatings show little of it). Dropping every such feature outright threw away a 9 dB resonance that one seating in three didn't show.
+5. **Seating.** With two or more sessions, each kept feature's level over its half-height core is taken in every session's curve. It's corrected to the median session's level (the sessions weighted by precision), as a share of its level in L, and dropped if that's under 20% (most seatings show little of it). A resonance only some seatings have sits lower in L than in those seatings, so the share can be above 100%. The model has already shrunk the sessions together as far as the data allow, so there's no significance gate; the share stays near 100% when they agree. The report gives two numbers per feature: the SD of its average level, which decides whether it's real, and the spread between seatings, which says how far off the correction will be on a typical seating.
 6. **Target.** C = −R over kept features, cuts limited to 12 dB. Boosts are capped at +4 dB for narrow features (often fit-dependent cancellations) and +6 dB for broad ones. With `--broad`, the broad part is scaled by the strength (0 to 100%, default 100%). Without it, broad features aren't in the target at all.
 7. **Taper.** C fades to 0 with a raised cosine over up to 1/3 octave beyond \[f\_lo, f\_hi\], limited by the measured margin.
 8. **Filters.** On a 1/96-octave grid, weighted by 1/SD: greedily place a peaking filter on the largest weighted error (Q from its half-height width), then refit all filters jointly with bounded least squares over (log Fc, gain, log Q). Bounds: Fc within \[f\_lo, f\_hi\], Q 0.7 to 16, |gain| ≤ 12 dB. Stop when no point is off by more than 2 SD, or the band budget (default 20 per channel, at most 32) is used up. Filters under 0.5 dB are dropped and the rest refitted. If the budget binds, the frequency ranges still off by more than k SD are reported.
@@ -126,12 +128,13 @@ Every setting is downstream of the cached perceptual fit, so changing it needs n
 | --- | --- | --- |
 | Max feature width W | 1 octave (1/3 to 2) | `-w` |
 | Reference, listening level | `iso226`, 60 phon | `-r`, `--phon` |
+| Consensus of other profiles | none | `-r consensus:A,B`, `--consensus-mode remove\|match` |
 | Significance k, k\_broad | 2, 2.5 SD | `-k`, `--k-broad` |
 | Broad correction, strength | off, 100% | `--broad`, `-s` (needs `--broad`) |
 | Band budget | 20 per channel | `-b` |
 | Boost caps, cut cap | +4 narrow, +6 broad, −12 dB | `--boost-narrow`, `--boost-broad`, `--max-cut` |
 | Correction range | 1 to 13 kHz | `--f-lo`, `--f-hi` |
-| Reseat consistency check | on | `--consistency` / `--no-consistency` |
+| Seating step | on | `--consistency` / `--no-consistency` |
 | Sessions included | all | `--sessions` |
 | Other profiles pooled in | none | `--pool` |
 | Method | features | `--method features\|smooth`, `--smooth-width` |
@@ -141,6 +144,18 @@ The correction range can only move within the measured range, and the measured r
 ### Pooling
 
 `config --pool OTHER` includes another profile's trials in this profile's fits: the same headphones measured with a different stimulus, for example. The model already accounts for each trial's stimulus, so the sessions pool directly. They stay in their own profile; new sessions there are included as they're run. Trial sessions still adapt to the profile's own trials only.
+
+### Comparing profiles
+
+`report --compare A B C` overlays profiles per ear from their cached perceptual fits, at settings shared for the comparison (`-w`, `-r`, `--ear`). Each profile's residual stays on its own grid. Their soft median lives on a common 1/48-octave grid: it minimises a pseudo-Huber misfit (δ = 1) across profiles, plus the perceptual fit's curvature penalty, by IRLS. Each point's misfit is weighted by the width it covers relative to 1/24 octave, and scaled by its SD combined with one between-headphone spread τ\_hp per ear (the median across frequency of the DerSimonian–Laird estimates, at least 0.5 dB). Its covariance carries each profile's full covariance through the final weights. With two profiles it's their precision-weighted mean.
+
+Each profile is judged against the whole consensus. A voter's own vote is in it, which the SD of its deviation allows for, and the soft median keeps one profile's peak from moving it far. (Leaving each voter out fails with three profiles: two voters have no majority, so one headphone's peak gets the other two flagged as dips.) A region is flagged where |z| > k continuously over at least `--min-width` octaves (default 1/12), and a table lists the flagged regions by strength. A strip shades where the profiles as a whole disagree (Cochran's Q, p < 0.01). Profiles of kind `iem` are drawn dashed and don't vote, unless `--include-kind iem`.
+
+### Consensus reference
+
+`config -r consensus:A,B` corrects a profile only for narrow structure the consensus doesn't share. The consensus set is the listed profiles plus this one, each with its residual at this profile's W and reference; this profile votes too, because leaving it out would leave no majority among three. Features are found on the excess over the consensus (its covariance includes the correlation that vote creates), and then the correction moves the residual toward zero only by what it exceeds the consensus in the same direction, never past zero, so nothing is imported from the others. `--consensus-mode match` goes all the way to the consensus instead. The fixed reference underneath stays whichever `-r` set last. A consensus doesn't yet combine with `--broad` or `--method smooth`, and profiles that share trials through pooling can't be in one.
+
+Results are shared at the top of the data folder (`cache/consensus/`), keyed by the members, each member's perceptual-fit hash, and every setting that affects them, and pruned least-recently-used at 200 MB. A new session in any member changes its fit and so the key.
 
 ### Experimental: the smooth method
 
@@ -207,22 +222,23 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 ### Modules
 
 - `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
-- `model/`: grids, the probit fit, and grid refinement.
+- `model/`: grids, the trials and fit types, the hierarchical fit, and grid refinement.
 - `session/`: the adaptive scheduler, the trial runner (scheduler + stimuli + session file, without UI), storage, and the sweep.
-- `fit/`: reference, baseline, features, filter fitting, the correction pipeline, and the per-profile fit (cache, settings, pooling, checkpoint).
+- `fit/`: reference, baseline, features, filter fitting, the correction pipeline, the consensus, and the per-profile fit (cache, settings, pooling, consensus, checkpoint).
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
-- `report/`: figures and the HTML report.
+- `report/`: figures, the HTML report, and the comparison report.
 - `ui/`: the trial app (level, channel check, sweep, trials, end screen), audition, and the tone generator.
-- `sim/`: the simulated listener, non-adaptive designs, and validation.
+- `sim/`: the simulated listener, non-adaptive designs, validation, and the seating and multi-headphone scenarios.
 - `cli.py`: `devices`, `tone`, `run`, `verify`, `audition`, `profiles`, `sessions`, `config`, `report`, `export`, `simulate`.
 
 ### Data on disk
 
 Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically.
 
-- `profiles/<slug>/profile.json`: label, settings (only changes from the defaults), the sessions used (if not all), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks.
+- `profiles/<slug>/profile.json`: label, kind (`headphone` by default, or `iem`), settings (only changes from the defaults), the sessions used (if not all), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, and every trial. A trial records the ear, both frequencies, Δ for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
-- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, grid, priors and model version) and the last HTML report.
+- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors and model version; they hold τ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
+- `cache/consensus/`: consensus results, shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
 
 ## Session flow
 
@@ -235,7 +251,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
    - The end screen asks for a reseat before the next session.
 
    The fitted curve is never shown during trials. Trial keys: ←/1 = A louder, →/2 = B louder, Space = replay, U = undo, P = pause, L = level, Q = save and quit, X = discard the session.
-3. **Look** (`report`, `report -H`): per ear, L̂ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the pooled one; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled.
+3. **Look** (`report`, `report -H`): per ear, L̂ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the average; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled.
 4. **Adjust** (`config`), **listen** (`audition`), **verify** (`verify`, ideally after `config --checkpoint`), and **export**.
 
 ## Validation
@@ -245,6 +261,22 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 A simulated listener exercises the scheduler, perceptual fit and correction pipeline. `flatiron simulate` reports how well the perceptual fit recovers it, and `sim/validate.py` checks the criteria below end to end. The ground truth per ear is a smooth tilt, plus the ISO 226 contour, plus a +4 dB excess 1/2 octave wide at 4 kHz, a +5 dB peak at 6.2 kHz (Q 6), a −3 dB dip at 8.4 kHz (Q 10) and a +3 dB peak at 11 kHz (Q 4). Answers come from the same probit model, with σ₀ = 1 dB, d₀ = 0.5 octave and λ = 3%.
 
 The criteria: each feature recovered within 1/24 octave in frequency and 1.5 dB in depth, and no false correction above 1.5 dB, after 600 trials per ear. The depth tolerances were relaxed from 1 dB, since the listener's own loudness discrimination is the practical limit. These aren't all met yet: very narrow features (Q 12 to 16) and those near the top of the range (around 11 kHz) come out about 1 to 2 dB shallow, and a null ear can get stray filters up to about 1.3 dB.
+
+### Seating and multi-headphone scenarios
+
+`flatiron simulate --scenario seating` and `--scenario consensus` run ADDENDUM.md's criteria for what's built, through the real scheduler. Measured over 14 to 21 simulated listeners:
+
+| Criterion | Result | Status |
+| --- | --- | --- |
+| 1, comparison | At k = 2, width 1/12 octave: 2 of 56 headphone features missed; 0.6 flags per ear on shared features and 1.4 elsewhere; 0.6 per ear on pure noise | Mostly met; k and width still to tune |
+| 2, consensus correction | 29 of 42 headphone checks pass entirely. Own features corrected within 1.5 dB in 79 to 100% of runs, shared ones left alone in 86 to 100%. Corrections elsewhere over 1.5 dB are the main failure (hp1, 36% of runs) | Partly met |
+| 8, rule | Every row of the table; the worked values; the two-profile warning | Met |
+| 9, spread | True 2 and 3 dB within a factor of 1.5 in 79% of runs. True 0: below 1 dB in 64% above 8 kHz (the prior's median there is 1.5 dB) | Partly met |
+| 10, coverage | L\_avg's 1 SD covers 66%, 78% and 74% at 1, 3 and 8 sessions; the consensus SD is within 1% of Monte Carlo | Met, a little conservative |
+| 11, moving resonances | 9 dB in all three seatings: −8.0 dB. In two of three: −5.5 dB (within 2 dB of −8 in 43% of runs). In one of three: median −2.1 dB, with some correction left in half the runs. 3 dB in one session: left alone in 86% | Partly met: the Gaussian deviation shrinks on-or-off resonances |
+| 12, speed | 10 ms per answer at 8 × 150 trials on 199 points; about 1 s at a block end; about 2 s for a full fit | Met |
+
+Criteria 3 to 7 need the speaker profiles. hp2's 8.0 kHz dip and the listener's 8.4 kHz dip are 0.07 octave apart, inside the 1/12-octave stimulus, so they often can't be told apart.
 
 ### Unit and truth tests
 
@@ -257,9 +289,10 @@ The criteria: each feature recovered within 1/24 octave in frequency and 1.5 dB 
 ## Known limitations
 
 - Broad corrections (with `--broad`) are only as good as the reference. Individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
-- Fit variability above about 8 kHz is high. Reseats and the consistency check mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
+- Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
 - The diffuse-field reference needs a user-supplied ISO 389-7 difference table.
 - Equaliser's (macOS) handling of imported Q and filter mode is unverified.
+- **The consensus and comparison are sensitive to broad differences between headphones.** Each profile's baseline gets its own robust weights, so the same structure can be followed in one profile and bridged in another, and that difference lands in the residuals the consensus is built from. On three real headphones (HD560, FT1 and Sundara, default W) the residuals agree less than the raw curves: RMS spread 2.97 dB against 2.66 dB in the left ear, 2.24 dB against 1.97 dB in the right, and in the left-ear mids a 4 to 5 dB raw gap becomes 6 to 10 dB. Consensus corrections and comparison flags work as designed but inherit this, and the design is under review.
 
 ### Sources
 

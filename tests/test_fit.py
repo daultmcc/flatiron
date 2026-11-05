@@ -5,7 +5,7 @@ import pytest
 
 from flatiron.audio.biquad import PeakingFilter, response_db
 from flatiron.fit.baseline import fit_baseline
-from flatiron.fit.features import BROAD, NARROW, check_consistency, find_features
+from flatiron.fit.features import BROAD, NARROW, GroupCurve, find_features, seating_step
 from flatiron.fit.filters import FilterBounds, fit_filters, preamp_db, response
 from flatiron.fit.pipeline import CorrectionSettings, correct_ear, taper
 from flatiron.fit.reference import read_curve_csv, reference
@@ -85,34 +85,60 @@ def test_narrow_peak_on_a_weak_broad_hump_is_corrected():
     assert any(f.accepted and abs(f.fc - 5000) < 200 and f.peak_db > 2.5 for f in feats)
 
 
-def test_consistency_drops_features_that_move_between_sessions():
+def _groups(curves, sd):
+    cov = np.eye(G.size) * sd**2
+    return [GroupCurve(c, cov, cov) for c in curves]
+
+
+def test_seating_step_drops_features_most_seatings_lack():
     sd = 0.3
     cov = np.eye(G.size) * sd**2
-    pooled = bump(6000, 0.1, -3) + bump(9000, 0.1, -3)
-    feats = find_features(G, pooled, cov)
-    sessions = [(bump(6000, 0.1, -3) + bump(9000 * s, 0.1, -3), cov * 3) for s in (0.85, 1.0, 1.18)]
-    check_consistency(feats, G, pooled, sessions)
+    avg = bump(6000, 0.1, -3) + bump(9000, 0.1, -3)
+    feats = find_features(G, avg, cov)
+    groups = _groups([bump(6000, 0.1, -3) + bump(9000 * s, 0.1, -3) for s in (0.85, 1.0, 1.18)], sd * 1.7)
+    seating_step(feats, G, avg, cov, groups)
     six = min(feats, key=lambda f: abs(f.fc - 6000))
     nine = min(feats, key=lambda f: abs(f.fc - 9000))
-    assert six.accepted and six.consistency_p > 0.05
-    assert not nine.accepted and "inconsistent" in nine.reason
-    assert "show little of it" in nine.reason  # it's only where the pooled fit puts it in one session of three
+    assert six.accepted and six.scale == pytest.approx(1, abs=0.01)
+    assert not nine.accepted and "show little of it" in nine.reason  # it's only where the average puts it in one of three
 
 
-def test_a_feature_missing_from_one_seating_is_corrected_to_the_median_session():
+def test_a_feature_missing_from_one_seating_is_corrected_to_the_median_seating():
     sd = 0.3
     cov = np.eye(G.size) * sd**2
-    pooled = bump(7000, 0.2, 8.0)
-    feats = find_features(G, pooled, cov)
-    sessions = [(bump(7000, 0.2, h), cov * 3) for h in (0.5, 6.0, 7.0)]
-    check_consistency(feats, G, pooled, sessions)
+    avg = bump(7000, 0.2, 6.0)
+    feats = find_features(G, avg, cov)
+    groups = _groups([bump(7000, 0.2, h) for h in (0.5, 8.0, 9.0)], sd * 1.7)
+    seating_step(feats, G, avg, cov, groups)
     f = min(feats, key=lambda f: abs(f.fc - 7000))
-    assert f.accepted and "median session" in f.reason
-    assert 6.0 / 8.0 - 0.1 < f.scale < 6.0 / 8.0 + 0.1
+    # The average sits under the seatings that have it, so the share is above 1.
+    assert f.accepted and "median seating" in f.reason and 8.0 / 6.0 - 0.1 < f.scale < 8.0 / 6.0 + 0.1
+    assert f.seat_spread > 3
     from flatiron.fit.pipeline import build_target
 
-    c = build_target(feats, pooled, CorrectionSettings(max_cut_db=24))
-    assert c.min() == pytest.approx(-pooled.max() * f.scale)
+    c = build_target(feats, avg, CorrectionSettings(max_cut_db=24))
+    assert c.min() == pytest.approx(-avg.max() * f.scale)
+
+
+def test_seatings_that_agree_leave_a_feature_alone():
+    sd = 0.3
+    cov = np.eye(G.size) * sd**2
+    avg = bump(7000, 0.2, 6.0)
+    feats = find_features(G, avg, cov)
+    seating_step(feats, G, avg, cov, _groups([avg, avg + 0.05, avg - 0.05], sd))
+    f = min(feats, key=lambda f: abs(f.fc - 7000))
+    assert f.accepted and f.scale == pytest.approx(1, abs=0.02) and not f.reason
+    assert f.level_sd > 0 and f.seat_spread is not None
+
+
+def test_one_seating_gives_the_numbers_but_scales_nothing():
+    sd = 0.3
+    cov = np.eye(G.size) * sd**2
+    avg = bump(7000, 0.2, 6.0)
+    feats = find_features(G, avg, cov)
+    seating_step(feats, G, avg, cov, _groups([avg * 1.3], sd))
+    f = min(feats, key=lambda f: abs(f.fc - 7000))
+    assert f.scale == 1 and f.seat_spread > 0
 
 
 # -- filters ---------------------------------------------------------------
@@ -190,9 +216,11 @@ def test_design_features_are_corrected_in_the_right_direction(sim_design):
     lis, fit = sim_design
     c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
     v = validate(lis.ears["L"], c)
-    # Every feature gets a correction of the right sign near the right place;
-    # not every feature meets the full criteria (DESIGN.md, "Validation").
-    for fc in v.features[:3]:
+    # The features well above the seating spread get a correction of the right
+    # sign near the right place. With one session the −3 dB dip and +3 dB peak
+    # in the treble are about twice the prior's spread there, and the error
+    # bars allow for that (ADDENDUM.md, criterion 11).
+    for fc in v.features[:2]:
         assert np.sign(fc.corrected_db) == -np.sign(fc.gain_db)
         assert abs(fc.freq_err_oct) < 1 / 12
     assert v.worst_false_db < 1.5
@@ -250,7 +278,7 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     # Changing settings doesn't redo the perceptual fits.
     import flatiron.fit.run as run_mod
 
-    monkeypatch.setattr(run_mod, "fit_probit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
+    monkeypatch.setattr(run_mod, "fit_hierarchical", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
     assert main(["config", "-b", "2"]) == 0
     assert main(["report"]) == 0
     out = capsys.readouterr().out

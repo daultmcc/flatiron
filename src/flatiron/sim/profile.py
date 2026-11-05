@@ -10,19 +10,25 @@ from flatiron.audio.biquad import PeakingFilter
 from flatiron.session.runner import RunSettings, TrialRunner
 from flatiron.session.scheduler import SchedulerConfig
 from flatiron.session.store import Profile
-from flatiron.sim.listener import EarTruth, SimulatedListener
+from flatiron.sim.listener import EarTruth, SimulatedListener, add_deviation, seating_deviation
 
 
 def reseat(truth: EarTruth, rng: np.random.Generator, shift_oct: float = 1 / 48,
-           fragile: tuple[float, ...] = ()) -> EarTruth:
+           fragile: tuple[float, ...] = (), tau: tuple[float, float] = (0.0, 0.0),
+           extra: tuple[PeakingFilter, ...] = ()) -> EarTruth:
     """Features move by up to ±shift_oct on each reseat. Features at the
     frequencies in `fragile` move a lot more (±1/6 octave): a fit-dependent
-    resonance the consistency check should drop."""
+    resonance the seating step should drop. tau: the seating also gets its own
+    deviation, with this spread below 5 kHz and above 8 kHz. extra: resonances
+    only this seating has."""
     feats = []
     for f in truth.features:
         s = 1 / 6 if any(abs(np.log2(f.fc / x)) < 0.01 for x in fragile) else shift_oct
         feats.append(PeakingFilter(f.fc * 2 ** rng.uniform(-s, s), f.gain_db, f.q))
-    return replace(truth, features=feats)
+    dev = truth.deviation
+    if max(tau) > 0:
+        dev = add_deviation(dev, seating_deviation(*tau, rng))
+    return replace(truth, features=feats + list(extra), deviation=dev)
 
 
 def simulate_profile(profile: Profile, truths: dict[str, EarTruth], sessions: int = 3,

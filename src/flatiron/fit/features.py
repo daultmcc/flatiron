@@ -1,5 +1,5 @@
-"""Residual features, significance and consistency (DESIGN.md, pipeline
-steps 3-5).
+"""Residual features, significance and the seating step (DESIGN.md, pipeline
+steps 3-5; ADDENDUM.md, Feature 3).
 
 The residual R = D − baseline is split into lobes between sign changes, and a
 lobe is split again at any valley no deeper than half the smaller peak on
@@ -10,21 +10,23 @@ if its mean exceeds k_broad times the SD of that mean. (A broad lobe is never
 re-tested point by point: its errors are correlated, so a pointwise test would
 pass the top of a hump whose mean isn't significant.)
 
-Kept features can then be checked across reseat sessions. A feature whose
-per-session means disagree by more than their noise allows (Cochran's Q) is
-fit-dependent: it's corrected only to the median session's level (weighted
-by precision), and dropped if that's under MIN_SCALE of the pooled level
-(most seatings show little of it). Dropping it outright threw away a 9 dB
-resonance that one seating in three didn't show.
+Kept features then go through the seating step. Each one's level is taken in
+every group's curve (L_avg + u_g, posterior mean) over the feature's half-height
+core. The feature is corrected to the median group's level (weighted by
+precision), as a share of its level in L_avg, and dropped if that's under
+MIN_SCALE (most seatings show little of it). A resonance only some seatings have
+sits lower in L_avg than in those seatings, so the share can be above 1. The
+model has already shrunk the groups together as far as the data allow, so
+there's no significance gate: the share just stays near 1 when the seatings agree.
 """
 
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.stats import chi2
 
 NARROW, BROAD = "narrow", "broad"
 MIN_SCALE = 0.2
+NOTE_SCALE = 0.1  # a share further than this from 1 is worth telling the listener about
 
 
 def weighted_median(values, weights) -> float:
@@ -49,14 +51,19 @@ class Feature:
     mean_sd: float
     accepted: bool = False
     reason: str = ""
-    consistency_p: float | None = None
-    session_means: list = field(default_factory=list)
+    level_db: float | None = None  # its mean over the half-height core, in L_avg
+    level_sd: float | None = None  # the SD of that: whether it's real
+    seat_spread: float | None = None  # how far a typical seating's level is from it (dB)
+    group_levels: list = field(default_factory=list)  # (level, SD) in each group's curve
     # Found inside a broad lobe, against a local smooth: its residual over
     # the span (the pipeline's R includes the lobe's broad offset there).
     residual: np.ndarray | None = None
     residual_sd: np.ndarray | None = None
+    residual_R: np.ndarray | None = None  # with a consensus: `residual` is the excess, this the profile's own
+    correction_db: float | None = None  # with a consensus: what's corrected at the feature's largest correction
+    shared_db: float | None = None  # with a consensus: how much of the residual there is kept as shared
     inside_broad: bool = False
-    scale: float = 1.0  # share of the residual corrected (below 1: inconsistent across reseats)
+    scale: float = 1.0  # share of the residual corrected: the median seating's level over L_avg's
     run: int = -1  # which same-sign stretch of the residual it was split from
 
     def shifted(self, n: int) -> "Feature":
@@ -156,14 +163,20 @@ def _split_valleys(r, lo, hi, ratio=0.5):
     return _split_valleys(r, lo, best, ratio) + _split_valleys(r, best + 1, hi, ratio)
 
 
-def check_consistency(features: list[Feature], grid, r, session_residuals, p_min=0.01) -> None:
-    """session_residuals: list of (R_s, cov_s), one per session with enough
-    trials; r: the pooled residual. Drops accepted features whose per-session
-    levels disagree. Each session is measured over the feature's core (where
-    the pooled feature is above half height), not the whole lobe: a lobe's
-    mean barely changes when the feature inside it moves."""
-    if len(session_residuals) < 2:
-        return
+@dataclass
+class GroupCurve:
+    """A group's curve through the same steps as the residual being tested."""
+    r: np.ndarray  # its residual (posterior mean)
+    cov: np.ndarray  # covariance of that
+    u_cov: np.ndarray  # covariance of its deviation from the average
+
+
+def seating_step(features: list[Feature], grid, r, cov, groups: list[GroupCurve], apply: bool = True) -> None:
+    """r, cov: the residual of L_avg. Each feature is measured over its core
+    (where it's above half height), not the whole lobe: a lobe's mean barely
+    changes when the feature inside it moves. The report's two numbers are set
+    whenever there are groups. apply: also scale or drop what the seatings say
+    to (needs two groups: one says nothing about the others)."""
     x = np.log2(grid)
     for f in features:
         if not f.accepted:
@@ -171,20 +184,22 @@ def check_consistency(features: list[Feature], grid, r, session_residuals, p_min
         seg = np.abs(r[f.span])
         core = np.flatnonzero(seg >= 0.5 * seg.max()) + f.lo
         lo, hi = int(core.min()), int(core.max())
-        ms = [_mean_stats(x, rs, c, lo, hi) for rs, c in session_residuals]
+        f.level_db, f.level_sd = _mean_stats(x, r, cov, lo, hi)
+        if not groups:
+            continue
+        ms = [_mean_stats(x, g.r, g.cov, lo, hi) for g in groups]
+        f.group_levels = [(float(a), float(b)) for a, b in ms]
         m = np.array([a for a, _ in ms])
-        v = np.array([b for _, b in ms]) ** 2
-        pooled = np.sum(m / v) / np.sum(1 / v)
-        q = float(np.sum((m - pooled) ** 2 / v))
-        f.consistency_p = float(chi2.sf(q, len(ms) - 1))
-        f.session_means = [(float(a), float(b)) for a, b in ms]
-        if f.consistency_p < p_min:
-            w = np.gradient(x)[lo:hi + 1]
-            level = float(w @ r[lo:hi + 1] / w.sum())  # the pooled residual over the same core
-            f.scale = float(np.clip(weighted_median(m, 1 / v) / level, 0, 1)) if level else 0.0
-            why = f"inconsistent across reseats (p = {f.consistency_p:.3g})"
-            if f.scale < MIN_SCALE:
-                f.accepted, f.scale = False, 0.0
-                f.reason = f"{why}: most sessions show little of it"
-            else:
-                f.reason = f"{why}: corrected to the median session's level, {f.scale:.0%}"
+        sd = np.array([b for _, b in ms])
+        # Expected squared deviation of each seating, with its posterior
+        # uncertainty: the posterior means alone are shrunk together.
+        var_u = np.array([_mean_stats(x, g.r, g.u_cov, lo, hi)[1] ** 2 for g in groups])
+        f.seat_spread = float(np.sqrt(np.mean((m - f.level_db) ** 2 + var_u)))
+        if not apply or len(groups) < 2:
+            continue
+        f.scale = max(weighted_median(m, 1 / sd**2) / f.level_db, 0.0) if f.level_db else 0.0
+        if f.scale < MIN_SCALE:
+            f.accepted, f.scale = False, 0.0
+            f.reason = "most seatings show little of it"
+        elif abs(f.scale - 1) > NOTE_SCALE:
+            f.reason = f"corrected to the median seating's level, {f.scale:.0%} of the average's"

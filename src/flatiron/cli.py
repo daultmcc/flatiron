@@ -234,6 +234,32 @@ def _confirm(question: str, yes: bool) -> bool:
 def cmd_profiles(args):
     from flatiron.session.store import Profile
 
+    action = getattr(args, "action", None)
+    if action == "new":
+        try:
+            if Profile.existing(args.name) is not None:
+                print(f"There's already a profile {args.name!r}.")
+                return 1
+            prof = Profile.open(args.name)
+        except ValueError as e:
+            print(e)
+            return 1
+        prof.update(kind=args.kind)
+        print(f"Created {args.name!r} ({args.kind}).")
+        return 0
+    if action == "set":
+        try:
+            prof = Profile.existing(args.name)
+        except ValueError:
+            prof = None
+        if prof is None:
+            print(f"No profile {args.name!r}. See: flatiron profiles")
+            return 1
+        if args.kind:
+            prof.update(kind=args.kind)
+        if args.label:
+            prof.update(label=args.label)
+        return 0
     profiles = Profile.all()
     if not profiles:
         print("No profiles yet. Start one with: flatiron run --profile 'Headphone name'")
@@ -246,7 +272,8 @@ def cmd_profiles(args):
         level_s = f"last level {level:+.0f} dBFS" if level is not None else "no sessions yet"
         last = sessions[-1].started[:10] if sessions else "-"
         open_s = sum(s.ended is None for s in sessions)
-        print(f"{info['label']}  ({p.slug})")
+        kind = info.get("kind", "headphone")
+        print(f"{info['label']}  ({p.slug})" + ("" if kind == "headphone" else f"  [{kind}]"))
         print(f"    {len(sessions)} sessions, L {n['L']} / R {n['R']} trials, last {last}, {level_s}"
               + (f", {open_s} not closed" if open_s else ""))
 
@@ -293,7 +320,9 @@ PERCENT = (lambda v: v / 100, lambda v: v * 100)
 NOT = (lambda v: not v, lambda v: not v)
 FIT_OPTIONS = [
     (("-w", "--width"), "max_width_oct", dict(type=float, help="max feature width W in octaves (1/3 to 2)")),
-    (("-r", "--reference"), "reference", dict(help="iso226, diffuse, none, or a CSV of freq_hz,db")),
+    (("-r", "--reference"), "reference",
+     dict(help="iso226, diffuse, none, or a CSV of freq_hz,db; or consensus:A,B,C to correct only what this "
+               "profile doesn't share with those (the fixed reference in use stays underneath)")),
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),
@@ -310,7 +339,8 @@ FIT_OPTIONS = [
     (("--f-lo",), "f_lo", dict(type=float, help="lower correction limit (Hz)")),
     (("--f-hi",), "f_hi", dict(type=float, help="upper correction limit (Hz)")),
     (("--consistency",), "consistency",
-     dict(action=argparse.BooleanOptionalAction, help="drop narrow features that move between reseats")),
+     dict(action=argparse.BooleanOptionalAction,
+          help="correct each feature to its median seating's level, and drop it if most seatings show little of it")),
     (("--method",), "method",
      dict(choices=("features", "smooth"),
           help="features (default): correct the significant features found against the baseline; "
@@ -353,6 +383,9 @@ def cmd_config(args):
     names = {_option_name(flags): f for flags, f, *_ in FIT_OPTIONS}
     changes = {}
     if args.reset is not None:
+        if not args.reset or "reference" in args.reset:
+            changes["consensus"] = ()
+            changes["consensus_mode"] = "remove"
         unknown = [n for n in args.reset if n not in names]
         if unknown:
             print(f"Unknown setting(s) {', '.join(unknown)}; they are: {', '.join(names)}")
@@ -364,6 +397,28 @@ def cmd_config(args):
         v = getattr(args, f)
         if v is not None:
             changes[f] = conv[0][0](v) if conv else v
+    consensus_list = None
+    if str(changes.get("reference", "")).startswith("consensus:"):
+        names_listed = [x.strip() for x in changes.pop("reference").split(":", 1)[1].split(",") if x.strip()]
+        consensus_list = []
+        for name in names_listed:
+            try:
+                other = Profile.existing(name)
+            except ValueError:
+                other = None
+            if other is None:
+                print(f"No profile {name!r} for the consensus (nothing changed). See: flatiron profiles")
+                return 1
+            if other.slug != prof.slug and other.slug not in consensus_list:
+                consensus_list.append(other.slug)
+        if not consensus_list:
+            print("A consensus needs at least one other profile (nothing changed).")
+            return 1
+        changes["consensus"] = tuple(consensus_list)
+    elif "reference" in changes:
+        changes["consensus"] = ()  # a fixed reference replaces the consensus
+    if args.consensus_mode is not None:
+        changes["consensus_mode"] = args.consensus_mode
     if "reference" in changes and changes["reference"] not in ("iso226", "diffuse", "none"):
         from pathlib import Path
 
@@ -380,6 +435,15 @@ def cmd_config(args):
     if args.smooth_oct is not None and new.method != "smooth":
         print("--smooth-width only applies with --method smooth (nothing changed).")
         return 1
+    if consensus_list is not None or args.consensus_mode is not None:
+        # Checked here too, so a bad list never gets saved.
+        from flatiron.fit.run import consensus_members
+
+        try:
+            consensus_members(prof, new)
+        except ValueError as e:
+            print(f"{e} (nothing changed)")
+            return 1
     pool = None
     if args.pool:
         pool = [] if args.pool == "none" else [x.strip() for x in args.pool.split(",") if x.strip()]
@@ -397,6 +461,11 @@ def cmd_config(args):
             pool[i] = other.slug
     if changes:
         set_profile_settings(prof, new)
+    if consensus_list is not None:
+        print("Consensus: " + ", ".join(Profile(s).read()["label"] for s in consensus_list) + f" and {label}.")
+        if len(consensus_list) == 1:
+            print("Warning: that makes the consensus a single other headphone. With no majority possible, a peak "
+                  "on one is only about half corrected.")
     if pool is not None:
         prof.update(pool=pool or None)
         if pool:
@@ -428,6 +497,8 @@ def cmd_config(args):
         n = " / ".join(f"{e} {len(c.filters)}" for e, c in pf.correction.ears.items())
         print(f"Checkpoint: the current filters ({n}) stay as they are from now on; fits only add to them.")
     for f, v in changes.items():
+        if f in ("consensus", "consensus_mode"):
+            continue
         if v != getattr(old, f):
             print(f"{_option_name(next(fl for fl, ff, *_ in FIT_OPTIONS if ff == f))}: "
                   f"{_show(f, getattr(old, f))} -> {_show(f, v)}")
@@ -446,6 +517,8 @@ def cmd_config(args):
     print(f"  sessions: {'all' if not ids else ', '.join(ids)}")
     pooled = prof.read().get("pool") or []
     print(f"  pooled with: {', '.join(pooled) if pooled else 'none'}")
+    cs = profile_settings(prof)
+    print(f"  consensus: {', '.join(cs.consensus) + f' ({cs.consensus_mode})' if cs.consensus else 'none'}")
     cp = prof.read().get("checkpoint")
     if cp:
         n = " / ".join(f"{e} {len(v)}" for e, v in cp["filters"].items())
@@ -457,9 +530,13 @@ def cmd_config(args):
 
 
 def _print_fit(pf):
+    from flatiron.report.html import consensus_notes
+
     corr = pf.correction
     if pf.pooled:
         print(f"Pooled with {', '.join(pf.pooled)}: {len(pf.sessions)} sessions in all.")
+    for note in consensus_notes(pf):
+        print(note)
     if corr.settings.method == "smooth":
         print(f"Method: smooth (experimental): every residual against a {corr.settings.smooth_oct:g}-octave "
               "smooth is corrected; the features below are only what's significant.")
@@ -467,6 +544,8 @@ def _print_fit(pf):
         f = pf.fits[e]
         print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}, "
               f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
+        print(f"  seating spread {f.tau_lo:.1f} dB below 5 kHz, {f.tau_hi:.1f} dB above 8 kHz "
+              f"({f'estimated from {f.n_groups} sessions' if f.tau_fitted else 'the prior: needs two sessions of 60+ trials'})")
         comp = {id(x) for x in c.compensation}
         kept = {id(x) for x in c.fixed}
         for flt in c.filters:
@@ -477,16 +556,16 @@ def _print_fit(pf):
             print("  no correction needed")
         for kind in ("narrow", "broad"):
             acc = sorted((x for x in c.features if x.accepted and x.kind == kind), key=lambda x: x.fc)
-            rej = [x for x in c.features if not x.accepted and x.reason.startswith("inconsistent")]
+            rej = [x for x in c.features if not x.accepted and x.reason == "most seatings show little of it"]
             if acc:
-                print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({-x.peak_db:+.1f} dB"
+                print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({_correction_of(x):+.1f} dB"
                                                          + (", inside a broad region" if x.inside_broad else "")
                                                          + ")" for x in acc))
             if rej and kind == "narrow":
-                print("  dropped as inconsistent across reseats: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
-            scaled = [x for x in acc if x.scale < 1]
+                print("  dropped, most seatings show little of it: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
+            scaled = [x for x in acc if x.reason]
             if scaled:
-                print(f"  {kind}, inconsistent across reseats, corrected to the median session's level: "
+                print(f"  {kind}, corrected to the median seating's level: "
                       + ", ".join(f"{x.fc:.0f} Hz ({x.scale:.0%})" for x in scaled))
         for a, b, m in c.left_out:
             print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
@@ -496,7 +575,97 @@ def _print_fit(pf):
     print("settings: flatiron config")
 
 
+def _correction_of(f) -> float:
+    return -f.peak_db if f.correction_db is None else f.correction_db
+
+
+def cmd_compare(args):
+    from flatiron import EARS as ALL_EARS
+    from flatiron.fit.consensus import KINDS_VOTING, MIN_WIDTH_OCT
+    from flatiron.fit.pipeline import CorrectionSettings
+    from flatiron.fit.reference import reference
+    from flatiron.fit.run import NotEnoughTrials, perceptual_fits, profile_session_ids, profile_settings
+    from flatiron.paths import data_dir
+    from flatiron.report.compare import MAX_PROFILES, Member, compare, print_comparison, write_comparison
+    from flatiron.session.store import Profile
+
+    if len(args.compare) < 2:
+        print("--compare needs at least two profiles.")
+        return 1
+    if len(args.compare) > MAX_PROFILES:
+        print(f"--compare takes at most {MAX_PROFILES} profiles at once.")
+        return 1
+    profiles = []
+    for name in args.compare:
+        try:
+            p = Profile.existing(name)
+        except ValueError:
+            p = None
+        if p is None:
+            print(f"No profile {name!r}. See: flatiron profiles")
+            return 1
+        profiles.append(p)
+
+    from itertools import combinations
+
+    from flatiron.fit.run import shares_trials
+
+    for a, b in combinations(profiles, 2):
+        if shares_trials(a, b):
+            print(f"Warning: {a.read()['label']} and {b.read()['label']} share trials through pooling, so they'll "
+                  "agree more than separate measurements would.")
+    own = [profile_settings(p) for p in profiles]
+
+    def common(what, value):
+        vals = {getattr(s, what) for s in own}
+        return value if value is not None else (vals.pop() if len(vals) == 1 else None)
+
+    ref, phon = common("reference", args.reference), common("phon", None)
+    if ref is None:
+        print("These profiles use different references: pick one with -r (iso226, diffuse, none or a CSV).")
+        return 1
+    k = common("k", None) or CorrectionSettings().k
+    try:
+        st = CorrectionSettings(max_width_oct=args.width or 1.0, reference=ref, phon=phon or CorrectionSettings().phon)
+        reference(st.reference, [1000.0], st.phon)
+    except (ValueError, FileNotFoundError) as e:
+        print(e)
+        return 1
+    ears = ALL_EARS if args.ear == "both" else (args.ear,)
+    voting = tuple(KINDS_VOTING) + tuple(args.include_kind or ())
+    announce = [lambda: print("Fitting the new trials (a few seconds)...", flush=True)]
+
+    def on_fit():
+        if announce:
+            announce.pop()()
+
+    try:
+        members = [Member(p.read()["label"], p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
+                   for p in profiles]
+        comparisons = compare(members, st, ears, k, args.min_width or MIN_WIDTH_OCT, voting)
+    except (NotEnoughTrials, ValueError) as e:
+        print(e)
+        return 1
+    print_comparison(comparisons, members)
+    if args.html:
+        import webbrowser
+
+        path = write_comparison(data_dir() / "cache" / "comparison.html", comparisons, members, st, k)
+        print(f"report: {path}")
+        webbrowser.open(path.as_uri())
+    return 0
+
+
 def cmd_report(args):
+    if args.compare:
+        return cmd_compare(args)
+    for opt in ("width", "reference", "min_width", "include_kind"):
+        if getattr(args, opt):
+            print(f"--{opt.replace('_', '-')} only applies with --compare.")
+            return 1
+    if args.ear != "both":
+        print("--ear only applies with --compare.")
+        return 1
     prof = _profile(args)
     if prof is None:
         return 1
@@ -504,6 +673,11 @@ def cmd_report(args):
     if pf is None:
         return 1
     _print_fit(pf)
+    if args.csv:
+        from flatiron.report.compare import write_csv
+
+        write_csv(args.csv, pf)
+        print(f"csv: {args.csv}")
     if args.html:
         import webbrowser
 
@@ -637,7 +811,48 @@ def cmd_export(args):
     return 0
 
 
+def _simulate_consensus(args):
+    from flatiron.sim.consensus import check_compare, check_corrections, consensus_coverage, headphone_fits
+
+    fits = headphone_fits(args.seed, trials_per_session=max(args.trials // 3, 1))
+    cmp = check_compare(fits)
+    print(f"Comparison (criterion 1): {'ok' if cmp.ok else 'NOT MET'}; missed {cmp.missed or 'nothing'}, flagged on "
+          f"shared features {cmp.on_shared or 'nothing'}, {cmp.false_flags} other false flags")
+    for c in check_corrections(fits):
+        print(f"Consensus correction, {c.name} (criterion 2): {'ok' if c.ok else 'NOT MET'}")
+        for fc, gain, h in c.own:
+            print(f"  its own {fc:6.0f} Hz {gain:+.1f} dB: corrected {h:+.1f} dB")
+        for fc, h in c.shared:
+            print(f"  shared  {fc:6.0f} Hz: corrected {h:+.1f} dB")
+        print(f"  largest correction elsewhere {c.worst_false_db:.1f} dB")
+    print(f"Consensus SD, reported / observed (criterion 10): {consensus_coverage(fits):.2f}")
+
+
+def _simulate_seating(args):
+    from flatiron.sim.seating import coverage, moving_resonance, speed, tau_recovery
+
+    for tau in (0.0, 2.0, 3.0):
+        f = tau_recovery((tau, tau), args.seed)
+        print(f"True spread {tau:g} dB (criterion 9): estimated {f.tau_lo:.2f} below 5 kHz, {f.tau_hi:.2f} above 8 kHz")
+    for n in (1, 3, 8):
+        cov, rms = coverage((0.5, 1.5), n, args.seed)
+        print(f"{n} sessions (criterion 10): 1 SD covers the error {cov:.0%} of the time, RMS error {rms:.2f} dB")
+    for label, present, gain in (("two seatings of three", [True, True, False], 9.0),
+                                 ("one seating of three", [True, False, False], 9.0),
+                                 ("one session, twice the prior's spread", [True], 3.0)):
+        r = moving_resonance(present, args.seed, gain_db=gain)
+        print(f"{gain:g} dB resonance in {label} (criterion 11): corrected {r.corrected_db:+.1f} dB, "
+              f"share {r.scale:.0%}")
+    s = speed()
+    print(f"Speed (criterion 12): {s['refit_ms']:.0f} ms per answer, block end {s['block_s']:.1f} s, "
+          f"full fit {s['full_s']:.1f} s")
+
+
 def cmd_simulate(args):
+    if args.scenario == "consensus":
+        return _simulate_consensus(args)
+    if args.scenario == "seating":
+        return _simulate_seating(args)
     from flatiron.session.scheduler import SchedulerConfig
     from flatiron.sim.listener import SimulatedListener, design_example
     from flatiron.sim.run import feature_depth, run, score, EVAL_GRID
@@ -709,8 +924,17 @@ def main(argv=None):
                    help="what to play (repeatable; default: pink noise and the slow sweep)")
     s.set_defaults(func=cmd_audition)
 
-    s = sub.add_parser("profiles", help="list headphone profiles")
+    s = sub.add_parser("profiles", help="list headphone profiles, add one, or change one's kind or label")
     s.set_defaults(func=cmd_profiles)
+    actions = s.add_subparsers(dest="action")
+    n = actions.add_parser("new", help="create a profile")
+    n.add_argument("name")
+    n.add_argument("--kind", choices=("headphone", "iem"), default="headphone",
+                   help="IEMs are shown in comparisons but don't count toward a consensus")
+    n = actions.add_parser("set", help="change a profile's kind or label (no trials affected)")
+    n.add_argument("name")
+    n.add_argument("--kind", choices=("headphone", "iem"))
+    n.add_argument("--label")
 
     s = sub.add_parser("sessions", help="list a profile's sessions, or delete one")
     s.add_argument("-p", "--profile", help="default: the only profile")
@@ -722,6 +946,9 @@ def main(argv=None):
     s.add_argument("-p", "--profile", help="default: the only profile")
     for flags, f, kw, *_ in FIT_OPTIONS:
         s.add_argument(*flags, dest=f, default=None, **kw)
+    s.add_argument("--consensus-mode", choices=("remove", "match"),
+                   help="with -r consensus:A,B,C: remove (the default) corrects only what exceeds the consensus; "
+                        "match corrects all the way to it, importing what the others share")
     s.add_argument("--sessions", help="comma-separated session ids to fit, or 'all' (the default)")
     s.add_argument("--pool", metavar="PROFILE[,PROFILE]|none",
                    help="include other profiles' trials in this one's fits (the same headphones measured "
@@ -737,6 +964,15 @@ def main(argv=None):
     s = sub.add_parser("report", help="the current fit: filters and features (and an HTML report with -H)")
     s.add_argument("-p", "--profile", help="default: the only profile")
     s.add_argument("-H", "--html", action="store_true", help="also open the HTML report (figures) in a browser")
+    s.add_argument("--csv", metavar="FILE", help="dump the level, reference, baseline and residual with SDs, per ear")
+    s.add_argument("--compare", nargs="+", metavar="PROFILE",
+                   help="compare profiles per ear: their curves, soft median, and where one stands out")
+    s.add_argument("-w", "--width", type=float, help="--compare: max feature width W in octaves (default 1)")
+    s.add_argument("-r", "--reference", help="--compare: reference (default: the one the profiles share)")
+    s.add_argument("--ear", choices=("L", "R", "both"), default="both", help="--compare: which ear")
+    s.add_argument("--include-kind", action="append", choices=("iem",),
+                   help="--compare: let this kind count toward the consensus (it's drawn dashed either way)")
+    s.add_argument("--min-width", type=float, help="--compare: narrowest flagged region in octaves (default 1/12)")
     s.set_defaults(func=cmd_report)
 
     s = sub.add_parser("export", help="write the current fit's correction for an EQ host")
@@ -768,6 +1004,8 @@ def main(argv=None):
     s.add_argument("--sigma0", type=float, default=1.0)
     s.add_argument("--lapse", type=float, default=0.03)
     s.add_argument("--design", choices=("adaptive", "uniform"), default="adaptive")
+    s.add_argument("--scenario", choices=("consensus", "seating"),
+                   help="consensus: three headphones on one listener; seating: sessions that differ")
     s.set_defaults(func=cmd_simulate)
 
     args = p.parse_args(argv)

@@ -3,7 +3,8 @@ import pytest
 from scipy import optimize
 
 from flatiron.model.grid import log_grid
-from flatiron.model.probit import Priors, Trials, _Problem, fit_probit
+from flatiron.model.hierarchical import _Model, enough_groups, fit_hierarchical, tau_curve
+from flatiron.model.probit import Priors, Trials
 from flatiron.sim.design import random_pairs, uniform_design
 from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
 
@@ -16,14 +17,145 @@ def simulate(truth, n, seed, grid, **kw):
     return Trials(f_a, f_b, off, lis.respond("L", f_a, f_b, off))
 
 
-def test_gradient_matches_finite_differences():
+def _model(n_groups=3):
     g = log_grid(1000, 4000)
     t = simulate(design_example(), 300, 0, g)
     t.order = np.random.default_rng(2).choice([-1.0, 1.0], len(t))
-    prob = _Problem(t, g, Priors())
-    theta = np.concatenate([np.random.default_rng(1).normal(0, 2, g.size), [0.7], [0.1, -0.5, -3.0]])
-    err = optimize.check_grad(lambda x: prob.objective(x)[0], lambda x: prob.objective(x)[1], theta)
-    assert err < 1e-4 * np.linalg.norm(prob.objective(theta)[1])
+    t.group = np.random.default_rng(3).integers(0, n_groups, len(t))
+    m = _Model(t, g, Priors())
+    m.set_noise(m.mu + [0.1, -0.2, 0.3])
+    m.set_tau(m.mu_tau)
+    rng = np.random.default_rng(1)
+    return m, rng.normal(0, 2, m.n + 1), rng.normal(0, 1, (m.n_groups, m.r))
+
+
+def test_gradient_matches_finite_differences():
+    m, a, v = _model()
+    ga, gv = m.gradient(a, v)
+    x0 = np.concatenate([a, v.ravel()])
+    num = optimize.approx_fprime(x0, lambda x: m.objective(x[:m.n + 1], x[m.n + 1:].reshape(v.shape)), 1e-6)
+    assert np.max(np.abs(num - np.concatenate([ga, gv.ravel()]))) < 1e-3
+
+
+def test_block_arrow_solve_matches_the_dense_fisher_matrix():
+    m, a, v = _model()
+    fac = m.factor(a, v)
+    # Assemble the same matrix by hand: rows d(eta)/d(a, v) with Fisher weights.
+    _, w = m._trial_terms(a, v)
+    n_a, r = m.n + 1, m.r
+    J = np.zeros((len(w), n_a + m.n_groups * r))
+    J[:, :m.n] = m.A.toarray()
+    J[:, m.n] = m.order
+    for k in m.nonempty:
+        s, e = m.starts[k], m.starts[k + 1]
+        J[s:e, n_a + k * r:n_a + (k + 1) * r] = m.B[k]
+    H = J.T @ (w[:, None] * J)
+    H[:n_a, :n_a] += m.P0
+    H[n_a:, n_a:] += np.eye(m.n_groups * r)
+    ga, gv = m.gradient(a, v)
+    step = -np.linalg.solve(H, np.concatenate([ga, gv.ravel()]))
+    assert np.allclose(fac.da, step[:n_a], atol=1e-8)
+    assert np.allclose(np.concatenate([fac.dv[k] for k in range(m.n_groups)]), step[n_a:], atol=1e-8)
+    assert fac.logdet == pytest.approx(np.linalg.slogdet(H)[1])
+
+
+def test_group_covariances_match_the_dense_inverse():
+    m, a, v = _model()
+    a, v, _, fac, ok = m.solve(a, v)
+    assert ok
+    cov_L, _, focus_cov, focus_cross, gc, guc = m.covariances(a, v, fac, True)
+    _, w = m._trial_terms(a, v)
+    n_a, r = m.n + 1, m.r
+    J = np.zeros((len(w), n_a + m.n_groups * r))
+    J[:, :m.n] = m.A.toarray()
+    J[:, m.n] = m.order
+    for k in m.nonempty:
+        s, e = m.starts[k], m.starts[k + 1]
+        J[s:e, n_a + k * r:n_a + (k + 1) * r] = m.B[k]
+    H = J.T @ (w[:, None] * J)
+    H[:n_a, :n_a] += m.P0
+    H[n_a:, n_a:] += np.eye(m.n_groups * r)
+    C = np.linalg.inv(H)
+    P = np.eye(m.n) - 1.0 / m.n
+    assert np.allclose(cov_L, P @ C[:m.n, :m.n] @ P, atol=1e-6)
+    k = 1
+    # L_k = P L + Phi v_k as one linear map of the whole parameter vector.
+    T = np.zeros((m.n, H.shape[0]))
+    T[:, :m.n] = P
+    T[:, n_a + k * r:n_a + (k + 1) * r] = m.Phi
+    assert np.allclose(gc[k], T @ C @ T.T, atol=1e-6)
+    U = np.zeros_like(T)
+    U[:, n_a + k * r:n_a + (k + 1) * r] = m.Phi
+    assert np.allclose(guc[k], U @ C @ U.T, atol=1e-6)
+    last = m.n_groups - 1
+    assert np.allclose(focus_cov, gc[last]) and np.allclose(np.diag(focus_cross + focus_cross.T),
+                                                            np.diag(gc[last] + cov_L - guc[last]), atol=1e-6)
+
+
+def test_tau_is_two_values_log_interpolated():
+    f = np.array([1000.0, 5000.0, np.sqrt(5000 * 8000.0), 8000.0, 14000.0])
+    assert tau_curve(f, 0.5, 2.0) == pytest.approx([0.5, 0.5, 1.0, 2.0, 2.0])
+
+
+def test_noise_then_tau_does_not_run_away():
+    """Fitted together, tau ran to several times the truth and sigma0 collapsed."""
+    from flatiron.sim.listener import seating_deviation
+
+    g = log_grid()
+    rng = np.random.default_rng(7)
+    parts = [simulate(EarTruth(phon=None, deviation=seating_deviation(2.0, 2.0, rng)), 110, 30 + s, g) for s in range(3)]
+    f = fit_hierarchical(Trials.grouped(parts), g)
+    assert f.tau_fitted and 0.7 < f.sigma0 < 2.5
+    assert 2 / 2 < f.tau_lo < 2 * 2 and 2 / 2 < f.tau_hi < 2 * 2
+
+
+def test_a_single_session_stays_at_the_prior_and_its_error_bars_allow_for_other_seatings():
+    g = log_grid()
+    t = simulate(EarTruth(phon=None), 400, 1, g)
+    assert not enough_groups(t)
+    f = fit_hierarchical(t, g)
+    assert not f.tau_fitted and f.tau_lo == Priors().tau_lo and f.tau_hi == Priors().tau_hi
+    tight = fit_hierarchical(t, g, Priors(tau_lo=0.02, tau_hi=0.02))
+    top = g > 9000
+    assert np.median(f.sd[top]) > 1.15 * np.median(tight.sd[top])
+
+
+def test_sd_of_the_average_stops_shrinking_once_each_seating_is_known():
+    g = log_grid()
+    p = Priors(tau_lo=2.0, tau_hi=2.0)
+    sd = {}
+    for per in (300, 1500):
+        parts = [simulate(EarTruth(phon=None), per, 10 + s, g) for s in range(2)]
+        sd[per] = np.median(fit_hierarchical(Trials.grouped(parts), g, p, fit_hyper=False, fit_tau=False).sd)
+    assert sd[1500] > 0.6 * sd[300]  # five times the trials: far from a 1/sqrt(5) = 0.45 fall
+
+
+def test_a_group_with_few_trials_is_pulled_toward_the_average():
+    g = log_grid()
+    # Every seating has the same 4 dB peak the others' average is free to
+    # explain differently: seating 2 has it, seatings 0 and 1 don't.
+    bump = lambda f: 4 * np.exp(-0.5 * (np.log2(f / 3000) / 0.1) ** 2)
+    flat = EarTruth(phon=None)
+    peak = EarTruth(phon=None, deviation=bump)
+    k = np.argmin(np.abs(g - 3000))
+    p = Priors(tau_lo=2.0, tau_hi=2.0)
+    level = {}
+    for n in (600, 12):
+        parts = [simulate(flat, 600, 20, g), simulate(flat, 600, 21, g), simulate(peak, n, 22, g)]
+        f = fit_hierarchical(Trials.grouped(parts), g, p, fit_hyper=False, fit_tau=False)
+        level[n] = f.u[2][k] - np.median(f.u[2])
+        assert f.group_trials.tolist() == [600, 600, n]
+        assert np.allclose(f.u.mean(axis=1), 0, atol=1e-9)  # centred: a constant offset cancels within a group
+    assert level[600] > 2.5 and level[12] < 0.5 * level[600]
+
+
+def test_an_empty_current_group_is_the_prior_around_the_average():
+    g = log_grid()
+    t = simulate(EarTruth(phon=None), 200, 3, g)
+    f = fit_hierarchical(t, g, n_groups=2, fit_hyper=False)
+    assert np.allclose(f.u[1], 0) and f.n_groups == 1
+    assert np.allclose(f.focus_cross, f.cov)  # nothing about this seating is known yet
+    assert np.all(np.diag(f.focus_cov) > np.diag(f.cov))
 
 
 def test_random_pairs_respect_graph():
@@ -39,7 +171,7 @@ def test_random_pairs_respect_graph():
 def recovery():
     g = log_grid()
     truth = design_example("L")
-    fits = [fit_probit(simulate(truth, 1200, s, g), g) for s in range(3)]
+    fits = [fit_hierarchical(simulate(truth, 1200, s, g), g) for s in range(3)]
     tc = truth.level(g)
     return g, tc - tc.mean(), fits
 
@@ -82,15 +214,15 @@ def test_narrow_features_recovered(recovery):
 
 def test_flat_ear_gives_flat_curve():
     g = log_grid()
-    f = fit_probit(simulate(EarTruth(phon=None), 600, 5, g), g)
+    f = fit_hierarchical(simulate(EarTruth(phon=None), 600, 5, g), g)
     assert np.max(np.abs(f.L)) < 3 * f.sd.max()
 
 
 def test_warm_start_without_hyper_refit():
     g = log_grid()
     t = simulate(design_example(), 600, 2, g)
-    full = fit_probit(t, g)
-    fast = fit_probit(t, g, init=full, fit_hyper=False)
+    full = fit_hierarchical(t, g)
+    fast = fit_hierarchical(t, g, init=full, fit_hyper=False)
     assert fast.sigma0 == pytest.approx(full.sigma0)
     assert np.max(np.abs(fast.L - full.L)) < 0.05
 
@@ -120,8 +252,8 @@ def test_time_order_bias_is_recovered_and_kept_out_of_the_curve():
     f_a, f_b, off, _ = uniform_design(g, 1200, rng)
     a_first = rng.random(f_a.size) < 0.5
     y = lis.respond("L", f_a, f_b, off, a_first)
-    with_order = fit_probit(Trials(f_a, f_b, off, y, np.where(a_first, 1.0, -1.0)), g)
-    without = fit_probit(Trials(f_a, f_b, off, y), g)
+    with_order = fit_hierarchical(Trials(f_a, f_b, off, y, np.where(a_first, 1.0, -1.0)), g)
+    without = fit_hierarchical(Trials(f_a, f_b, off, y), g)
     assert abs(with_order.bias_db - 1.2) < 3 * with_order.bias_sd and with_order.bias_sd < 0.3
     assert without.bias_db == 0.0
     # Ignoring the bias shows up as extra judgment noise.

@@ -49,13 +49,31 @@ def _table(head, rows, num_cols=()):
     return f"<table><thead><tr>{h}</tr></thead><tbody>{body}</tbody></table>"
 
 
-def _features_table(feats):
+def _features_table(feats, consensus=False):
     rows = [(f"{f.fc:,.0f} Hz", f"{f.width_oct:.2f}", f"{f.peak_db:+.1f}", f"{f.z:.1f}",
-             "" if f.consistency_p is None else f"{f.consistency_p:.2f}",
+             "" if f.level_sd is None else f"{f.level_sd:.2f}",
+             "" if f.seat_spread is None else f"{f.seat_spread:.2f}",
+             *(("" if f.shared_db is None else f"{f.shared_db:.1f}",) if consensus else ()),
              ("yes" + (", inside a broad region" if f.inside_broad else "")
-              + (f"; {f.reason}" if f.scale < 1 else "")) if f.accepted else f"no: {f.reason}")
+              + (f"; {f.reason}" if f.reason else "")) if f.accepted else f"no: {f.reason}")
             for f in sorted(feats, key=lambda f: f.fc)]
-    return _table(["centre", "width (oct)", "residual dB", "z", "reseat p", "corrected"], rows, (1, 2, 3, 4))
+    head = ["centre", "width (oct)", "excess dB" if consensus else "residual dB", "z", "level SD", "seating spread"]
+    if consensus:
+        head.append("kept as shared dB")
+    return _table(head + ["corrected"], rows, tuple(range(1, len(head))))
+
+
+def consensus_notes(pf: ProfileFit) -> list[str]:
+    st = pf.correction.settings
+    if not st.consensus:
+        return []
+    c = next(iter(pf.correction.ears.values())).consensus
+    mode = "only what exceeds the consensus is removed" if c.mode == "remove" else "matched to the consensus"
+    out = [f"Consensus of {', '.join(c.members)}: {mode}."]
+    if len(c.members) == 2:
+        out.append("The consensus is only one other headphone. With no majority possible, the curve sits between "
+                   "the two, so a peak on one is only about half corrected.")
+    return out
 
 
 def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> Path:
@@ -73,6 +91,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
                      "3 to 5 kHz depend on this choice.")
     if pf.pooled:
         notes.append(f"Pooled: includes the trials of {', '.join(pf.pooled)}.")
+    notes += consensus_notes(pf)
     if st.method == "smooth":
         notes.append(f"Experimental smooth method: the baseline is the curve smoothed over {st.smooth_oct:g} "
                      "octave, and every residual is corrected. The features listed are only what's "
@@ -94,10 +113,14 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB, lapse rate {f.lapse:.1%}, '
                    f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
                    f"{'louder' if f.bias_db >= 0 else 'quieter'}; fitted, so it doesn't distort the curve). "
-                   f"Filter fit: χ² per point {c.fit.chi2:.2f}"
-                   + (f"; {c.sessions_checked} sessions in the reseat check" if c.sessions_checked
-                      else "; reseat consistency not checked (needs two sessions with "
-                           "60+ trials for this ear)") + ".</p>")
+                   f"Seating spread {f.tau_lo:.1f} dB below 5 kHz, {f.tau_hi:.1f} dB above 8 kHz "
+                   + (f"(estimated from {f.n_groups} sessions)" if f.tau_fitted
+                      else "(the prior: estimating it needs two sessions with 60+ trials for this ear)")
+                   + f". Filter fit: χ² per point {c.fit.chi2:.2f}"
+                   + (f"; {c.sessions_checked} sessions in the seating step" if c.sessions_checked else "")
+                   + ".</p>")
+        out.append('<p class="muted">In the feature tables, level SD says whether a feature is real; seating '
+                   "spread says how far off the correction will be on a typical seating.</p>")
         if c.left_out:
             spans = ", ".join(f"{a:,.0f}–{b:,.0f} Hz (up to {m:.1f} dB)" for a, b, m in c.left_out)
             out.append(f'<p class="note">The band budget ({st.bands}) ran out. Left uncorrected: '
@@ -118,7 +141,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
                                                                   "depends on the reference)")):
             feats = [x for x in c.features if x.kind == kind and (x.accepted or abs(x.z) >= 1.5)]
             out.append(f"<h3>{title}</h3>")
-            out.append(_features_table(feats) if feats else '<p class="muted">None.</p>')
+            out.append(_features_table(feats, c.consensus is not None) if feats else '<p class="muted">None.</p>')
 
     out.append("<h2>Settings</h2>")
     out.append(_table(["setting", "value"], [(k, v) for k, v in asdict(st).items()]))

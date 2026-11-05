@@ -23,6 +23,7 @@ from flatiron.paths import data_dir
 FORMAT_VERSION = 1
 fsync = os.fsync  # the tests swap in a no-op: their files are throwaway
 RESERVED = ("none",)  # profile names the CLI uses as keywords
+KINDS = ("headphone", "iem")
 
 
 def slugify(label: str) -> str:
@@ -156,6 +157,10 @@ class Profile:
     def read(self) -> dict:
         return json.loads(self.path.read_text())
 
+    @property
+    def kind(self) -> str:
+        return self.read().get("kind", "headphone")
+
     def update(self, **kw) -> None:
         d = self.read()
         d.update(kw)
@@ -210,10 +215,13 @@ class Profile:
         return sessions[-1].level_dbfs if sessions else None
 
     def history(self, sessions: list[Session] | None = None) -> tuple[dict[str, Trials], dict[str, np.ndarray]]:
-        """All trials pooled per ear, and the most recent grid per ear."""
+        """All trials per ear, one group per session with trials in that ear
+        (in the order given), and the most recent grid per ear."""
         sessions = self.sessions() if sessions is None else sessions
-        trials = {e: Trials.concat([s.trials_for(e) for s in sessions]) if sessions
-                  else Trials([], [], [], []) for e in EARS}
+        trials = {}
+        for e in EARS:
+            parts = [t for t in (s.trials_for(e) for s in sessions) if len(t)]
+            trials[e] = Trials.grouped(parts) if parts else Trials([], [], [], [])
         grids = {}
         for s in sessions:
             for e, g in s.grid.items():

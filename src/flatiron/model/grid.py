@@ -37,6 +37,17 @@ def interp_matrix(grid: np.ndarray, freqs) -> np.ndarray:
     return m
 
 
+def common_grid(grids) -> np.ndarray:
+    """A grid shared by several fits: the finest spacing any fit uses, over the
+    range they all measured. It holds shared curves; statistics stay on each
+    fit's own grid (see interp_matrix(common, own))."""
+    lo = max(float(g[0]) for g in grids)
+    hi = min(float(g[-1]) for g in grids)
+    if lo >= hi:
+        raise ValueError("these fits have no measured range in common")
+    return log_grid(lo, hi, MIN_STEP_OCT)
+
+
 def second_difference(grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Divided second-difference operator in log2 f and per-row interval widths."""
     x = np.log2(grid)

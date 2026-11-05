@@ -1,9 +1,13 @@
-"""Adaptive trial scheduler (DESIGN.md, "Trial" and "Adaptive selection").
+"""Adaptive trial scheduler (DESIGN.md, "Trial" and "Adaptive selection";
+ADDENDUM.md, Feature 3, "Scheduler").
 
 Per trial: pick an ear (interleaved), score candidate pairs from the redundant
 comparison graph by how much one answer would shrink the posterior variance of
-L_i - L_j (weighted up where the curve bends), draw at random from the best,
-and set Δ near the 50% point with ±1 SD jitter. About 5% are catch trials.
+the L_avg difference (weighted up where the curve bends), draw at random from
+the best, and set Δ near the 50% point of the current seating's curve, with
+±1 SD jitter. About 5% are catch trials. An answer is about the current seating,
+L_g = L_avg + u_g, so it says less and less about L_avg once that seating is
+well known at a pair.
 """
 
 from dataclasses import dataclass, field
@@ -13,7 +17,8 @@ import numpy as np
 from flatiron import EARS
 from flatiron.audio.stimulus import POINT
 from flatiron.model.grid import MIN_STEP_OCT, log_grid, octaves
-from flatiron.model.probit import Priors, ProbitFit, Trials, fit_probit
+from flatiron.model.hierarchical import TOL_REFIT, fit_hierarchical
+from flatiron.model.probit import Priors, ProbitFit, Trials
 from flatiron.model.refine import curvature_z, refine_grid
 
 # Variance of a single probit answer at the 50% point, in units of sigma^2:
@@ -41,6 +46,7 @@ class SchedulerConfig:
     # Noise (sigma0, d0, lapse) stays at the prior until an ear has this many
     # trials; with fewer, the evidence underestimates sigma0.
     min_trials_noise_fit: int = 200
+    estimate_tau: bool = True  # with enough history, estimate the seating spread when it's loaded
     refine_k: float = 2.0
     min_step_oct: float = MIN_STEP_OCT
     adaptive: bool = True  # False: uniform random graph pairs (baseline)
@@ -72,11 +78,14 @@ class EarState:
     a_louder: list = field(default_factory=list)
     order: list = field(default_factory=list)  # +1: A played first
     stimulus: list = field(default_factory=list)  # stimulus key per trial
+    group: list = field(default_factory=list)  # seating per trial; earlier sessions come first
+    current: int = 0  # this session's group
     since_refit: int = 0
     since_block: int = 0
 
     def trials(self) -> Trials:
-        return Trials(self.f_a, self.f_b, self.offset, self.a_louder, self.order, self.stimulus or None)
+        return Trials(self.f_a, self.f_b, self.offset, self.a_louder, self.order, self.stimulus or None,
+                      self.group or None)
 
 
 def candidate_pairs(grid: np.ndarray, max_step: int, long_max_oct: float):
@@ -98,14 +107,18 @@ class Scheduler:
         self.rng = np.random.default_rng(seed)
         g = log_grid() if grid is None else np.asarray(grid, float)
         empty = Trials([], [], [], [])
-        self.ears = {e: EarState(g, fit_probit(empty, g, priors, fit_hyper=False)) for e in ears}
+        self.ears = {e: EarState(g, fit_hierarchical(empty, g, priors, fit_hyper=False, all_groups=False))
+                     for e in ears}
         self._ear_cycle = list(ears)
         self._n = 0
         self._last_centre: float | None = None
         self.refinements: list[tuple[str, int, int]] = []  # (ear, trial no., points added)
 
-    def load_history(self, ear: str, trials: Trials, grid: np.ndarray | None = None) -> None:
-        """Start from earlier sessions' trials (and their final grid)."""
+    def load_history(self, ear: str, trials: Trials, grid: np.ndarray | None = None,
+                     fit: ProbitFit | None = None) -> None:
+        """Start from earlier sessions' trials (and their final grid), each
+        session its own group. This session is a new group. fit: the history's
+        full fit if it's already known (it holds the noise and the spread)."""
         st = self.ears[ear]
         if grid is not None and len(grid):
             st.grid = np.asarray(grid, float)
@@ -113,14 +126,27 @@ class Scheduler:
         st.offset, st.a_louder = list(trials.offset), list(trials.a_louder)
         st.order = list(trials.order)
         st.stimulus = list(trials.stimulus)
-        st.fit = fit_probit(trials, st.grid, self.priors,
-                            fit_hyper=len(trials) >= self.cfg.min_trials_noise_fit)
+        st.group = list(trials.group)
+        st.current = int(trials.group.max()) + 1 if len(trials) else 0
+        if fit is None:
+            fit = fit_hierarchical(trials, st.grid, self.priors, all_groups=False,
+                                   fit_hyper=len(trials) >= self.cfg.min_trials_noise_fit,
+                                   fit_tau=self.cfg.estimate_tau)
+        st.fit = self._refit(st, init=fit)
         st.since_refit = st.since_block = 0
+
+    def _refit(self, st: EarState, grid: np.ndarray | None = None, init: ProbitFit | None = None,
+               **kw) -> ProbitFit:
+        """L_avg and the deviations, focused on the current group. By default
+        the noise and the spread stay as they are: the fast path after an answer."""
+        return fit_hierarchical(st.trials(), st.grid if grid is None else grid, self.priors,
+                                init=st.fit if init is None else init, n_groups=st.current + 1,
+                                **{"fit_hyper": False, "fit_tau": False, "all_groups": False, **kw})
 
     def seed_grid(self, ear: str, grid: np.ndarray) -> None:
         """Replace an ear's grid (e.g. refined around sweep marks)."""
         st = self.ears[ear]
-        st.fit = fit_probit(st.trials(), np.asarray(grid, float), self.priors, init=st.fit, fit_hyper=False)
+        st.fit = self._refit(st, grid=np.asarray(grid, float))
         st.grid = st.fit.grid
 
     def pop_last(self, ear: str) -> None:
@@ -128,11 +154,11 @@ class Scheduler:
         st = self.ears[ear]
         if not st.f_a:
             return
-        for lst in (st.f_a, st.f_b, st.offset, st.a_louder, st.order, st.stimulus):
+        for lst in (st.f_a, st.f_b, st.offset, st.a_louder, st.order, st.stimulus, st.group):
             lst.pop()
         st.since_block = max(st.since_block - 1, 0)
         st.since_refit = 0
-        st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit, fit_hyper=False)
+        st.fit = self._refit(st)
 
     def n_trials(self, ear: str) -> int:
         return len(self.ears[ear].f_a)
@@ -158,11 +184,14 @@ class Scheduler:
 
         if cfg.adaptive:
             fit = st.fit
-            c = fit.cov
+            # One answer about the L_g difference shrinks the variance of the
+            # L_avg difference by their covariance² / (Var(L_g difference) + noise).
+            c, cx = fit.focus_cov, fit.focus_cross
             v = c[i, i] + c[j, j] - 2 * c[i, j]
+            shared = cx[i, i] + cx[j, j] - cx[i, j] - cx[j, i]
             d = octaves(g[i], g[j])
             noise = PROBIT_VAR * (fit.sigma0**2) * (1 + (d / fit.d0) ** 2)
-            score = v * v / (v + noise)
+            score = shared * shared / (v + noise)
             z = curvature_z(fit)
             score = score * (1 + cfg.bend_weight * np.minimum(np.maximum(z[i], z[j]), cfg.bend_cap))
             if self._last_centre is not None:
@@ -179,10 +208,13 @@ class Scheduler:
         a_first = bool(self.rng.random() < 0.5)
         if cfg.adaptive:
             fit = st.fit
-            sd = float(np.sqrt(max(fit.var_diff(a, b), 0.0)))
+            c = fit.focus_cov
+            sd = float(np.sqrt(max(c[a, a] + c[b, b] - 2 * c[a, b], 0.0)))
             jitter = np.clip(self.rng.normal() * cfg.jitter_sd * sd, -cfg.max_jitter_db, cfg.max_jitter_db)
-            # Aim at the 50% point as the listener hears it, time-order bias included.
-            off = -(fit.L[a] - fit.L[b]) - fit.bias_db * (1 if a_first else -1) + jitter
+            # Aim at the 50% point as the listener hears it: this seating's
+            # curve, time-order bias included.
+            Lg = fit.L + fit.u[st.current]
+            off = -(Lg[a] - Lg[b]) - fit.bias_db * (1 if a_first else -1) + jitter
         else:
             off = self.rng.uniform(-6, 6)
         off = float(np.clip(off, -cfg.max_delta_db, cfg.max_delta_db))
@@ -211,6 +243,7 @@ class Scheduler:
         st.a_louder.append(bool(a_louder))
         st.order.append(1.0 if plan.a_first else -1.0)
         st.stimulus.append(self.stimulus_key)
+        st.group.append(st.current)
         st.since_refit += 1
         st.since_block += 1
         if st.since_block >= self.cfg.block_size:
@@ -221,7 +254,7 @@ class Scheduler:
                 if other.since_block:
                     self._end_block(e)
         elif st.since_refit >= self.cfg.refit_every and self.cfg.adaptive:
-            st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit, fit_hyper=False)
+            st.fit = self._refit(st, tol=TOL_REFIT)
             st.since_refit = 0
 
     def _end_block(self, ear: str) -> None:
@@ -229,14 +262,15 @@ class Scheduler:
         st.since_refit = st.since_block = 0
         if not self.cfg.adaptive:
             return  # uniform pairs use no fit and no refinement (final_fit fits at the end)
-        st.fit = fit_probit(st.trials(), st.grid, self.priors, init=st.fit,
-                            fit_hyper=len(st.f_a) >= self.cfg.min_trials_noise_fit)
+        # The noise is re-estimated with the spread fixed: the spread is
+        # re-estimated when a fit of all the trials is next wanted.
+        st.fit = self._refit(st, fit_hyper=len(st.f_a) >= self.cfg.min_trials_noise_fit)
         new = refine_grid(st.fit, self.cfg.refine_k, self.cfg.min_step_oct)
         if new.size > st.grid.size:
             self.refinements.append((ear, len(st.f_a), new.size - st.grid.size))
             st.grid = new
-            st.fit = fit_probit(st.trials(), new, self.priors, init=st.fit, fit_hyper=False)
+            st.fit = self._refit(st)
 
     def final_fit(self, ear: str) -> ProbitFit:
         st = self.ears[ear]
-        return fit_probit(st.trials(), st.grid, self.priors, init=st.fit)
+        return fit_hierarchical(st.trials(), st.grid, self.priors, init=st.fit)
