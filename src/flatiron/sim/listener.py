@@ -17,7 +17,7 @@ from scipy.special import ndtr
 from flatiron import iso226
 from flatiron.audio.biquad import PeakingFilter, bw_oct_to_q, response_db
 from flatiron.audio.stimulus import StimulusSpec, spectrum_offsets_oct, stimulus_key
-from flatiron.model.grid import octaves
+from flatiron.model.probit import noise_sd
 
 
 @dataclass
@@ -102,6 +102,7 @@ class SimulatedListener:
     ears: dict[str, EarTruth]
     sigma0: float = 1.0
     d0: float = 0.5
+    treble_noise: float = 1.0
     lapse: float = 0.03
     seed: int = 0
     order_bias_db: float = 0.0  # time-order error: the first interval sounds this much louder
@@ -118,8 +119,7 @@ class SimulatedListener:
         return 10 * np.log10(np.mean(10 ** (lv / 10), axis=1))
 
     def p_a_louder(self, ear, f_a, f_b, offset, a_first=None):
-        d = octaves(f_a, f_b)
-        sigma = self.sigma0 * np.sqrt(1 + (d / self.d0) ** 2)
+        sigma = noise_sd(f_a, f_b, self.sigma0, self.d0, self.treble_noise)
         order = 0.0 if a_first is None else np.where(a_first, 1.0, -1.0)
         z = (self.heard_level(ear, f_a) - self.heard_level(ear, f_b) + np.asarray(offset)
              + self.order_bias_db * order) / sigma

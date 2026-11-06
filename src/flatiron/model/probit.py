@@ -9,7 +9,19 @@ import numpy as np
 from scipy import sparse
 
 from flatiron.audio.stimulus import POINT, spectrum_offsets_oct
-from flatiron.model.grid import interp_matrix
+from flatiron.model.grid import interp_matrix, octaves
+
+# Listener noise rises in the treble: a ramp in log frequency between these,
+# from sigma0 below to sigma0 * treble_noise above (DESIGN.md, "Perceptual model").
+TREBLE_NOISE_LO_HZ, TREBLE_NOISE_HI_HZ = 6000.0, 10000.0
+
+
+def noise_sd(f_a, f_b, sigma0: float, d0: float, treble_noise: float = 1.0) -> np.ndarray:
+    """The trial's noise: each tone brings its own variance, and the pair's gap adds to it."""
+    def ramp(f):
+        return np.clip(np.log2(np.asarray(f, float) / TREBLE_NOISE_LO_HZ) / np.log2(TREBLE_NOISE_HI_HZ / TREBLE_NOISE_LO_HZ), 0.0, 1.0)
+    tones = np.sqrt(0.5 * (treble_noise ** (2 * ramp(f_a)) + treble_noise ** (2 * ramp(f_b))))
+    return sigma0 * tones * np.sqrt(1.0 + (octaves(f_a, f_b) / d0) ** 2)
 
 
 @dataclass
@@ -67,6 +79,7 @@ class Priors:
     d0_log_sd: float = 0.5
     lapse: float = 0.02
     lapse_logit_sd: float = 1.0
+    treble_noise_log_sd: float = 0.5  # noise above 10 kHz relative to below 6 kHz, centred on no difference
     bias_sd_db: float = 3.0  # time-order error prior, centred on none
     # Seating spread (DESIGN.md, "Perceptual model"): medians below 5 kHz and above 8 kHz.
     tau_lo: float = 0.5
@@ -89,6 +102,7 @@ class ProbitFit:
     converged: bool
     bias_db: float = 0.0  # time-order error: the first interval sounds this much louder
     bias_sd: float = 0.0
+    treble_noise: float = 1.0  # noise above 10 kHz as a multiple of sigma0
     tau_lo: float = 0.5  # seating spread below 5 kHz / above 8 kHz (dB)
     tau_hi: float = 1.5
     tau_fitted: bool = False  # False: at the prior or held fixed
