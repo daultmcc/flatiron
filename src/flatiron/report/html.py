@@ -49,30 +49,57 @@ def _table(head, rows, num_cols=()):
     return f"<table><thead><tr>{h}</tr></thead><tbody>{body}</tbody></table>"
 
 
-def _features_table(feats, consensus=False):
+def veto_line(f) -> str:
+    """What a feature's veto saw, in a line."""
+    v = f.veto
+    seen = ", ".join(f"{c.label} {c.height_db:+.1f} dB at {c.fc:,.0f} Hz" if c.present else f"{c.label} nothing"
+                     for c in v.candidates)
+    if v.median is None:
+        return f"{seen}; median: nothing there"
+    return f"{seen}; median: {v.median.height_db:+.1f} dB at {v.median.fc:,.0f} Hz" + (" (elsewhere)" if v.moved else "")
+
+
+def _features_table(feats, veto=False):
     rows = [(f"{f.fc:,.0f} Hz", f"{f.width_oct:.2f}", f"{f.peak_db:+.1f}", f"{f.z:.1f}",
              "" if f.level_sd is None else f"{f.level_sd:.2f}",
              "" if f.seat_spread is None else f"{f.seat_spread:.2f}",
-             *(("" if f.shared_db is None else f"{f.shared_db:.1f}",) if consensus else ()),
+             *(("" if f.veto is None else veto_line(f),
+                "" if f.veto is None else f"{f.veto.correction_db:+.1f}",) if veto else ()),
              ("yes" + (", inside a broad region" if f.inside_broad else "")
               + (f"; {f.reason}" if f.reason else "")) if f.accepted else f"no: {f.reason}")
             for f in sorted(feats, key=lambda f: f.fc)]
-    head = ["centre", "width (oct)", "excess dB" if consensus else "residual dB", "z", "level SD", "seating spread"]
-    if consensus:
-        head.append("kept as shared dB")
-    return _table(head + ["corrected"], rows, tuple(range(1, len(head))))
+    head = ["centre", "width (oct)", "residual dB", "z", "level SD", "seating spread"]
+    numeric = tuple(range(1, len(head)))
+    if veto:
+        head += ["veto", "corrected dB"]
+    return _table(head + ["corrected"], rows, numeric)
 
 
 def consensus_notes(pf: ProfileFit) -> list[str]:
     st = pf.correction.settings
-    if not st.consensus:
-        return []
-    c = next(iter(pf.correction.ears.values())).consensus
-    mode = "only what exceeds the consensus is removed" if c.mode == "remove" else "matched to the consensus"
-    out = [f"Consensus of {', '.join(c.members)}: {mode}."]
-    if len(c.members) == 2:
-        out.append("The consensus is only one other headphone. With no majority possible, the curve sits between "
-                   "the two, so a peak on one is only about half corrected.")
+    out = []
+    if st.consensus:
+        c = next(iter(pf.correction.ears.values())).consensus
+        how = f"smoothed over {c.smooth_oct:g} octave" if c.smooth_oct else "not smoothed"
+        out.append(f"Reference: the raw curves of {', '.join(c.members)}, {how}.")
+        if len(c.members) == 1:
+            out.append("That's a single headphone's curve, not a consensus.")
+        elif len(c.members) == 2:
+            out.append("With two profiles it's their weighted mean, not a median, so one's peak reaches the "
+                       "reference at about half height.")
+    if st.veto:
+        who = ", ".join(st.veto)
+        if st.veto_mode == "pointwise":
+            out.append(f"Veto: frequency by frequency, only what exceeds the median of this profile and {who} is "
+                       "corrected, and never past zero.")
+        else:
+            out.append(f"Veto: each feature is corrected toward the median feature of this profile and {who}, "
+                       f"adding at most {st.veto_import_db:g} dB where that feature is somewhere else.")
+        if len(st.veto) == 1:
+            out.append("With one other profile there's no majority: the median is their average.")
+    if st.method == "match":
+        out.append("Experimental match method: the whole curve is corrected toward the reference, tonality "
+                   "included, with no significance test. The features listed are only what's significant.")
     return out
 
 
@@ -141,7 +168,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
                                                                   "depends on the reference)")):
             feats = [x for x in c.features if x.kind == kind and (x.accepted or abs(x.z) >= 1.5)]
             out.append(f"<h3>{title}</h3>")
-            out.append(_features_table(feats, c.consensus is not None) if feats else '<p class="muted">None.</p>')
+            out.append(_features_table(feats, bool(st.veto) and st.veto_mode == "feature") if feats else '<p class="muted">None.</p>')
 
     out.append("<h2>Settings</h2>")
     out.append(_table(["setting", "value"], [(k, v) for k, v in asdict(st).items()]))

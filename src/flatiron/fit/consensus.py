@@ -1,5 +1,5 @@
 """Consensus across profiles (ADDENDUM.md, Features 1a and 1b): the soft median,
-disagreement with it, and the remove-only rule.
+how much profiles disagree, and the consensus of raw curves.
 
 Statistics stay on each profile's own grid, because interpolating a fit onto a
 finer one adds points but no measurements. The consensus m itself lives on a
@@ -7,7 +7,7 @@ common 1/48-octave grid and meets a profile through A_p, the interpolation from
 the common grid to that profile's grid.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.stats import chi2
@@ -15,12 +15,12 @@ from scipy.stats import chi2
 from flatiron.model.grid import common_grid, interp_matrix, second_difference
 from flatiron.model.probit import Priors
 
-MODEL_VERSION = "1"
+MODEL_VERSION = "2"  # 2: raw curves with robust offsets, listed members only
 TAU_HP_FLOOR_DB = 0.5
-HETEROGENEITY_P = 0.01
-MIN_WIDTH_OCT = 1 / 12
 IRLS_ITERS = 100
 IRLS_TOL_DB = 1e-4
+OFFSET_ITERS = 100
+OFFSET_TOL_DB = 2e-3
 # Octave widths are relative to this, so a point at the usual spacing counts as
 # one measurement. It's what the curvature penalty is scaled to: the same penalty
 # against raw octave widths (1/24 per point) would smooth about 24 times too hard.
@@ -50,6 +50,7 @@ class SoftMedian:
     tau_hp: float
     G: list[np.ndarray]  # per source: m = sum(G_p.T @ R_p), weights fixed at their final values
     robust: bool
+    offsets: np.ndarray | None = None  # raw consensus: each source's level against m (they sum to zero)
 
     @property
     def sd(self) -> np.ndarray:
@@ -138,149 +139,66 @@ def consensus_of(sources: list[Source]) -> SoftMedian:
 
 # -- Feature 1b --------------------------------------------------------------
 
-def correction_rule(R, m, mode: str = "remove") -> np.ndarray:
-    """The correction for residual R given the consensus m. remove: move R toward
-    zero only by what it exceeds the consensus in the same direction, and never
-    past zero, so nothing is imported from the others. match: all the way to m."""
-    R, m = np.asarray(R, float), np.asarray(m, float)
-    if mode == "match":
-        return -(R - m)
-    return -np.sign(R) * np.maximum(0.0, np.abs(R) - np.maximum(0.0, np.sign(R) * m))
+def raw_consensus(sources: list[Source]) -> SoftMedian:
+    """The soft median of raw curves, each with a constant offset fitted by the
+    same robust loss: a treble difference in one headphone mustn't shift its
+    whole curve, as a mean-based alignment would. The offsets sum to zero, so m
+    keeps the group's level. The loss is convex in m and the offsets together,
+    so alternating between them converges to the same answer from any start.
+    G and cov treat the offsets as fixed; each is averaged over the whole range,
+    so its own error is small next to m's at any one frequency."""
+    if len(sources) == 1:
+        return replace(consensus_of(sources), offsets=np.zeros(1))
+    offsets = np.array([s.R.mean() for s in sources])
+    offsets -= offsets.mean()
+    for _ in range(OFFSET_ITERS):
+        sm = consensus_of([replace(s, R=s.R - o) for s, o in zip(sources, offsets)])
+        new = np.empty(len(sources))
+        for i, s in enumerate(sources):
+            r = s.R - sm.on(s.grid)[0]
+            v = s.sd**2 + sm.tau_hp**2
+            w = np.gradient(np.log2(s.grid)) / v
+            if sm.robust:
+                w = w / np.sqrt(1.0 + (r - offsets[i]) ** 2 / v)
+            new[i] = (w * r).sum() / w.sum()
+        new -= new.mean()
+        done = np.max(np.abs(new - offsets)) < OFFSET_TOL_DB
+        offsets = new
+        if done:
+            break
+    return replace(sm, offsets=offsets)
 
 
 @dataclass
 class EarConsensus:
-    """The consensus as one member's correction sees it, on its own grid."""
+    """The consensus as a reference for one profile, after any smoothing, on the
+    common grid. G is that profile's weights if it's a member (None if not):
+    Cov(L, m) = Cov(L) @ G."""
     members: list[str]
     key: str
+    grid: np.ndarray
     m: np.ndarray
-    cov_m: np.ndarray
-    G: np.ndarray  # this member's weights: Cov(R, m on the common grid) = Cov(R) @ G
-    A: np.ndarray  # common grid to this member's grid
+    cov: np.ndarray
     tau_hp: float
-    mode: str = "remove"
+    G: np.ndarray | None = None
+    smooth_oct: float = 0.0
 
-    def excess_cov(self, cov_R: np.ndarray) -> np.ndarray:
-        """Cov(R − A m). This member votes, so R and m are correlated."""
-        cross = cov_R @ self.G @ self.A.T
-        return cov_R + self.cov_m - cross - cross.T
+    def on(self, grid: np.ndarray) -> np.ndarray:
+        """The reference on a grid, its mean removed like every other reference's."""
+        e = interp_matrix(self.grid, grid) @ self.m
+        return e - e.mean()
 
+    def difference_cov(self, cov_L: np.ndarray, grid: np.ndarray) -> np.ndarray:
+        """Cov(L − m). Unlike a fixed reference this one has its own error, and
+        a member's own vote makes L and m correlated."""
+        out = self.other_cov(cov_L, grid)
+        if self.G is not None:
+            A = interp_matrix(self.grid, grid)
+            cross = cov_L @ self.G @ A.T
+            out = out - cross - cross.T
+        return out
 
-def for_member(sm: SoftMedian, index: int, grid: np.ndarray, members: list[str], key: str = "",
-               mode: str = "remove") -> EarConsensus:
-    A = interp_matrix(sm.grid, grid)
-    return EarConsensus(members, key, A @ sm.m, A @ sm.cov @ A.T, sm.G[index], A, sm.tau_hp, mode)
-
-
-# -- Feature 1a --------------------------------------------------------------
-
-@dataclass
-class Flag:
-    label: str
-    ear: str
-    f_lo: float
-    f_hi: float
-    fc: float
-    deviation_db: float
-    sd_db: float
-
-    @property
-    def sign(self) -> str:
-        return "peak only here" if self.deviation_db > 0 else "dip only here"
-
-    @property
-    def strength(self) -> float:
-        return abs(self.deviation_db) / self.sd_db
-
-
-@dataclass
-class Disagreement:
-    source: Source
-    voting: bool
-    deviation: np.ndarray  # from the consensus
-    sd: np.ndarray
-    flags: list[Flag] = field(default_factory=list)
-
-    @property
-    def z(self) -> np.ndarray:
-        return self.deviation / self.sd
-
-
-def _crossing(x, a, k, i, j) -> float:
-    """Where |a| crosses k between neighbouring grid points i and j."""
-    if a[i] == a[j]:
-        return x[i]
-    return x[i] + (k - a[i]) / (a[j] - a[i]) * (x[j] - x[i])
-
-
-def flag_regions(source: Source, ear: str, deviation, sd, k: float = 2.0,
-                 min_width_oct: float = MIN_WIDTH_OCT) -> list[Flag]:
-    """Regions where |z| > k continuously over at least a width in octaves
-    (a count of points would mean something different on each grid). Each edge
-    is where |z| crosses k between grid points."""
-    x = np.log2(source.grid)
-    z = deviation / sd
-    out: list[Flag] = []
-    n = z.size
-    i = 0
-    while i < n:
-        if abs(z[i]) <= k:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and abs(z[j + 1]) > k and np.sign(z[j + 1]) == np.sign(z[i]):
-            j += 1
-        a = np.abs(z)
-        lo = _crossing(x, a, k, i - 1, i) if i > 0 and np.sign(z[i - 1]) == np.sign(z[i]) else x[i]
-        hi = _crossing(x, a, k, j, j + 1) if j + 1 < n and np.sign(z[j + 1]) == np.sign(z[j]) else x[j]
-        if hi - lo >= min_width_oct - 1e-9:
-            p = i + int(np.argmax(np.abs(deviation[i:j + 1])))
-            out.append(Flag(source.label, ear, float(2**lo), float(2**hi), float(source.grid[p]),
-                            float(deviation[p]), float(sd[p])))
-        i = j + 1
-    return out
-
-
-@dataclass
-class EarComparison:
-    ear: str
-    consensus: SoftMedian
-    entries: list[Disagreement]
-    heterogeneous: np.ndarray  # on the common grid: Cochran's Q p < 0.01
-    voters: int
-
-    @property
-    def flags(self) -> list[Flag]:
-        return sorted((f for e in self.entries for f in e.flags), key=lambda f: -f.strength)
-
-
-def compare_ear(ear: str, sources: list[Source], k: float = 2.0, min_width_oct: float = MIN_WIDTH_OCT,
-                voting_kinds=KINDS_VOTING) -> EarComparison:
-    """Every profile is judged against the whole consensus. A voter's own vote
-    is in it, which its deviation's SD allows for, and the soft median keeps one
-    profile's peak from moving it far. Leaving each voter out instead fails with
-    three profiles: two voters have no majority, so one headphone's peak gets
-    the other two flagged as dips."""
-    voters = [s for s in sources if s.kind in voting_kinds]
-    if len(voters) < 2:
-        raise ValueError(f"comparing needs at least two profiles that vote; "
-                         f"{len(voters)} of these do (see --include-kind)")
-    common = common_grid([s.grid for s in sources])
-    tau = estimate_tau_hp(voters, common)
-    robust = len(voters) > 2
-    full = soft_median(voters, common, tau, robust)
-    entries = []
-    for s in sources:
-        voting = any(s is o for o in voters)
-        m, cov_m = full.on(s.grid)
-        dev = s.R - m
-        if voting:
-            i = next(n for n, o in enumerate(voters) if o is s)
-            cross = s.cov @ full.G[i] @ interp_matrix(common, s.grid).T
-            var = np.diag(s.cov + cov_m - cross - cross.T)
-        else:
-            var = np.diag(s.cov + cov_m)
-        sd = np.sqrt(np.clip(var, 1e-12, None))
-        entries.append(Disagreement(s, voting, dev, sd, flag_regions(s, ear, dev, sd, k, min_width_oct)))
-    _, p = heterogeneity(voters, common)
-    return EarComparison(ear, full, entries, p < HETEROGENEITY_P, len(voters))
+    def other_cov(self, cov_L: np.ndarray, grid: np.ndarray) -> np.ndarray:
+        """Cov(L − m) for another profile's curve, taken as independent of m."""
+        A = interp_matrix(self.grid, grid)
+        return cov_L + A @ self.cov @ A.T

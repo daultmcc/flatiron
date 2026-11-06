@@ -103,9 +103,6 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
             ax.axvspan(g[f.lo], g[f.hi], color=t["shade"], linewidth=0, zorder=0)
     ax.fill_between(c.freqs, R_f - sd_f, R_f + sd_f, color=t["s1"], alpha=0.18, linewidth=0)
     ax.plot(c.freqs, R_f, color=t["s1"], linewidth=2)
-    if c.consensus is not None:
-        ax.plot(g, c.consensus.m, color=t["muted"], linewidth=1.5, linestyle="--")
-        _label_end(ax, g[-1], c.consensus.m[-1], "consensus", t["muted"], t, dy=2.0)
     ax.plot(c.freqs, H, color=t["s2"], linewidth=2)
     ax.plot(c.freqs, R_f + H, color=t["s3"], linewidth=2)
     ends = sorted([(R_f[-1], "residual", t["s1"]), (H[-1], "correction", t["s2"]),

@@ -59,9 +59,10 @@ class Feature:
     # the span (the pipeline's R includes the lobe's broad offset there).
     residual: np.ndarray | None = None
     residual_sd: np.ndarray | None = None
-    residual_R: np.ndarray | None = None  # with a consensus: `residual` is the excess, this the profile's own
-    correction_db: float | None = None  # with a consensus: what's corrected at the feature's largest correction
-    shared_db: float | None = None  # with a consensus: how much of the residual there is kept as shared
+    veto: object = None  # with the feature veto: its candidates and median feature (fit/veto.py)
+    residual_R: np.ndarray | None = None  # pointwise veto: `residual` is the excess, this the profile's own
+    correction_db: float | None = None  # pointwise veto: what's corrected at the feature's largest correction
+    shared_db: float | None = None  # pointwise veto: how much of the residual there is kept as shared
     inside_broad: bool = False
     scale: float = 1.0  # share of the residual corrected: the median seating's level over L_avg's
     run: int = -1  # which same-sign stretch of the residual it was split from

@@ -8,6 +8,9 @@ headphone would produce (DESIGN.md, pipeline step 1).
     none       flat
     <path>     a user CSV of perceived-level shape: "freq_hz,db" rows
 
+A consensus reference ("consensus:A,B") is built from other profiles' fits, so
+it's made per profile in fit/run.py and doesn't come through here.
+
 Every reference is returned with its mean removed over the frequencies asked for.
 """
 
@@ -19,6 +22,7 @@ from flatiron import iso226
 from flatiron.paths import data_dir
 
 BUILTIN = ("iso226", "diffuse", "none")
+CONSENSUS_PREFIX = "consensus:"
 
 
 def diffuse_csv() -> Path:
@@ -50,6 +54,8 @@ def interp_log(f_src, db_src, freqs) -> np.ndarray:
 
 def reference(name: str, freqs, phon: float = 60.0) -> np.ndarray:
     f = np.asarray(freqs, float)
+    if name.startswith(CONSENSUS_PREFIX):
+        raise ValueError("a consensus reference is only available in a profile's own fit, not here")
     if name == "none":
         e = np.zeros(f.size)
     elif name == "iso226":

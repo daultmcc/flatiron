@@ -26,8 +26,9 @@ uv run flatiron config --checkpoint              # fix the current filters; late
 uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; -m preset.txt
 uv run flatiron tone -p "HD 600"                 # tone generator: glide by hand, mark peaks and dips
-uv run flatiron report --compare A B C -H         # several profiles per ear: soft median, where one stands out
-uv run flatiron config -r consensus:B,C           # correct only what this profile doesn't share with B and C
+uv run flatiron report --compare A B C -H         # several profiles per ear: their curves, what the veto would correct
+uv run flatiron config -r consensus:B,C           # use B's and C's raw curves as the reference
+uv run flatiron config --veto B,C                 # correct features toward the median of this one's, B's and C's
 uv run flatiron report --csv curves.csv           # the level, reference, baseline and residual, per ear
 uv run flatiron profiles new "Etude" --kind iem   # or `profiles set NAME --kind ... --label ...`
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
@@ -57,17 +58,24 @@ There's no separate fit step: `report`, `export`, `audition`, `verify` and the
 sweep compute the fit when they need it, from all the profile's trials and its
 settings (the perceptual fit is cached, so this takes a few seconds only after
 new trials). `config` settings: `--width` (max feature width W, octaves),
-`--reference iso226|diffuse|none|file.csv`, `--broad` (also correct broad
+`--reference iso226|diffuse|none|file.csv|consensus:A,B`, `--broad` (also correct broad
 features toward the fixed target; by default only narrow features are corrected
 and the original broad shape is kept, leaving broad tonal changes to you),
 `-s/--broad-strength` (how much of each broad feature, %; needs `--broad`), `--k`, `--k-broad`, `--bands`, `--boost-narrow`,
 `--boost-broad`, `--max-cut`, `--f-lo`, `--f-hi`, `--no-consistency`,
 `--sessions id,id|all`, `--pool OTHER[,OTHER]|none` (include another profile's trials, e.g. the same
 headphones measured with tones), `--method smooth` with `--smooth-width OCT` (experimental: correct every
-residual against a smoothed curve, no feature detection; corrects some noise too);
-`--reset [name ...]` returns settings to the defaults. `-r consensus:A,B` corrects only narrow structure this
-profile doesn't share with the listed profiles (`--consensus-mode match` goes all the way to the consensus,
-importing what they share; not yet with `--broad` or `--method smooth`).
+residual against a smoothed curve, no feature detection; corrects some noise too), `--method match`
+(experimental: correct the whole curve toward the reference, tonality included);
+`--reset [name ...]` returns settings to the defaults.
+`-r consensus:A,B` uses the listed profiles' raw curves as the reference instead of a fixed one, smoothed over
+`--consensus-smooth OCT` (default 1/2 octave, 0: none). This profile is only in it if you list it, and with three
+headphones you probably want to: two others alone give their mean, not a median. `--veto A,B|none` corrects each
+feature toward the median feature of this profile and those, among features that overlap it, and `--veto-import DB`
+(default 1.5, 0: none) limits what it may add where that median feature is at another frequency.
+`--veto-mode pointwise` instead corrects frequency by frequency, by what exceeds the median of the residuals, and
+adds nothing. The reference and veto can be used together, and with or without `--broad`; `--veto` needs
+`--method features`.
 `--checkpoint` fixes the current filters: later fits keep them, whatever the
 settings, and only add filters (within `--bands`) for what's still
 significant, e.g. after `verify`. `--reset-checkpoint` drops it. The design's

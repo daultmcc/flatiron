@@ -24,37 +24,41 @@ Features 1 and 2b are downstream of the cached perceptual fits, so like every ot
 | τ\_seat(f), τ\_pos(f) | How much a seating or a speaker position typically differs from the average at frequency f |
 | L\_avg, u\_g, L\_g | The average curve, group g's deviation from it, and group g's curve (L\_avg + u\_g). A group is a headphone session or a speaker block |
 | ℓ | Correlation width of u\_g across frequency |
-| R\_h, m, X\_h | Headphone h's residual, the consensus, and h's excess over the consensus (R\_h − m) |
+| R\_h, m | Headphone h's residual, and the consensus |
 | A\_p | The interpolation matrix from the common grid to profile p's own grid |
 | κ | The soft median's curvature penalty (DESIGN.md's λ remains the lapse rate) |
 
 ## Feature 1a: comparison report
 
-`flatiron report --compare A B C …` overlays two or more profiles per ear, shows their soft-median consensus, and lists the frequency ranges where one profile stands out. It doesn't run feature detection or fit filters.
+`flatiron report --compare A B C …` overlays two or more profiles' raw curves per ear with their consensus, and says what the veto would correct on each. It fits no filters.
 
 ### Inputs
 
 - Each profile's cached perceptual fit, L̂ with its covariance. No new trials, and no profile's own settings are used except its sessions and pooling.
-- Compare-time settings, shared by all profiles: max feature width W (`-w`, default 1 octave), reference (`-r`, default the profiles' common one) and ear (`--ear L|R|both`).
+- Compare-time settings, shared by all profiles: max feature width W (`-w`, default 1 octave), reference (`-r`, default the profiles' common fixed one) and ear (`--ear L|R|both`). A consensus reference isn't used here: `iso226` stands in, with a note.
 - Each fit stays on its own grid of about 100 to 110 points, and statistics are computed there. Interpolating a fit onto a finer grid adds no measurements: the new points are mixes of their neighbours, so a 399-point curve still holds only about 106 independent values. Treating those points as separate data would make the two-point rule meaningless and error bars too small.
 - Shared curves such as the consensus live on a common 1/48-octave grid, the finest any fit uses, over the intersection of the measured ranges. They're compared with a profile on that profile's own grid through A\_p. The 1/96-octave grid is used only for plotting.
 
-### What is plotted (per ear)
+### What is reported (per ear)
 
-1. **Aligned curves.** Each L̂ minus the reference, shifted by the least-squares offset that best aligns it with the others. This shows broad tonal differences between the headphones too, with ±1 SD bands.
-2. **Residuals.** Each profile's residual R\_p after the standard baseline at width W (DESIGN.md pipeline steps 1 to 3), so only structure narrower than W is left. The soft median m is drawn on top with its ±1 SD band.
-3. **Disagreement.** For each profile, its deviation from the leave-one-out consensus as a z-score (below). Regions where it exceeds k are shaded in that profile's colour.
+1. **Aligned curves.** Each L̂ minus the reference, shifted by its robust offset (Feature 1b), with ±1 SD bands, and the raw consensus on top with its own. A mean-based alignment would be pulled by a treble difference in one headphone. Broad tonal differences stay visible here, and only here.
+2. **Where the curves differ.** A strip shades frequencies where the aligned curves disagree as a whole (Cochran's Q, p < 0.01). It includes broad differences.
+3. **Flags.** A feature is flagged when the veto (Feature 1b, in its feature mode) would correct it, so a flag always names something a veto would act on, and a broad difference can't produce one. A flag lists the profile, ear, centre, height, correction, and a reading: "peak only here", "peak elsewhere on the others", or "taller here than on the others", with the words for dips to match. They're sorted by the size of the correction.
+4. **All features.** One row per place, for features that all overlap each other, with each profile's height there and what the veto would correct. A feature missing from one headphone isn't flagged on it; it shows up here as a gap, and in the others' rows.
 
-Profiles of kind `speaker` and `iem` are drawn dashed and don't count toward the consensus by default (Feature 2 and Open questions say why).
+Profiles of kind `speaker` and `iem` are drawn dashed and don't count toward the consensus or the veto by default (Feature 2 and Open questions say why). They're measured against the voters' median without counting toward it.
+
+This replaced an earlier report of residuals and pointwise z-scores. Each profile's baseline makes its own decision about what to reject, so the residuals disagreed more than the raw curves: on HD560, FT1 and Sundara, RMS spread was 2.97 dB in the residuals against 2.66 dB raw in the left ear, and in the left-ear mids a 4 to 5 dB raw gap became 6 to 10 dB.
 
 ### Soft median
 
 The consensus m(f) minimises a robust misfit across profiles plus a smoothness penalty across frequency:
 
 ```latex
-m = \arg\min_m \sum_p \sum_{i} w_{p,i}\, \rho_\delta\!\left(\frac{R_{p,i} - (A_p m)_i}{\mathrm{scale}_{p,i}}\right) + \kappa \lVert D_2\, m \rVert^2
+m = \arg\min_m \sum_p \sum_{i} w_{p,i}\, \rho_\delta\!\left(\frac{L_{p,i} - o_p - (A_p m)_i}{\mathrm{scale}_{p,i}}\right) + \kappa \lVert D_2\, m \rVert^2
 ```
 
+- o\_p is profile p's constant offset, fitted with m by the same loss, summing to zero.
 - i runs over profile p's own grid points. w\_{p,i} is the octave width each point covers, so a refined region doesn't count for more just because it has more points.
 - ρ\_δ is the pseudo-Huber loss with δ = 1: close to a precision-weighted mean when profiles agree within their error bars, and close to a median when one is far off. That is the "soft" part.
 - scale\_{p,i}² = SD\_{p,i}² + τ\_hp². Measurement noise alone would overweight the most-measured profile.
@@ -64,63 +68,62 @@ m = \arg\min_m \sum_p \sum_{i} w_{p,i}\, \rho_\delta\!\left(\frac{R_{p,i} - (A_p
 - m's covariance carries each profile's full covariance through the final weights. With W\_p = diag(w\_p / scale\_p²) and H the final system matrix:
 
 ```latex
-\operatorname{Cov}(m) = H^{-1}\Big(\sum_p A_p^{\mathsf T} W_p \operatorname{Cov}(R_p)\, W_p A_p\Big) H^{-1}
+\operatorname{Cov}(m) = H^{-1}\Big(\sum_p A_p^{\mathsf T} W_p \operatorname{Cov}(L_p)\, W_p A_p\Big) H^{-1}
 ```
 
   Per-frequency weights alone ignore the correlation between neighbouring points and make the SD too small (see Prototype results). This treats the final weights as fixed, which the simulator's coverage check tests.
 
-### Disagreement highlighting
+With only two profiles, the consensus is their precision-weighted mean and the report says so. The flags then show differences, not outliers.
 
-- For each profile p, a leave-one-out consensus m₋ₚ is computed without p, because a profile shouldn't be able to hide its own deviation by pulling the consensus toward itself. This applies to flagging only. The correction uses the full consensus (Feature 1b).
-- z\_p(f) = (R\_p(f) − A\_p m₋ₚ(f)) / √(SD\_p(f)² + Var A\_p m₋ₚ(f)), on p's own grid.
-- A region is flagged when |z\_p| > k (default 2, from the profile settings) continuously over at least a minimum width in octaves (`--min-width`, provisionally 1/12). Width is set in octaves because a count of points means something different on each grid. k and the minimum width are tuned together in the simulator for a target false-flag rate, checked by drawing noise from the fits' covariances.
-- A table under the plots lists each flagged region: profile, ear, frequency range, peak deviation in dB with its SD, and sign ("peak only here" or "dip only here"). It's sorted by |deviation|/SD, so the largest confident disagreements come first.
-- A heterogeneity strip under the residual plot shades frequencies where the profiles as a whole disagree (Cochran's Q, p < 0.01), even when no single one stands out.
+## Feature 1b: consensus reference and veto
 
-With only two profiles, the consensus is their precision-weighted mean and the report says so. The disagreement table then shows differences, not outliers.
+These are two separate settings, usable alone or together, with narrow or broad detection. Both exist to avoid correcting what's shared across headphones, so they aren't independent in effect: an unsmoothed consensus reference leaves a veto little to do. Smoothed, the reference carries the broad shape and the veto decides the narrow features.
 
-## Feature 1b: consensus reference
+### `-r consensus:A,B,C`: a reference built from raw curves
 
-`flatiron config -r consensus:A,B,C` corrects a profile only for narrow structure the consensus doesn't share. By default it only removes such structure and never imports features from the others.
+The consensus is a drop-in for E (DESIGN.md pipeline step 1). The steps that follow are unchanged, including the baseline.
 
-### Where it enters the pipeline
+1. **Raw curves.** The sources are the listed profiles' L̂, with no reference and no baseline. So a consensus depends only on its members' fits, and every profile using the same list shares one cache entry.
+2. **Members.** Exactly the profiles listed. The profile being corrected is included only if it's listed. Leaving it out makes the reference independent of it, but with two others the soft median falls back to their weighted mean, so one's peak reaches the reference at about half height. Listing it as well gives a real median of three.
+3. **Alignment.** Each source gets a constant offset, fitted together with the soft median by the same robust loss and summing to zero, so a treble difference in one headphone doesn't shift its whole curve. A mean-based alignment would be pulled by exactly those differences.
+4. **Smoothing.** `--consensus-smooth` (FWHM, default 1/2 octave, 0: none) smooths m with a local linear fit. Unsmoothed, the reference holds the members' narrow features, so a shared peak disappears before detection and another headphone's peak reads as a dip here. Smoothed, the reference carries the broad shape and narrow features go to detection, and to the veto if it's on. About half of a shared peak around 1/4 octave wide stays in the reference at this width, so a feature's height against it is lower than against a fixed reference.
+5. **Covariance.** Cov(L − m) adds m's error, and for a member subtracts the correlation its own vote creates. The offsets are treated as fixed.
 
-DESIGN.md steps 1 to 3 run unchanged for this profile (call its residual R\_h). Then:
+A single profile is allowed (the reference is then that headphone's curve), with a note. Profiles that share trials through pooling can't be used together: `--pool` means the same headphones measured again, and a consensus needs different ones. Results live in `cache/consensus/`, keyed by each member's perceptual-fit hash and pruned least-recently-used at 200 MB. The smoothing is applied after the cache.
 
-1. The consensus set is the listed profiles plus this one, whether or not it's listed. Each gets its residual at **this profile's** W and reference. That way all residuals mean the same thing.
-2. The soft median m of those residuals is computed as in 1a, with its covariance. This profile votes too. With leave-one-out, three headphones would leave two voters, so no majority is possible: a peak shared with one other headphone would be half corrected. Including it restores a majority, and gives every headphone in the set the same target. It's the same choice the joint model makes in Feature 2b.
-3. Features are found on the excess X\_h = R\_h − A\_h m, on this profile's own grid, using the standard narrow test. X\_h's covariance includes the correlation between R\_h and m, which follows from the weights in 1a's covariance formula. The inside-broad-regions search and the seating step apply to X\_h unchanged.
-4. The target (step 6) is built from the kept features by the rule below, then caps, taper, filters, tonality compensation and preamp run as before.
+### `--veto A,B,C`: correcting toward the median feature
 
-### The remove-only rule (default)
+Each feature is corrected toward the median feature at the same place across headphones, rather than toward zero. Detection is unchanged, on this profile and each voter, against this profile's reference. Requires `--method features`. It applies to whatever would be corrected: narrow features, those inside broad regions, and with `--broad` broad ones too.
 
-Within each kept feature, the correction moves R\_h toward zero only by the amount it exceeds the consensus in the same direction, and never past zero:
+1. **Voters.** The profiles listed plus this one, always.
+2. **Matching.** Each voter contributes its tallest same-sign feature that overlaps this one, in the literal sense that their half-height widths intersect. A voter with no overlapping feature counts as having nothing there. A voter's narrow lobes of 1 dB or more count even if they aren't significant, since an undetected lobe isn't the same as nothing. There's no matching parameter. Peaks that are clear of each other, however close, are treated as separate features.
+3. **The median feature.** The most central of the candidates: the actual feature (or nothing) with the smallest total shape difference to the rest, each drawn as a Gaussian of its height and half-height width. Ties go to this profile. With one other profile there's no middle, so it's their average.
+4. **Correction.** With R the feature's residual and b the median feature, C = −(R − b), with any net boost in the feature's own direction limited. The limit is `--veto-import` (default 1.5 dB) if the median feature is more than 1/12 octave away, and 0 otherwise, so at the same place a feature can only shrink. Outside the feature only an import can add anything. A limit of 0 means nothing is ever imported.
 
-```latex
-C(f) = -\operatorname{sign}(R_h)\,\max\!\big(0,\; |R_h| - \max(0,\, \operatorname{sign}(R_h)\, m)\big)
-```
-
-| This profile R\_h | Consensus m | Correction C | Reading |
+| Case | This feature, then the others (dB) | Median feature | Corrected |
 | --- | --- | --- | --- |
-| +6 dB | 0 | −6 dB | Peak only this headphone has: removed |
-| +6 dB | +6 dB | 0 | Shared peak, probably the listener's: kept |
-| +9 dB | +6 dB | −3 dB | Shared peak this headphone overdrives: trimmed to the shared level |
-| 0 | +6 dB | 0 | Others have a peak this one lacks: not imported |
-| −5 dB | 0 | +5 dB (capped at +4) | Dip only this headphone has: filled, within the narrow boost cap |
-| +6 dB | −2 dB | −6 dB | Peak where others dip: removed to zero, not to −2 |
+| In every headphone, same height | +8, +8, +8 | This one | Nothing |
+| Only in this one | +8, nothing, nothing | Nothing | All of it |
+| In this one and one other | +8, +8, nothing | This one | Nothing |
+| Taller here | +8, +6, +6 | +6 | 2 dB |
+| Shorter here | +4, +8, +8 | +8, same place | Nothing; no boost |
+| Opposite in the others | +5, −3, −3 | Nothing, since they aren't the same sign | All of it |
+| Elsewhere in the others | +7 at 8.2 kHz, +6 at 7 kHz twice | +6 at 7 kHz | All of it, and at most 1.5 dB of net boost at 7 kHz |
+| Two profiles | +8, nothing | +4 | Half |
 
-The table gives C for a given m. Because this profile votes, m moves a little toward it. Worked by hand at one frequency with no noise and τ\_hp = 1 dB: a +6 dB peak on one of three headphones gives m of about +0.6 and a correction of about −5.4 dB. A +6 dB peak on two of three gives m of about +5.4 and a correction of about −0.6 dB on each. Keeping a peak that two headphones happen to share is the cautious way to be wrong.
+Why not the alternatives:
 
-`--consensus-mode match` drops the rule and uses C = −(R\_h − m) everywhere, importing the others' shared structure. It's there for experiments, not as a default: a peak two headphones share could be something those two do on this head. The usual caps (`--boost-narrow`, `--max-cut`) apply in both modes.
+- **One share per feature**, from a template fit to each curve, was built first and failed. A lobe holding both a shared peak and this headphone's own needs two different shares. The difference of shapes handles it: on noiseless curves, such a lobe got −4.5 dB on its own part and −5.5 dB on the shared one with a share, and −5.3 and −1.4 dB this way.
+- **Independent medians** of frequency, width and height can give a feature no headphone has. A peak between two others on either side comes back as itself and reads as shared, which happened on real data at 8.2 kHz.
+- **A limit on the bump instead of the net boost** cuts energy this headphone already has at the median feature's place.
 
-### Other behaviour
+This profile's own vote doesn't protect against imports when the other two agree: at 8.2, 7 and 7 kHz the median ignores it. That's why the import limit is explicit.
 
-- **Cached on its own.** Consensus results live in a shared cache at the top of Flatiron's data folder (`cache/consensus/`), never under a profile. An entry is keyed by the member profiles (including the one being corrected), each member's perceptual-fit hash, and every setting that affects the result: W, reference and listening level, grid, ear, speaker trust, speaker response and a model version. Each listed set with matching settings has one entry, shared by its members: the soft median, and the 2b joint fit, each run once over the full set. A profile's own cache records only which consensus key it used.
-- **Lazy updates.** A new session in any member changes that member's fit hash and therefore the key, so the next fit computes a fresh entry. Entries are written atomically and pruned least-recently-used (default cap 200 MB).
-- One other profile is allowed, with a warning that "consensus" is then a single headphone. With no majority possible, m sits between the two, so a peak on one is only about half corrected.
-- `--pool` is unchanged and means something different: the same headphone measured again. Consensus is for different headphones. A profile can't be both pooled in and in the consensus list.
-- The report gains the consensus curve, X\_h, and a column in the features table saying how much of each feature was kept as shared.
-- Broad features (`--broad`) still use the fixed reference. Consensus only affects structure narrower than W.
+`--veto-mode pointwise` is the alternative. At each frequency, what exceeds the soft median of the voters' residuals, taken with this profile's and each with its own baseline, is corrected, and never past zero: C = −sign(R) max(0, |R| − max(0, sign(R) m)). Features are found on R − m. It can't import or move anything, and it's sensitive to broad differences between headphones because of the separate baselines.
+
+### `--method match`
+
+No baseline: the whole of L − E, within the correction range and with only its level free (a precision-weighted median), is the target, tonality included. There's no feature test, the limits are the usual cut cap and the broad boost cap, and no tonality compensation is added. It's for experiments, mostly with a consensus reference. It doesn't combine with `--veto`, and with `--method smooth` neither does `--veto`; a reference still applies to both.
 
 ## Feature 2a: speaker sessions
 
@@ -197,7 +200,7 @@ Per ear, estimate T, cup, every hp\_h and every spk\_s together by MAP:
 - Prior terms are weighted by the octave width each grid point covers, like the perceptual fit's curvature penalty, so their strength doesn't depend on grid spacing.
 - Solved by IRLS for the Student-t terms; covariances from the Laplace approximation at the solution.
 
-The correction for headphone h is the 1b remove-only rule with m replaced by T̂: what h shows beyond T̂ is cup + hp\_h, and that's what gets removed.
+(Written before 1b was split into a reference and a veto, and to be revisited when speakers are built.) The correction for headphone h is the pointwise rule from `--veto-mode pointwise`, with T̂ as the median: what h shows beyond T̂ is cup + hp\_h, and that's what gets removed.
 
 ### How the evidence plays out
 
@@ -270,10 +273,11 @@ Features 1 and 2 are additive. Existing profiles default to kind `headphone`. Fe
 | `profiles new` | `--kind headphone\|iem\|speaker`, `--channel L\|R` (speaker) | Sets the profile kind; `profiles` lists it |
 | `profiles set` | `--kind`, `--label` | Changes kind after the fact (no trials affected) |
 | `run` | `--block N` (speaker only, default 24), `--position LABEL` | Runs one speaker block; refuses `--sweep` on speakers |
-| `report` | `--compare P…`, `-w`, `-r`, `--ear`, `--include-kind`, `--min-width` | Comparison report (1a) |
+| `report` | `--compare P…`, `-w`, `-r`, `--ear`, `--include-kind` | Comparison report (1a) |
 | `report` | `--csv FILE` | Dumps L̂, reference, baseline and residual with SDs per ear, for any profile |
-| `config` | `-r consensus:P,P,…` | Consensus reference (1b), speakers included by kind (2b) |
-| `config` | `--consensus-mode remove\|match` | Remove-only (default) or full matching |
+| `config` | `-r consensus:P,P,…`, `--consensus-smooth OCT` | Consensus reference (1b) |
+| `config` | `--veto P,P,…\|none`, `--veto-mode feature\|pointwise`, `--veto-import DB` | Correct toward the median feature, or by the pointwise rule (1b) |
+| `config` | `--method match` | Correct the whole curve toward the reference (1b) |
 | `config` | `--speaker-trust low\|medium\|high`, `--speaker-response FILE` | Speaker handling (2b) |
 | `simulate` | `--scenario consensus`, `--scenario seating` | The multi-profile and seating simulations (Validation) |
 
@@ -286,7 +290,7 @@ Features 1 and 2 are additive. Existing profiles default to kind `headphone`. Fe
 ### Modules
 
 - `model/`: `hierarchical.py` (group random effects and the block-arrow solve, used for every fit), plus a shared helper to map a common-grid curve onto a fit's own grid.
-- `fit/`: `consensus.py` (soft median, leave-one-out, disagreement z-scores, the joint T/cup/hp/spk model, the remove-only rule), a `consensus` reference type in `reference.py`, and the group-based seating step in place of Cochran's Q in `features.py`.
+- `fit/`: `consensus.py` (soft median, raw consensus, the joint T/cup/hp/spk model), `compare.py` (the comparison's flags and rows), `veto.py` (the median feature and the pointwise rule), a `consensus` reference type in `reference.py`, and the group-based seating step in place of Cochran's Q in `features.py`.
 - `session/`: a speaker block runner (plug prompt, position plan, anchor pairs, ear alternation), and group-aware Δ and pair scoring in the scheduler.
 - `report/`: the comparison figures and table, the consensus columns in the single-profile report, and the two per-feature seating numbers.
 - `sim/`: multi-profile ground truth, the speaker position model, and seatings that change feature levels.
@@ -322,7 +326,7 @@ Speaker 1's own peak at 6.3 kHz checks that one speaker's colouration never reac
 5. **One speaker.** With speaker 2 only, any removal of cup is marked in the report as resting on one device.
 6. **Low trust.** Results match criterion 2 within 0.5 dB.
 7. **Speaker model.** L\_avg recovers the mean over positions within 1.5 dB RMS from 1 to 13 kHz, at both 20 × 24 and 8 × 60 trials. Its reported SD covers the error about 68% of the time over 50 simulated listeners. The criterion also runs with the fixed τ\_pos at half the true curve, to show how much a wrong assumption costs.
-8. **Rule and edge cases.** Two-profile consensus runs and warns, and every row of the remove-only table comes out as specified (unit tests on the rule alone). Three-headphone cases come out near the worked values in 1b.
+8. **Rule and edge cases.** Two-profile consensus runs and warns, and every row of the veto table comes out as specified (unit tests on the rule alone). Three-headphone cases come out near the worked values in 1b.
 9. **Seating spread.** With three sessions of about 110 trials per ear, a true τ\_seat of 2 or 3 dB is recovered within a factor of 1.5, and a true τ\_seat of zero isn't estimated above 1 dB.
 10. **Coverage.** L\_avg's reported SD covers the error about 68% of the time at 1, 3 and 8 sessions, and m's SD does the same for the consensus.
 11. **Moving resonances.** A 9 dB resonance in two seatings of three is corrected within 2 dB of its median level. A resonance in one seating of three is dropped. With one session, a seating-specific resonance of up to about twice the prior's spread isn't corrected as confident.
@@ -377,8 +381,8 @@ Build the headphone-only comparison first. It's useful immediately with the thre
 ### Build order
 
 1. `report --csv`, and the shared helper that maps a common-grid curve onto a fit's own grid.
-2. `report --compare`: aligned curves, residuals, soft median, leave-one-out z-scores, disagreement table, heterogeneity strip.
-3. `config -r consensus:…` for headphones, the remove-only rule, report columns, simulator criteria 1, 2 and 8.
+2. `report --compare`: aligned raw curves, raw consensus, veto flags and feature table, heterogeneity strip.
+3. `config -r consensus:…` and `--veto` for headphones, report columns, simulator criteria 1, 2 and 8.
 4. Feature 3: the hierarchical fit, scheduler changes, the group-based seating step, simulator seatings and criteria 9 to 12. DESIGN.md is updated once this is built.
 5. Speaker profile kind and block runner: plug prompt, position plan, anchor pairs, ear alternation.
 6. The speaker position model, simulator criterion 7.

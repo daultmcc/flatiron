@@ -318,11 +318,25 @@ def cmd_sessions(args):
 # keywords, and conversions between the flag's units and the field's.
 PERCENT = (lambda v: v / 100, lambda v: v * 100)
 NOT = (lambda v: not v, lambda v: not v)
+NAMES = (lambda v: () if v == "none" else tuple(x.strip() for x in v.split(",") if x.strip()),
+         lambda v: ",".join(v) or "none")
 FIT_OPTIONS = [
     (("-w", "--width"), "max_width_oct", dict(type=float, help="max feature width W in octaves (1/3 to 2)")),
     (("-r", "--reference"), "reference",
-     dict(help="iso226, diffuse, none, or a CSV of freq_hz,db; or consensus:A,B,C to correct only what this "
-               "profile doesn't share with those (the fixed reference in use stays underneath)")),
+     dict(help="iso226, diffuse, none, a CSV of freq_hz,db, or consensus:A,B,C for the raw curves of those "
+               "profiles (this one only if listed)")),
+    (("--consensus-smooth",), "consensus_smooth_oct",
+     dict(type=float, help="smoothing (FWHM) of a consensus reference in octaves, up to 2; 0: none. The reference "
+                           "then keeps the shape and leaves features narrower than this to detection and --veto")),
+    (("--veto",), "veto",
+     dict(metavar="PROFILE[,PROFILE]|none",
+          help="correct each feature toward the median of this profile's and those profiles' features there"), NAMES),
+    (("--veto-mode",), "veto_mode",
+     dict(choices=("feature", "pointwise"),
+          help="feature (default): toward the median feature; pointwise: frequency by frequency, by what exceeds "
+               "the median of the residuals, never past zero")),
+    (("--veto-import",), "veto_import_db",
+     dict(type=float, help="where the median feature is somewhere else, the most the veto may add (dB); 0: nothing")),
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),
@@ -342,10 +356,11 @@ FIT_OPTIONS = [
      dict(action=argparse.BooleanOptionalAction,
           help="correct each feature to its median seating's level, and drop it if most seatings show little of it")),
     (("--method",), "method",
-     dict(choices=("features", "smooth"),
+     dict(choices=("features", "smooth", "match"),
           help="features (default): correct the significant features found against the baseline; "
                "smooth (experimental): the baseline is the curve smoothed over --smooth-width, and every "
-               "residual is corrected, with no feature detection (more correction, noise included)")),
+               "residual is corrected, with no feature detection (more correction, noise included); "
+               "match (experimental): correct the whole curve toward the reference, tonality included")),
     (("--smooth-width",), "smooth_oct",
      dict(type=float, help="smoothing width (FWHM) in octaves for --method smooth, 1/8 to 1")),
 ]
@@ -370,7 +385,7 @@ def cmd_config(args):
     from dataclasses import asdict, replace
 
     from flatiron.fit.pipeline import CorrectionSettings
-    from flatiron.fit.reference import reference
+    from flatiron.fit.reference import CONSENSUS_PREFIX, reference
     from flatiron.fit.run import checkpoint, fit_sessions, profile_session_ids, profile_settings, \
         set_checkpoint, set_profile_settings
     from flatiron.session.store import Profile
@@ -383,9 +398,6 @@ def cmd_config(args):
     names = {_option_name(flags): f for flags, f, *_ in FIT_OPTIONS}
     changes = {}
     if args.reset is not None:
-        if not args.reset or "reference" in args.reset:
-            changes["consensus"] = ()
-            changes["consensus_mode"] = "remove"
         unknown = [n for n in args.reset if n not in names]
         if unknown:
             print(f"Unknown setting(s) {', '.join(unknown)}; they are: {', '.join(names)}")
@@ -397,35 +409,39 @@ def cmd_config(args):
         v = getattr(args, f)
         if v is not None:
             changes[f] = conv[0][0](v) if conv else v
-    consensus_list = None
-    if str(changes.get("reference", "")).startswith("consensus:"):
-        names_listed = [x.strip() for x in changes.pop("reference").split(":", 1)[1].split(",") if x.strip()]
-        consensus_list = []
-        for name in names_listed:
+    def slugs(listed, what):
+        out = []
+        for name in listed:
             try:
                 other = Profile.existing(name)
             except ValueError:
                 other = None
             if other is None:
-                print(f"No profile {name!r} for the consensus (nothing changed). See: flatiron profiles")
-                return 1
-            if other.slug != prof.slug and other.slug not in consensus_list:
-                consensus_list.append(other.slug)
-        if not consensus_list:
-            print("A consensus needs at least one other profile (nothing changed).")
+                print(f"No profile {name!r} for the {what} (nothing changed). See: flatiron profiles")
+                return None
+            out.append(other.slug)
+        return tuple(dict.fromkeys(out))
+
+    if str(changes.get("reference", "")).startswith(CONSENSUS_PREFIX):
+        members = slugs(NAMES[0](changes["reference"][len(CONSENSUS_PREFIX):]), "consensus")
+        if members is None:
             return 1
-        changes["consensus"] = tuple(consensus_list)
-    elif "reference" in changes:
-        changes["consensus"] = ()  # a fixed reference replaces the consensus
-    if args.consensus_mode is not None:
-        changes["consensus_mode"] = args.consensus_mode
-    if "reference" in changes and changes["reference"] not in ("iso226", "diffuse", "none"):
+        if not members:
+            print("A consensus needs at least one profile (nothing changed).")
+            return 1
+        changes["reference"] = CONSENSUS_PREFIX + ",".join(members)
+    elif "reference" in changes and changes["reference"] not in ("iso226", "diffuse", "none"):
         from pathlib import Path
 
         changes["reference"] = str(Path(changes["reference"]).expanduser().resolve())
+    if changes.get("veto"):
+        changes["veto"] = slugs(changes["veto"], "veto")
+        if changes["veto"] is None:
+            return 1
     try:
         new = replace(old, **changes)
-        reference(new.reference, [1000.0], new.phon)
+        if not new.consensus:
+            reference(new.reference, [1000.0], new.phon)
     except (ValueError, FileNotFoundError) as e:
         print(e)
         return 1
@@ -435,12 +451,24 @@ def cmd_config(args):
     if args.smooth_oct is not None and new.method != "smooth":
         print("--smooth-width only applies with --method smooth (nothing changed).")
         return 1
-    if consensus_list is not None or args.consensus_mode is not None:
-        # Checked here too, so a bad list never gets saved.
-        from flatiron.fit.run import consensus_members
+    if (args.veto_mode is not None or args.veto_import_db is not None) and not new.veto:
+        print("--veto-mode and --veto-import only apply with --veto (nothing changed).")
+        return 1
+    if args.veto_import_db is not None and new.veto_mode != "feature":
+        print("--veto-import only applies with --veto-mode feature (nothing changed).")
+        return 1
+    if args.consensus_smooth_oct is not None and not new.consensus:
+        print("--consensus-smooth only applies with a consensus reference (nothing changed).")
+        return 1
+    if "reference" in changes or "veto" in changes:
+        # Checked here too, so a bad list never gets saved. Only when one's being
+        # set: --pool none has to work on a profile pooling has put in conflict.
+        from flatiron.fit.run import consensus_members, veto_members
 
         try:
             consensus_members(prof, new)
+            if new.veto and not veto_members(prof, new):
+                raise ValueError("--veto needs at least one other profile.")
         except ValueError as e:
             print(f"{e} (nothing changed)")
             return 1
@@ -461,11 +489,13 @@ def cmd_config(args):
             pool[i] = other.slug
     if changes:
         set_profile_settings(prof, new)
-    if consensus_list is not None:
-        print("Consensus: " + ", ".join(Profile(s).read()["label"] for s in consensus_list) + f" and {label}.")
-        if len(consensus_list) == 1:
-            print("Warning: that makes the consensus a single other headphone. With no majority possible, a peak "
-                  "on one is only about half corrected.")
+    if "reference" in changes and new.consensus and new.reference != old.reference:
+        print("Consensus of " + ", ".join(Profile(s).read()["label"] for s in new.consensus) + ".")
+        if len(new.consensus) == 1:
+            print("Note: that's a single headphone's curve, not a consensus.")
+        elif len(new.consensus) == 2:
+            print("Note: with two profiles it's their weighted mean, not a median, so one's peak reaches the "
+                  "reference at about half height.")
     if pool is not None:
         prof.update(pool=pool or None)
         if pool:
@@ -497,8 +527,6 @@ def cmd_config(args):
         n = " / ".join(f"{e} {len(c.filters)}" for e, c in pf.correction.ears.items())
         print(f"Checkpoint: the current filters ({n}) stay as they are from now on; fits only add to them.")
     for f, v in changes.items():
-        if f in ("consensus", "consensus_mode"):
-            continue
         if v != getattr(old, f):
             print(f"{_option_name(next(fl for fl, ff, *_ in FIT_OPTIONS if ff == f))}: "
                   f"{_show(f, getattr(old, f))} -> {_show(f, v)}")
@@ -511,14 +539,15 @@ def cmd_config(args):
         mark = "*" if st[f] != default[f] else " "
         dflt = "" if mark == " " else f"   (default {_show(f, default[f])})"
         unused = ("   (unused without --broad)" if f == "broad_strength" and st["preserve_tonality"] else
-                  "   (unused without --method smooth)" if f == "smooth_oct" and st["method"] != "smooth" else "")
+                  "   (unused without --method smooth)" if f == "smooth_oct" and st["method"] != "smooth" else
+                  "   (unused without a consensus reference)" if f == "consensus_smooth_oct"
+                  and not profile_settings(prof).consensus else
+                  "   (unused without --veto)" if f in ("veto_mode", "veto_import_db") and not st["veto"] else "")
         print(f"  {mark} {_option_name(flags):18} {_show(f, st[f])}{dflt}{unused}")
     ids = profile_session_ids(prof)
     print(f"  sessions: {'all' if not ids else ', '.join(ids)}")
     pooled = prof.read().get("pool") or []
     print(f"  pooled with: {', '.join(pooled) if pooled else 'none'}")
-    cs = profile_settings(prof)
-    print(f"  consensus: {', '.join(cs.consensus) + f' ({cs.consensus_mode})' if cs.consensus else 'none'}")
     cp = prof.read().get("checkpoint")
     if cp:
         n = " / ".join(f"{e} {len(v)}" for e, v in cp["filters"].items())
@@ -530,7 +559,7 @@ def cmd_config(args):
 
 
 def _print_fit(pf):
-    from flatiron.report.html import consensus_notes
+    from flatiron.report.html import consensus_notes, veto_line
 
     corr = pf.correction
     if pf.pooled:
@@ -567,6 +596,9 @@ def _print_fit(pf):
             if scaled:
                 print(f"  {kind}, corrected to the median seating's level: "
                       + ", ".join(f"{x.fc:.0f} Hz ({x.scale:.0%})" for x in scaled))
+        for x in sorted((x for x in c.features if x.veto is not None), key=lambda x: x.fc):
+            print(f"  veto {x.fc:.0f} Hz: {_correction_of(x):+.1f} dB ({veto_line(x)})"
+                  + ("" if x.accepted else f": {x.reason}"))
         for a, b, m in c.left_out:
             print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
     print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")
@@ -576,17 +608,22 @@ def _print_fit(pf):
 
 
 def _correction_of(f) -> float:
+    if f.veto is not None:
+        return 0.0 if not f.accepted else f.veto.correction_db
     return -f.peak_db if f.correction_db is None else f.correction_db
 
 
 def cmd_compare(args):
+    from dataclasses import replace
+
     from flatiron import EARS as ALL_EARS
-    from flatiron.fit.consensus import KINDS_VOTING, MIN_WIDTH_OCT
+    from flatiron.fit.compare import Member
+    from flatiron.fit.consensus import KINDS_VOTING
     from flatiron.fit.pipeline import CorrectionSettings
     from flatiron.fit.reference import reference
     from flatiron.fit.run import NotEnoughTrials, perceptual_fits, profile_session_ids, profile_settings
     from flatiron.paths import data_dir
-    from flatiron.report.compare import MAX_PROFILES, Member, compare, print_comparison, write_comparison
+    from flatiron.report.compare import MAX_PROFILES, compare, print_comparison, write_comparison
     from flatiron.session.store import Profile
 
     if len(args.compare) < 2:
@@ -620,13 +657,17 @@ def cmd_compare(args):
         vals = {getattr(s, what) for s in own}
         return value if value is not None else (vals.pop() if len(vals) == 1 else None)
 
+    # A comparison needs a fixed reference; a consensus would mean something different per profile.
+    if any(s.consensus for s in own) and args.reference is None:
+        print("A consensus reference isn't used for comparisons: this uses iso226 (pick another with -r).")
+    own = [replace(s, reference=CorrectionSettings().reference) if s.consensus else s for s in own]
     ref, phon = common("reference", args.reference), common("phon", None)
     if ref is None:
         print("These profiles use different references: pick one with -r (iso226, diffuse, none or a CSV).")
         return 1
-    k = common("k", None) or CorrectionSettings().k
     try:
-        st = CorrectionSettings(max_width_oct=args.width or 1.0, reference=ref, phon=phon or CorrectionSettings().phon)
+        st = CorrectionSettings(max_width_oct=args.width or 1.0, reference=ref, phon=phon or CorrectionSettings().phon,
+                                k=common("k", None) or CorrectionSettings().k)
         reference(st.reference, [1000.0], st.phon)
     except (ValueError, FileNotFoundError) as e:
         print(e)
@@ -642,7 +683,7 @@ def cmd_compare(args):
     try:
         members = [Member(p.read()["label"], p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
                    for p in profiles]
-        comparisons = compare(members, st, ears, k, args.min_width or MIN_WIDTH_OCT, voting)
+        comparisons = compare(members, st, ears, voting)
     except (NotEnoughTrials, ValueError) as e:
         print(e)
         return 1
@@ -650,7 +691,7 @@ def cmd_compare(args):
     if args.html:
         import webbrowser
 
-        path = write_comparison(data_dir() / "cache" / "comparison.html", comparisons, members, st, k)
+        path = write_comparison(data_dir() / "cache" / "comparison.html", comparisons, members, st)
         print(f"report: {path}")
         webbrowser.open(path.as_uri())
     return 0
@@ -659,7 +700,7 @@ def cmd_compare(args):
 def cmd_report(args):
     if args.compare:
         return cmd_compare(args)
-    for opt in ("width", "reference", "min_width", "include_kind"):
+    for opt in ("width", "reference", "include_kind"):
         if getattr(args, opt):
             print(f"--{opt.replace('_', '-')} only applies with --compare.")
             return 1
@@ -812,20 +853,22 @@ def cmd_export(args):
 
 
 def _simulate_consensus(args):
-    from flatiron.sim.consensus import check_compare, check_corrections, consensus_coverage, headphone_fits
+    from flatiron.sim.consensus import CONFIGS, check_compare, check_corrections, consensus_coverage, headphone_fits
 
     fits = headphone_fits(args.seed, trials_per_session=max(args.trials // 3, 1))
     cmp = check_compare(fits)
     print(f"Comparison (criterion 1): {'ok' if cmp.ok else 'NOT MET'}; missed {cmp.missed or 'nothing'}, flagged on "
           f"shared features {cmp.on_shared or 'nothing'}, {cmp.false_flags} other false flags")
-    for c in check_corrections(fits):
-        print(f"Consensus correction, {c.name} (criterion 2): {'ok' if c.ok else 'NOT MET'}")
-        for fc, gain, h in c.own:
-            print(f"  its own {fc:6.0f} Hz {gain:+.1f} dB: corrected {h:+.1f} dB")
-        for fc, h in c.shared:
-            print(f"  shared  {fc:6.0f} Hz: corrected {h:+.1f} dB")
-        print(f"  largest correction elsewhere {c.worst_false_db:.1f} dB")
-    print(f"Consensus SD, reported / observed (criterion 10): {consensus_coverage(fits):.2f}")
+    for config in CONFIGS:
+        print(f"\n{config.label}:")
+        for c in check_corrections(fits, config):
+            print(f"  {c.name} (criterion 2): {'ok' if c.ok else 'NOT MET'}")
+            for fc, gain, h in c.own:
+                print(f"    its own {fc:6.0f} Hz {gain:+.1f} dB: corrected {h:+.1f} dB")
+            for fc, h in c.shared:
+                print(f"    shared  {fc:6.0f} Hz: corrected {h:+.1f} dB")
+            print(f"    largest correction elsewhere {c.worst_false_db:.1f} dB")
+    print(f"\nConsensus SD, reported / observed (criterion 10): {consensus_coverage(fits):.2f}")
 
 
 def _simulate_seating(args):
@@ -946,9 +989,6 @@ def main(argv=None):
     s.add_argument("-p", "--profile", help="default: the only profile")
     for flags, f, kw, *_ in FIT_OPTIONS:
         s.add_argument(*flags, dest=f, default=None, **kw)
-    s.add_argument("--consensus-mode", choices=("remove", "match"),
-                   help="with -r consensus:A,B,C: remove (the default) corrects only what exceeds the consensus; "
-                        "match corrects all the way to it, importing what the others share")
     s.add_argument("--sessions", help="comma-separated session ids to fit, or 'all' (the default)")
     s.add_argument("--pool", metavar="PROFILE[,PROFILE]|none",
                    help="include other profiles' trials in this one's fits (the same headphones measured "
@@ -972,7 +1012,6 @@ def main(argv=None):
     s.add_argument("--ear", choices=("L", "R", "both"), default="both", help="--compare: which ear")
     s.add_argument("--include-kind", action="append", choices=("iem",),
                    help="--compare: let this kind count toward the consensus (it's drawn dashed either way)")
-    s.add_argument("--min-width", type=float, help="--compare: narrowest flagged region in octaves (default 1/12)")
     s.set_defaults(func=cmd_report)
 
     s = sub.add_parser("export", help="write the current fit's correction for an EQ host")

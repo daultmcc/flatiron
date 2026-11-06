@@ -14,9 +14,9 @@ import numpy as np
 
 from flatiron import EARS
 from flatiron.audio.biquad import PeakingFilter
-from flatiron.fit.consensus import MODEL_VERSION, EarConsensus, KINDS_VOTING, consensus_of
-from flatiron.fit.pipeline import Correction, CorrectionSettings, correct, member_source
-from flatiron.model.grid import interp_matrix, log_grid
+from flatiron.fit.consensus import KINDS_VOTING, MODEL_VERSION, EarConsensus, SoftMedian, Source, raw_consensus
+from flatiron.fit.pipeline import Correction, CorrectionSettings, correct, ear_reference
+from flatiron.model.grid import log_grid
 from flatiron.model.hierarchical import fit_hierarchical
 from flatiron.model.probit import Priors, ProbitFit, Trials
 from flatiron.session.store import Profile, Session, now_iso
@@ -92,11 +92,6 @@ def profile_settings(profile: Profile) -> CorrectionSettings:
     """The profile's settings: defaults, with its changes applied."""
     known = {f.name for f in fields(CorrectionSettings)}
     changed = dict(profile.read().get("settings") or {})
-    ref = changed.get("reference")
-    if isinstance(ref, dict):  # {type: consensus, profiles, mode, base, ...}
-        changed["reference"] = ref.get("base", CorrectionSettings().reference)
-        changed["consensus"] = tuple(ref["profiles"])
-        changed["consensus_mode"] = ref.get("mode", "remove")
     return CorrectionSettings(**{k: v for k, v in changed.items() if k in known})
 
 
@@ -105,12 +100,6 @@ def set_profile_settings(profile: Profile, settings: CorrectionSettings) -> None
     existing profiles."""
     default = asdict(CorrectionSettings())
     changed = {k: v for k, v in asdict(settings).items() if v != default[k]}
-    changed.pop("consensus", None)
-    changed.pop("consensus_mode", None)
-    if settings.consensus:
-        changed["reference"] = {"type": "consensus", "profiles": list(settings.consensus),
-                                "mode": settings.consensus_mode, "base": settings.reference,
-                                "speaker_trust": None, "speaker_response": None}
     profile.update(settings=changed)
 
 
@@ -206,18 +195,11 @@ def _prune_consensus(root: Path, cap: int = CONSENSUS_CACHE_CAP) -> None:
         p.unlink(missing_ok=True)
 
 
-def _reference_id(name: str) -> str:
-    """A reference CSV counts by its content, so editing it changes the key."""
-    p = Path(name)
-    return hashlib.sha256(p.read_bytes()).hexdigest()[:16] if p.suffix == ".csv" and p.exists() else name
-
-
-def _consensus_key(ear: str, member_keys: dict[str, str], st: CorrectionSettings) -> str:
-    """The set of members, each one's fit, and every setting that affects the
-    result; shared by every member of the set."""
+def _consensus_key(ear: str, member_keys: dict[str, str]) -> str:
+    """The members and each one's fit: a raw consensus depends on nothing else,
+    so every profile using the same list shares it."""
     parts = {"version": MODEL_VERSION, "ear": ear, "members": sorted(member_keys.items()),
-             "width": st.max_width_oct, "reference": _reference_id(st.reference), "phon": st.phon,
-             "penalty": st.baseline_penalty, "speaker_trust": None, "speaker_response": None}
+             "speaker_trust": None, "speaker_response": None}
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
@@ -226,65 +208,87 @@ def shares_trials(a: Profile, b: Profile) -> bool:
     return bool(({a.slug} | set(a.read().get("pool") or [])) & ({b.slug} | set(b.read().get("pool") or [])))
 
 
-def consensus_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
-    """The other profiles in the set: the ones listed, minus this one."""
+def _listed_profiles(profile: Profile, slugs, what: str, option: str) -> list[Profile]:
+    """The profiles listed for a consensus or a veto, checked. Profiles that
+    share trials through pooling can't be used together: pooling means the same
+    headphones measured again, and these need different ones."""
     root = profile.dir.parent.parent
     out = []
-    for slug in st.consensus:
+    for slug in dict.fromkeys(slugs):
         p = Profile(slug, root)
         if not p.path.exists():
-            raise ValueError(f"Profile {slug!r} is in the consensus of {profile.read()['label']!r} but doesn't exist "
-                             "any more: flatiron config -r iso226")
-        if slug != profile.slug and shares_trials(profile, p):
-            raise ValueError(f"{p.read()['label']!r} and {profile.read()['label']!r} share trials through pooling, so "
-                             "they can't be in one consensus. Pooling means the same headphones measured again, "
-                             "a consensus different ones.")
+            raise ValueError(f"Profile {slug!r} is in the {what} of {profile.read()['label']!r} but doesn't exist "
+                             f"any more: flatiron config {option}")
         if p.kind not in KINDS_VOTING:
-            raise ValueError(f"{p.read()['label']!r} is of kind {p.kind}, which doesn't count toward a consensus.")
-        if slug != profile.slug and p not in out:
-            out.append(p)
+            raise ValueError(f"{p.read()['label']!r} is of kind {p.kind}, which doesn't count toward a {what}.")
+        for other in [profile, *out]:
+            if other.slug != slug and shares_trials(p, other):
+                raise ValueError(f"{p.read()['label']!r} and {other.read()['label']!r} share trials through pooling, "
+                                 f"so they can't be used in one {what}. Pooling means the same headphones measured "
+                                 f"again, a {what} different ones.")
+        out.append(p)
     return out
+
+
+def consensus_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
+    """The profiles a consensus reference is built from: exactly the ones
+    listed, so this profile only if it's listed."""
+    return _listed_profiles(profile, st.consensus, "consensus", "-r iso226")
+
+
+def veto_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
+    """The other profiles voting. This profile always votes as well, whether or
+    not it's listed: the rule means "does the median headphone, this one
+    included, have it", and two others alone have no majority."""
+    return [p for p in _listed_profiles(profile, st.veto, "veto", "--veto none") if p.slug != profile.slug]
 
 
 def ear_consensus(profile: Profile, st: CorrectionSettings, own_fits: dict[str, ProbitFit],
                   own_keys: dict[str, str], on_fit: Callable[[], None] | None = None) -> dict[str, EarConsensus]:
-    """Per ear, the soft median of the listed profiles and this one, at this
-    profile's W and reference. One entry per set and settings, whichever member
-    asks first; a new session in any member changes its fit and so the key."""
+    """Per ear, the raw consensus of the listed profiles as this profile's
+    reference. The raw result is cached, one entry per set of members whichever
+    profile asks first, and a new session in any member changes its fit and so
+    the key; the smoothing depends on the setting, and is applied afterwards."""
     root = profile.dir.parent.parent
-    labels = {profile.slug: profile.read()["label"]}
-    fits = {profile.slug: own_fits}
-    keys = {profile.slug: own_keys}
+    labels, fits, keys = {}, {}, {}
     for p in consensus_members(profile, st):
         labels[p.slug] = p.read()["label"]
-        fits[p.slug], keys[p.slug], _ = perceptual_fits(p, profile_session_ids(p), on_fit)
+        if p.slug == profile.slug:
+            fits[p.slug], keys[p.slug] = own_fits, own_keys
+        else:
+            fits[p.slug], keys[p.slug], _ = perceptual_fits(p, profile_session_ids(p), on_fit)
     order = sorted(fits)
+    own = order.index(profile.slug) if profile.slug in order else None
     out, used = {}, {}
     for e in EARS:
-        key = _consensus_key(e, {s: keys[s][e] for s in order}, st)
+        key = _consensus_key(e, {s: keys[s][e] for s in order})
         path = consensus_dir(root) / f"{key}.npz"
         if path.exists():
             z = np.load(path)
             os.utime(path)
-            grid, m, cov, tau = z["grid"], z["m"], z["cov"], float(z["tau_hp"])
-            G = z[f"G{order.index(profile.slug)}"]
+            sm = SoftMedian(z["grid"], z["m"], z["cov"], float(z["tau_hp"]), [z[f"G{i}"] for i in range(len(order))],
+                            bool(z["robust"]), z["offsets"])
         else:
-            sources = [member_source(labels[s], "headphone", fits[s][e], st) for s in order]
-            sm = consensus_of(sources)
-            grid, m, cov, tau = sm.grid, sm.m, sm.cov, sm.tau_hp
-            G = sm.G[order.index(profile.slug)]
+            sm = raw_consensus([Source(labels[s], fits[s][e].grid, fits[s][e].L, fits[s][e].cov) for s in order])
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.stem + ".tmp.npz")
-            np.savez(tmp, grid=grid, m=m, cov=cov, tau_hp=tau, members=np.array(order),
-                     **{f"G{i}": g for i, g in enumerate(sm.G)})
+            np.savez(tmp, grid=sm.grid, m=sm.m, cov=sm.cov, tau_hp=sm.tau_hp, robust=sm.robust, offsets=sm.offsets,
+                     members=np.array(order), **{f"G{i}": g for i, g in enumerate(sm.G)})
             tmp.replace(path)
             _prune_consensus(root)
-        A = interp_matrix(grid, own_fits[e].grid)
-        out[e] = EarConsensus([labels[s] for s in order], key, A @ m, A @ cov @ A.T, G, A, tau, st.consensus_mode)
+        out[e] = ear_reference(sm, [labels[s] for s in order], key, st.consensus_smooth_oct, own)
         used[e] = key
     (profile.dir / "cache").mkdir(parents=True, exist_ok=True)
     (profile.dir / "cache" / "consensus.json").write_text(json.dumps(used))
     return out
+
+
+def ear_voters(profile: Profile, st: CorrectionSettings,
+               on_fit: Callable[[], None] | None = None) -> dict[str, list[tuple[str, ProbitFit]]]:
+    """Per ear, the other profiles' fits for --veto."""
+    others = [(p.read()["label"], perceptual_fits(p, profile_session_ids(p), on_fit)[0])
+              for p in veto_members(profile, st)]
+    return {e: [(label, fits[e]) for label, fits in others] for e in EARS}
 
 
 def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSettings(),
@@ -295,7 +299,8 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
     computed (it takes a few seconds)."""
     fits, keys, sessions = perceptual_fits(profile, session_ids, on_fit)
     consensus = ear_consensus(profile, settings, fits, keys, on_fit) if settings.consensus else None
-    corr = correct(fits, settings, fixed, consensus)
+    voters = ear_voters(profile, settings, on_fit) if settings.veto else None
+    corr = correct(fits, settings, fixed, consensus, voters)
     return ProfileFit(corr, fits, sessions, {e: f.groups for e, f in fits.items()},
                       [p.read()["label"] for p in pooled_profiles(profile)])
 
