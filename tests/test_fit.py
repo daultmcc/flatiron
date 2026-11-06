@@ -219,7 +219,7 @@ def test_design_features_are_corrected_in_the_right_direction(sim_design):
     # The features well above the seating spread get a correction of the right
     # sign near the right place. With one session the −3 dB dip and +3 dB peak
     # in the treble are about twice the prior's spread there, and the error
-    # bars allow for that (ADDENDUM.md, criterion 11).
+    # bars allow for that (DESIGN.md, criterion 11).
     for fc in v.features[:2]:
         assert np.sign(fc.corrected_db) == -np.sign(fc.gain_db)
         assert abs(fc.freq_err_oct) < 1 / 12

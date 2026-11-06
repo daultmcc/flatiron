@@ -1,4 +1,4 @@
-"""The perceptual fit: seatings as random effects (ADDENDUM.md, Feature 3).
+"""The perceptual fit: seatings as random effects (DESIGN.md, "Perceptual model").
 
 Per ear, a trial in group g (a session) depends on L_g = L + u_g:
 

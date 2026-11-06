@@ -1,4 +1,4 @@
-"""The multi-headphone scenario (ADDENDUM.md, "Validation", criteria 1, 2, 8 and
+"""The multi-headphone scenario (DESIGN.md, "Seating and multi-headphone scenarios", criteria 1, 2, 8 and
 the consensus half of 10). The rule for passing: the listener's own features are
 never corrected, and only headphone-specific ones are.
 

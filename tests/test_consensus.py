@@ -22,7 +22,7 @@ def src(R, sd=0.05, name="p", grid=G):
     return Source(name, grid, np.asarray(R, float), np.eye(grid.size) * sd**2)
 
 
-# -- the veto rule: the tables in ADDENDUM.md, Feature 1b -----------------------
+# -- the veto rule: the table in DESIGN.md, "Veto against other profiles" -----------------------
 
 def _feature(height, fc=7000.0, width=0.2, label="x"):
     return Candidate(label, fc, width, float(height)) if height else None
@@ -144,7 +144,7 @@ def test_pointwise_rule(R, m, want):
 
 # -- soft median -----------------------------------------------------------------
 
-def test_the_worked_values_in_the_addendum():
+def test_the_worked_values_in_the_design():
     """A +6 dB peak on one of three gives m near +0.6; on two of three, near +5.4."""
     common = common_grid([G])
     k = np.argmin(np.abs(G - 5000))

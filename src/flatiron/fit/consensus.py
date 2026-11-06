@@ -1,4 +1,4 @@
-"""Consensus across profiles (ADDENDUM.md, Features 1a and 1b): the soft median,
+"""Consensus across profiles (DESIGN.md, "Comparing profiles" and "Consensus reference"): the soft median,
 how much profiles disagree, and the consensus of raw curves.
 
 Statistics stay on each profile's own grid, because interpolating a fit onto a
@@ -137,7 +137,7 @@ def consensus_of(sources: list[Source]) -> SoftMedian:
     return soft_median(sources, common, estimate_tau_hp(sources, common), robust=len(sources) > 2)
 
 
-# -- Feature 1b --------------------------------------------------------------
+# -- the consensus reference ---------------------------------------------------
 
 def raw_consensus(sources: list[Source]) -> SoftMedian:
     """The soft median of raw curves, each with a constant offset fitted by the

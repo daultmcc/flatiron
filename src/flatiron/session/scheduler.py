@@ -1,5 +1,4 @@
-"""Adaptive trial scheduler (DESIGN.md, "Trial" and "Adaptive selection";
-ADDENDUM.md, Feature 3, "Scheduler").
+"""Adaptive trial scheduler (DESIGN.md, "Trial" and "Adaptive selection").
 
 Per trial: pick an ear (interleaved), score candidate pairs from the redundant
 comparison graph by how much one answer would shrink the posterior variance of

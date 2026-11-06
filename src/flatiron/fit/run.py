@@ -175,7 +175,7 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
     return fits, keys, sessions
 
 
-# -- the consensus cache (ADDENDUM.md, Feature 1b) -----------------------------
+# -- the consensus cache (DESIGN.md, "Consensus reference") --------------------
 
 CONSENSUS_CACHE_CAP = 200 * 1024 * 1024
 

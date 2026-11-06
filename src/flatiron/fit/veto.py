@@ -1,4 +1,4 @@
-"""The feature veto behind `--veto` (ADDENDUM.md, Feature 1b): a feature is
+"""The feature veto behind `--veto` (DESIGN.md, "Veto against other profiles"): a feature is
 corrected toward the median feature at the same place across headphones.
 
 Each profile contributes the same-sign feature of its own that overlaps this

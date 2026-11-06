@@ -68,7 +68,7 @@ class Priors:
     lapse: float = 0.02
     lapse_logit_sd: float = 1.0
     bias_sd_db: float = 3.0  # time-order error prior, centred on none
-    # Seating spread (ADDENDUM.md, Feature 3): medians below 5 kHz and above 8 kHz.
+    # Seating spread (DESIGN.md, "Perceptual model"): medians below 5 kHz and above 8 kHz.
     tau_lo: float = 0.5
     tau_hi: float = 1.5
     tau_log_sd: float = 0.7

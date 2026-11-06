@@ -1,4 +1,4 @@
-"""The comparison report (ADDENDUM.md, Feature 1a): several profiles against each
+"""The comparison report (DESIGN.md, "Comparing profiles"): several profiles against each
 other, per ear. Colors follow the profile (the reference palette's categorical
 slots in fixed order, the same as the single-profile figures); non-voting kinds
 are also dashed, so identity is never color alone. Every line is in the legend."""

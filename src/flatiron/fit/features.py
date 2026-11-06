@@ -1,5 +1,5 @@
 """Residual features, significance and the seating step (DESIGN.md, pipeline
-steps 3-5; ADDENDUM.md, Feature 3).
+steps 3-5).
 
 The residual R = D − baseline is split into lobes between sign changes, and a
 lobe is split again at any valley no deeper than half the smaller peak on

@@ -64,7 +64,7 @@ class CorrectionSettings:
     # the reference, tonality included.
     method: str = "features"
     smooth_oct: float = 0.5
-    # A consensus reference (ADDENDUM.md, Feature 1b) is smoothed over this
+    # A consensus reference (DESIGN.md, "Consensus reference") is smoothed over this
     # (FWHM, octaves; 0: not at all). Unsmoothed it holds the members' narrow
     # features too, and a peak in the reference reads as a dip here.
     consensus_smooth_oct: float = 0.5

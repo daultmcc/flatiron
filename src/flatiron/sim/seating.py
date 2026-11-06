@@ -1,4 +1,4 @@
-"""The seating scenario (ADDENDUM.md, "Validation", criteria 9 to 12): several
+"""The seating scenario (DESIGN.md, "Seating and multi-headphone scenarios", criteria 9 to 12): several
 sessions through the real scheduler, with the seatings differing as they're set
 to, and how the hierarchical fit and the seating step come out."""
 

@@ -1,4 +1,4 @@
-"""ADDENDUM.md's seating criteria, at fixed seeds. Criterion 11 is only partly
+"""DESIGN.md's seating criteria, at fixed seeds. Criterion 11 is only partly
 met: these pin down what the Gaussian deviation does today."""
 
 import numpy as np

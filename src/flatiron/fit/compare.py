@@ -1,4 +1,4 @@
-"""Comparing profiles (ADDENDUM.md, Feature 1a): their raw curves against each
+"""Comparing profiles (DESIGN.md, "Comparing profiles"): their raw curves against each
 other, and for every feature what the veto would do with it.
 
 The curves show broad differences as they are, and only features can be flagged,
