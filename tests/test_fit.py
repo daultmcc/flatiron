@@ -148,7 +148,7 @@ def test_filter_fit_recovers_known_filters():
     truth = [PeakingFilter(3000, -3, 2), PeakingFilter(6150, -4.2, 6.5), PeakingFilter(9000, 3, 8)]
     f = log_grid(850, 15000, 1 / 96)
     target = response_db(truth, f)
-    ff = fit_filters(f, target, np.full(f.size, 0.1), budget=6, stop_z=0.5)
+    ff = fit_filters(f, target, np.full(f.size, 0.1), budget=6, tol_db=0.05)
     assert len(ff.filters) == 3
     for got, want in zip(ff.filters, truth):
         assert abs(np.log2(got.fc / want.fc)) < 1 / 96
@@ -483,10 +483,10 @@ def _max_step(settings, heights):
 def test_soft_rejection_removes_the_jump_at_the_threshold():
     """A peak growing through the threshold: hard, the correction appears all at
     once. Soft, the target and the filters both follow it, the filters to within
-    the smallest filter allowed."""
+    about the fit's tolerance."""
     heights = np.arange(0.8, 3.4, 0.05)
     base = dict(reference="none", consistency=False)
-    target, resp = _max_step(CorrectionSettings(**base), heights)
+    target, resp = _max_step(CorrectionSettings(soft_width=0.0, **base), heights)
     assert target > 1.0 and resp > 1.0
     target, resp = _max_step(CorrectionSettings(soft_width=0.5, **base), heights)
     assert target < 0.4 and resp < 0.7
@@ -497,4 +497,52 @@ def test_a_partly_corrected_feature_gets_its_filter():
     c = correct_ear("L", _fit_with_bump(1.85), CorrectionSettings(reference="none", consistency=False, soft_width=0.5))
     f = max(c.features, key=lambda f: abs(f.peak_db))
     assert 0.2 < f.weight < 0.8
-    assert abs(c.target).max() > 0.5 and np.abs(c.target - c.fit.response).max() < 0.4
+    assert abs(c.target).max() > 0.5 and np.abs(c.target - c.fit.response).max() < 0.5
+
+
+def test_filter_fit_stops_when_only_the_fade_is_out_of_reach():
+    """The target fades above f_hi, where no filter can be centred. That's not a
+    reason to spend the whole budget."""
+    f = log_grid(850, 15000, 1 / 96)
+    fade = np.interp(np.log2(f), np.log2([12000, 13000, 14500]), [-8.0, -8.0, 0.0], left=0.0, right=0.0)
+    fade[f < 12000] = -8.0 * np.exp(-0.5 * ((np.log2(f[f < 12000]) - np.log2(12000)) / 0.15) ** 2)
+    ff = fit_filters(f, fade, np.ones(f.size), budget=20, bounds=FilterBounds(), tol_db=1.0)
+    assert len(ff.filters) < 8 and not ff.budget_bound
+
+
+def _many_features():
+    """Broad offset in the narrow filters' average: many peaks all one way."""
+    g = log_grid(850, 15000, 1 / 24)
+    x = np.log2(g)
+    L = sum(h * np.exp(-0.5 * ((x - np.log2(fc)) / (0.2 / 2.355)) ** 2)
+            for fc, h in ((1400, 5), (1900, 4), (2600, 6), (3500, 5), (4700, 7), (6300, 6), (8400, 8), (11000, 3)))
+    return ProbitFit(g, L, np.eye(g.size) * 0.3**2, 1.0, 0.5, 0.02, 100, 0.0, True)
+
+
+@pytest.mark.parametrize("bands", [2, 4, 6, 8])
+def test_tonality_survives_a_tight_budget(bands):
+    fit = _many_features()
+    c = correct_ear("L", fit, CorrectionSettings(reference="none", consistency=False, bands=bands))
+    assert len(c.filters) <= bands
+    assert c.compensation  # never given up for narrow corrections
+    if bands <= 6:
+        assert c.left_out  # and what's left out is reported
+
+
+def test_a_tight_budget_keeps_the_largest_corrections():
+    fit = _many_features()
+    c = correct_ear("L", fit, CorrectionSettings(reference="none", consistency=False, bands=6))
+    x = [f.fc for f in c.filters if f not in c.compensation]
+    assert any(abs(np.log2(fc / 8400)) < 0.3 for fc in x)  # the tallest is corrected
+    assert not any(abs(np.log2(fc / 11000)) < 0.1 for fc in x)  # the smallest isn't
+
+
+def test_band_limit_follows_the_largest_exporter():
+    assert CorrectionSettings(bands=128).bands == 128
+    with pytest.raises(ValueError):
+        CorrectionSettings(bands=129)
+
+
+def test_soft_rejection_and_the_soft_veto_are_on_by_default():
+    st = CorrectionSettings()
+    assert st.soft_width == 0.5 and st.veto_softness == 0.1

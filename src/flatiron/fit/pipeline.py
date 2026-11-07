@@ -21,6 +21,7 @@ from flatiron.model.grid import interp_matrix, log_grid
 from flatiron.model.probit import ProbitFit
 
 FINE_STEP_OCT = 1 / 96
+MAX_BANDS = 128  # per channel; each exporter refuses more than it can hold
 METHODS = ("features", "smooth", "match")
 VETO_MODES = ("feature", "pointwise")
 # Broad lobes that aren't corrected as a whole are searched for narrow
@@ -38,7 +39,7 @@ class CorrectionSettings:
     k_broad: float = 2.5
     # Soft rejection: features within this many SDs of k or k_broad are partly
     # corrected instead of kept or dropped. 0: the plain test.
-    soft_width: float = 0.0
+    soft_width: float = 0.5
     narrow_max_oct: float = 1 / 2  # 1/3 dropped a 0.4-octave, 7 dB resonance as broad
     broad_strength: float = 1.0  # 0..1, scales broad features only
     max_cut_db: float = 12.0
@@ -47,12 +48,12 @@ class CorrectionSettings:
     f_lo: float = 1000.0
     f_hi: float = 13000.0  # trials near the top of the range are hard to judge; don't go below 12 kHz
     taper_oct: float = 1 / 3  # fade beyond [f_lo, f_hi], limited by the measured margin
-    bands: int = 20  # per channel; LSP x32 holds 32
+    bands: int = 24  # per channel; LSP x32 and EasyEffects hold 32, TinCan 128 (256 in all)
     q_min: float = 0.7
     q_max: float = 16.0
     max_gain_db: float = 12.0
     min_gain_db: float = 0.5
-    stop_z: float = 2.0  # filter fit stops when no point is off by more than this many SDs
+    fit_tol_db: float = 0.5  # the filter fit stops when it's this close to the target everywhere it can reach
     consistency: bool = True  # the seating step: correct each feature to the median seating's level
     # Keep the broad shape of the original response (the default): correct
     # narrow features only, then add broad compensation so the correction's own
@@ -84,7 +85,7 @@ class CorrectionSettings:
     # no sharp edges anywhere in it (fit/veto.py). How far the weights spread: a
     # candidate this share further from the others than the most central one
     # weighs 1/e of it.
-    veto_softness: float = 0.0
+    veto_softness: float = 0.1
 
     def __post_init__(self):
         object.__setattr__(self, "veto", tuple(self.veto))
@@ -106,8 +107,10 @@ class CorrectionSettings:
             raise ValueError("max feature width must be 1/3 to 2 octaves")
         if not 0 <= self.broad_strength <= 1:
             raise ValueError("broad strength must be 0 to 1")
-        if not 0 < self.bands <= 32:
-            raise ValueError("band budget must be 1 to 32")
+        if not 0 < self.bands <= MAX_BANDS:
+            raise ValueError(f"band budget must be 1 to {MAX_BANDS}")
+        if not 0.1 <= self.fit_tol_db <= 6:
+            raise ValueError("the filter fit's tolerance must be 0.1 to 6 dB")
         if not self.f_lo < self.f_hi:
             raise ValueError("f_lo must be below f_hi")
         if self.method not in METHODS:
@@ -341,23 +344,6 @@ def apply_veto(feats: list[Feature], voters: dict[str, list[Candidate]], setting
             f.accepted, f.reason = False, "shared: it's the median feature"
 
 
-def soft_fit_sd(feats: list[Feature], C, sd_g, settings: CorrectionSettings) -> np.ndarray:
-    """On the grid, the fraction of the target's SD the filter fit may use as its
-    tolerance. The fit stops within stop_z SDs, so a partly corrected feature
-    would get no filter at all as soon as its target fell inside that, and the
-    jump the weight removed would come back. So a feature's tolerance is tightened
-    just enough that its height stays beyond the stop, and no further: a tighter
-    fit chases noise with cancelling filters. What's left is min_gain_db: nothing
-    smaller gets a filter. A feature tall enough already fits as it would have."""
-    share = np.ones_like(C)
-    floor = settings.min_gain_db / settings.stop_z
-    for f in feats:
-        if f.accepted and not (f.kind == BROAD and settings.preserve_tonality):
-            height = float(np.max(np.abs(C[f.span])))
-            share[f.span] = np.minimum(1.0, max(height / (1.25 * settings.stop_z), floor) / sd_g[f.span])
-    return share
-
-
 def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = CorrectionSettings(),
                 fixed: list[PeakingFilter] | None = None, consensus: EarConsensus | None = None,
                 voters: list[tuple[str, ProbitFit]] | None = None, own_votes: bool = True) -> EarCorrection:
@@ -441,15 +427,16 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         for f in inner:
             sd_g[f.span] = f.residual_sd
         sd = np.minimum(sd, m @ sd_g)
-    sd_fit = sd
-    if (settings.soft_width > 0 or (settings.veto and settings.veto_softness > 0)) and not (smooth or match):
-        sd_g = np.sqrt(np.clip(np.diag(cov_T), 1e-12, None))
-        sd_fit = sd * (m @ soft_fit_sd(feats, C, sd_g, settings))
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, settings.q_max, settings.max_gain_db)
-    ff = fit_filters(freqs, target, sd_fit, max(settings.bands - len(fixed), 0), bounds, settings.stop_z,
-                     settings.min_gain_db)
+    # The broad shape comes first: if the budget binds, the narrow corrections
+    # give way, smallest first, and never the compensation's bands.
+    budget = max(settings.bands - len(fixed), 0)
+    compensating = settings.preserve_tonality and not match
+    reserve = min(COMP_MAX_BANDS, budget // 2) if compensating else 0
+    ff = fit_filters(freqs, target, sd, budget - reserve, bounds, settings.fit_tol_db, settings.min_gain_db)
+    unfitted = target - ff.response
     comp: list[PeakingFilter] = []
-    if settings.preserve_tonality and not match:
+    if compensating:
         for f in feats:
             if f.accepted and f.kind == BROAD:
                 f.accepted = False
@@ -463,15 +450,14 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
 
     left = []
     if ff.budget_bound:
-        err = target - ff.response
-        over = np.abs(err) > settings.k * sd
+        over = (np.abs(unfitted) > settings.fit_tol_db) & (freqs >= settings.f_lo) & (freqs <= settings.f_hi)
         i = 0
         while i < freqs.size:
             if over[i]:
                 j = i
                 while j + 1 < freqs.size and over[j + 1]:
                     j += 1
-                left.append((float(freqs[i]), float(freqs[j]), float(np.abs(err[i:j + 1]).max())))
+                left.append((float(freqs[i]), float(freqs[j]), float(np.abs(unfitted[i:j + 1]).max())))
                 i = j + 1
             else:
                 i += 1
@@ -545,7 +531,7 @@ def add_tonality_compensation(ff: FilterFit, freqs, settings: CorrectionSettings
     # range-edge fade with large opposing pairs (seen: −12 dB against +11 dB).
     limit = min(settings.max_gain_db, 1.5 * float(np.max(np.abs(goal))) + 0.5)
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, COMP_Q_MAX, limit)
-    cf = fit_filters(freqs, goal, np.full(freqs.size, COMP_TOL_DB / 2), room, bounds, 2.0, 0.2)
+    cf = fit_filters(freqs, goal, np.full(freqs.size, COMP_TOL_DB / 2), room, bounds, COMP_TOL_DB, 0.2)
     comp = _merge_close(cf.filters)
     contrib = dict(zip(map(id, ff.filters), ff.contributions))
     filters = sorted(ff.filters + comp, key=lambda f: f.fc)

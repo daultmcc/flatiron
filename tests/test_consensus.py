@@ -778,3 +778,17 @@ def test_soft_veto_runs_through_the_pipeline_and_a_centre_ignores_which_extreme_
     fa, fb = (max(find_features(G, c, np.eye(G.size) * 0.04), key=lambda f: abs(f.peak_db)) for c in (a, b))
     assert abs(np.log2(fa.fc / fb.fc)) > 0.15  # the deepest point jumps
     assert abs(np.log2(fa.centre_hz / fb.centre_hz)) < 0.02  # the centre doesn't
+
+
+def test_soft_veto_corrects_nothing_as_a_voter_reaches_this_features_shape():
+    """The residual isn't exactly its Gaussian, which mustn't read as a difference."""
+    x = np.log2(G)
+    k = np.argmin(np.abs(G - 7000))
+    own = Candidate("own", 7000, 0.2, 6.0)
+    R = 6.0 * np.exp(-0.5 * ((x - np.log2(7000)) / (0.2 / 2.355)) ** 2) + 0.5 * np.exp(-0.5 * ((x - np.log2(7300)) / 0.03) ** 2)
+    size = []
+    for h in (6.0, 5.8, 5.0, 3.0):
+        r = judge_soft(own, {"a": [Candidate("a", 7000, 0.2, h)], "b": [Candidate("b", 7000, 0.2, h)]}, 0.1)
+        size.append(np.abs(soft_correction(R, x, slice(0, G.size), r, own, 1.0, 1.5)).max())
+    assert size[0] == pytest.approx(0, abs=1e-6)
+    assert all(a < b for a, b in zip(size, size[1:]))

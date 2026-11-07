@@ -1,14 +1,19 @@
 """Fit peaking filters to a target (DESIGN.md, pipeline steps 8 and 10).
 
-Greedy start: put a filter on the largest remaining weighted error, then refit
-all filters jointly (bounded least squares over log Fc, gain, log Q, weighted
-by 1/SD). Repeat until the error is within noise everywhere (no point off by
-more than `stop_z` SDs) or the band budget is used up. Filters under
-`min_gain_db` are dropped.
+Greedy start: put a filter on the largest remaining error, then refit all
+filters jointly (bounded least squares over log Fc, gain, log Q). Repeat until
+the error is within `tol_db` everywhere filters can reach, or the band budget is
+used up. Filters under `min_gain_db` are dropped.
 
-The stop is pointwise rather than on chi² per point: averaged over the whole
-range, chi² let a whole accepted feature go unfitted, since one feature barely
-moves the mean. chi² is still reported.
+The target's uncertainty has already been dealt with in deciding the target, so
+the fit just reproduces it, in plain dB: weighting by the target's SD would let
+it drift furthest where the SD is largest, and a filter would come and go with
+whether the error there crossed a multiple of that SD.
+
+The stop looks only inside [f_lo, f_hi]. The target goes on fading beyond them,
+where no filter can be centred, so an error there might never close, and the fit
+would spend its whole budget trying. The least squares still covers that region.
+SDs are used only to report chi².
 """
 
 from dataclasses import dataclass
@@ -53,7 +58,7 @@ def _unpack(p):
     return [PeakingFilter(float(np.exp(a)), float(g), float(np.exp(b))) for a, g, b in p]
 
 
-def _refit(filters, freqs, target, sd, bounds: FilterBounds):
+def _refit(filters, freqs, target, bounds: FilterBounds):
     if not filters:
         return filters
     lo = np.tile([np.log(bounds.f_lo), -bounds.max_gain_db, np.log(bounds.q_min)], len(filters))
@@ -63,7 +68,7 @@ def _refit(filters, freqs, target, sd, bounds: FilterBounds):
     def resid(p):
         q = p.reshape(-1, 3)
         h = peaking_db_fast(np.exp(q[:, 0]), q[:, 1], np.exp(q[:, 2]), freqs).sum(axis=0)
-        return (target - h) / sd
+        return target - h
 
     res = least_squares(resid, p0, bounds=(lo, hi), x_scale="jac", max_nfev=2000)
     return _unpack(res.x)
@@ -73,11 +78,10 @@ def _chi2(filters, freqs, target, sd):
     return float(np.mean(((target - response(filters, freqs)) / sd) ** 2))
 
 
-def _initial_guess(freqs, err, sd, bounds: FilterBounds) -> PeakingFilter:
-    """A filter on the largest weighted error, its Q from the half-height width."""
+def _initial_guess(freqs, err, bounds: FilterBounds) -> PeakingFilter:
+    """A filter on the largest error, its Q from the half-height width."""
     inside = (freqs >= bounds.f_lo) & (freqs <= bounds.f_hi)
-    score = np.where(inside, np.abs(err) / sd, 0)
-    k = int(np.argmax(score))
+    k = int(np.argmax(np.where(inside, np.abs(err), 0)))
     x = np.log2(freqs)
     half = abs(err[k]) / 2
     i = k
@@ -92,28 +96,31 @@ def _initial_guess(freqs, err, sd, bounds: FilterBounds) -> PeakingFilter:
     return PeakingFilter(float(freqs[k]), g, q)
 
 
-def _max_z(filters, freqs, target, sd):
-    return float(np.max(np.abs(target - response(filters, freqs)) / sd))
+def _max_err(filters, freqs, target, bounds: FilterBounds):
+    inside = (freqs >= bounds.f_lo) & (freqs <= bounds.f_hi)
+    return float(np.max(np.abs(target - response(filters, freqs))[inside], initial=0.0))
 
 
 def fit_filters(freqs, target, sd, budget: int, bounds: FilterBounds = FilterBounds(),
-                stop_z: float = 2.0, min_gain_db: float = 0.5) -> FilterFit:
+                tol_db: float = 0.5, min_gain_db: float = 0.5) -> FilterFit:
+    """sd: only for the chi² reported. Largest error first, so if the budget runs
+    out, what's left uncorrected is the smallest."""
     freqs, target, sd = (np.asarray(v, float) for v in (freqs, target, sd))
     filters: list[PeakingFilter] = []
-    while len(filters) < budget and _max_z(filters, freqs, target, sd) > stop_z:
+    while len(filters) < budget and _max_err(filters, freqs, target, bounds) > tol_db:
         err = target - response(filters, freqs)
-        filters = _refit(filters + [_initial_guess(freqs, err, sd, bounds)], freqs, target, sd, bounds)
+        filters = _refit(filters + [_initial_guess(freqs, err, bounds)], freqs, target, bounds)
     # Drop negligible filters, then refit what's left.
     while filters:
         small = [f for f in filters if abs(f.gain_db) < min_gain_db]
         if not small:
             break
-        filters = _refit([f for f in filters if f not in small], freqs, target, sd, bounds)
+        filters = _refit([f for f in filters if f not in small], freqs, target, bounds)
     c = _chi2(filters, freqs, target, sd)
     contrib = [_chi2([g for g in filters if g is not f], freqs, target, sd) - c for f in filters]
     order = np.argsort([f.fc for f in filters])
     return FilterFit([filters[i] for i in order], response(filters, freqs), c,
-                     budget_bound=len(filters) >= budget and _max_z(filters, freqs, target, sd) > stop_z,
+                     budget_bound=len(filters) >= budget and _max_err(filters, freqs, target, bounds) > tol_db,
                      contributions=[contrib[i] for i in order])
 
 

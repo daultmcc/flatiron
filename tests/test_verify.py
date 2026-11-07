@@ -72,10 +72,13 @@ def test_leftovers_find_what_the_correction_missed(verified):
     from flatiron.fit.run import checkpoint, leftovers
 
     _, left = leftovers(verified, checkpoint(verified))
-    # The 1-band fit took the 6.2 kHz peak; the rest of the ground truth is left over.
+    # The 1-band fit took one of the 6.2 kHz peak and the 8.4 kHz dip, whichever is
+    # larger as measured; the rest of the ground truth is left over.
     fcs = [x.fc for x in left["L"]]
-    assert any(abs(np.log2(f / 8400)) < 1 / 12 for f in fcs)
-    assert any(abs(np.log2(f / 4000)) < 1 / 6 for f in fcs)
+    taken = checkpoint(verified)["L"][0].fc
+    near = lambda f0: any(abs(np.log2(f / f0)) < 1 / 6 for f in fcs)
+    missed = [f0 for f0 in (6200, 8400) if abs(np.log2(taken / f0)) > 1 / 6]
+    assert len(missed) == 1 and near(missed[0]) and near(4000)
 
 
 def test_checkpoint_keeps_the_filters_and_adds_new_ones(verified):

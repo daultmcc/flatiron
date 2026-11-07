@@ -176,7 +176,8 @@ def soft_correction(R_seg: np.ndarray, x: np.ndarray, span: slice, result: VetoR
                     scale: float, import_db: float) -> np.ndarray:
     """The weighted mean of what each candidate would lead to as the median. Each
     is the rule in `correction`, with the import limit and its reach outside the
-    span coming on gradually with how far away the candidate is."""
+    span coming on gradually with how far away the candidate is, and going to
+    nothing as the candidate's shape approaches this feature's."""
     sign = np.sign(own.height_db)
     total = np.zeros_like(x)
     for c, w in zip(result.weighed, result.weights):
@@ -189,7 +190,12 @@ def soft_correction(R_seg: np.ndarray, x: np.ndarray, span: slice, result: VetoR
             m = moved_share(own.fc, c.fc)
             b = bump(x, c) * scale
             one = b * m
-            one[span] = -R_seg * scale + b[span]
+            # R differs from this feature's own Gaussian, and that difference
+            # isn't evidence of anything when a candidate has the same shape: it
+            # counts only as far as the candidate differs from this feature.
+            b_own = bump(x, own) * scale
+            apart = min(1.0, float(np.linalg.norm(b - b_own) / max(np.linalg.norm(b_own), 1e-9)))
+            one[span] = (b - b_own)[span] - apart * (R_seg * scale - b_own[span])
             one = sign * np.minimum(sign * one, import_db * m)
         total += w * one
     return total
