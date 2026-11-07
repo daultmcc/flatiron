@@ -337,6 +337,9 @@ FIT_OPTIONS = [
                "the median of the residuals, never past zero")),
     (("--veto-import",), "veto_import_db",
      dict(type=float, help="where the median feature is somewhere else, the most the veto may add (dB); 0: nothing")),
+    (("--veto-softness",), "veto_softness",
+     dict(type=float, help="above 0, the feature veto weighs its candidates instead of picking one, with no sharp "
+                           "edges (try 0.1); 0: all or nothing")),
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),
@@ -453,8 +456,8 @@ def cmd_config(args):
     if args.smooth_oct is not None and new.method != "smooth":
         print("--smooth-width only applies with --method smooth (nothing changed).")
         return 1
-    if (args.veto_mode is not None or args.veto_import_db is not None) and not new.veto:
-        print("--veto-mode and --veto-import only apply with --veto (nothing changed).")
+    if (args.veto_mode is not None or args.veto_import_db is not None or args.veto_softness is not None) and not new.veto:
+        print("--veto-mode, --veto-import and --veto-softness only apply with --veto (nothing changed).")
         return 1
     if args.veto_import_db is not None and new.veto_mode != "feature":
         print("--veto-import only applies with --veto-mode feature (nothing changed).")
@@ -544,7 +547,7 @@ def cmd_config(args):
                   "   (unused without --method smooth)" if f == "smooth_oct" and st["method"] != "smooth" else
                   "   (unused without a consensus reference)" if f == "consensus_smooth_oct"
                   and not profile_settings(prof).consensus else
-                  "   (unused without --veto)" if f in ("veto_mode", "veto_import_db") and not st["veto"] else "")
+                  "   (unused without --veto)" if f in ("veto_mode", "veto_import_db", "veto_softness") and not st["veto"] else "")
         print(f"  {mark} {_option_name(flags):18} {_show(f, st[f])}{dflt}{unused}")
     ids = profile_session_ids(prof)
     print(f"  sessions: {'all' if not ids else ', '.join(ids)}")

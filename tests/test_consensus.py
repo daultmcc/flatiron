@@ -4,9 +4,11 @@ import pytest
 from flatiron.fit.compare import Member, compare_ear
 from flatiron.fit.consensus import Source, consensus_of, estimate_tau_hp, raw_consensus, soft_median
 from flatiron.fit.filters import response
+from flatiron.fit.features import find_features
 from flatiron.fit.pipeline import CorrectionSettings, correct_ear, ear_reference
 from flatiron.fit.reference import reference
-from flatiron.fit.veto import Candidate, correction, correction_rule, judge, overlaps
+from flatiron.fit.veto import (Candidate, correction, correction_rule, judge, judge_soft, moved_share, overlap_share,
+                               overlaps, soft_correction)
 from flatiron.model.grid import common_grid, interp_matrix, log_grid
 from flatiron.model.probit import ProbitFit
 
@@ -710,3 +712,69 @@ def test_profile_kinds(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert main(["profiles"]) in (0, None)
     assert "Etude 2" in capsys.readouterr().out
+
+
+def _soft_height(own, voters, softness=0.1):
+    x = np.log2(G)
+    k = np.argmin(np.abs(G - own.fc))
+    R = own.height_db * np.exp(-0.5 * ((x - np.log2(own.fc)) / (own.width_oct / 2.355)) ** 2)
+    r = judge_soft(own, voters, softness)
+    return r, soft_correction(R, x, slice(0, G.size), r, own, 1.0, 1.5)[k]
+
+
+def test_soft_veto_gives_the_hard_answer_for_a_clear_winner():
+    own = Candidate("own", 7000, 0.2, 8.0)
+    # In every headphone at the same height: this profile is central, nothing to correct.
+    r, c = _soft_height(own, {"a": [Candidate("a", 7000, 0.2, 8.0)], "b": [Candidate("b", 7000, 0.2, 8.0)]})
+    assert c == pytest.approx(0, abs=0.1)
+    # Only here: nothing is the median, so all of it goes.
+    r, c = _soft_height(own, {"a": [], "b": []})
+    assert r.median is None and c == pytest.approx(-8, abs=0.1)
+    # Taller here than the two others, which agree: trimmed to their height.
+    r, c = _soft_height(own, {"a": [Candidate("a", 7000, 0.2, 6.0)], "b": [Candidate("b", 7000, 0.2, 6.0)]})
+    assert c == pytest.approx(-2, abs=0.1)
+
+
+def test_soft_veto_has_no_jump_at_a_tie():
+    """Like the real case: a voter with a wider, lower feature nearby, and this
+    profile's height passing through where the hard median flips."""
+    voters = {"a": [], "b": [Candidate("b", 6800, 0.43, 2.6)]}
+    x = np.log2(G)
+    hard, soft = [], []
+    for h in np.arange(2.0, 6.0, 0.01):
+        own = Candidate("own", 7000, 0.24, float(h))
+        R = h * np.exp(-0.5 * ((x - np.log2(7000)) / (0.24 / 2.355)) ** 2)
+        r = judge(own, voters)
+        hard.append(np.zeros_like(x) if r.median is own else correction(R, x, slice(0, G.size), r, 1.0, 1.0, 1.5))
+        r = judge_soft(own, voters, 0.1)
+        soft.append(soft_correction(R, x, slice(0, G.size), r, own, 1.0, 1.5))
+    step = lambda c: np.abs(np.diff(np.array(c), axis=0)).max()
+    assert step(hard) > 0.5
+    assert step(soft) < 0.1
+
+
+def test_soft_overlap_and_moved_are_gradual_around_the_hard_limits():
+    assert overlap_share(7000, 0.2, 7000, 0.2) == 1
+    edge = 7000 * 2**0.2
+    assert overlap_share(7000, 0.2, edge, 0.2) == pytest.approx(0.5)
+    assert overlap_share(7000, 0.2, 7000 * 2**0.4, 0.2) == 0
+    assert moved_share(7000, 7000) == 0 and moved_share(7000, 7000 * 2**0.5) == 1
+    assert moved_share(7000, 7000 * 2 ** (1 / 12)) == pytest.approx(0.5)
+
+
+def test_a_voter_counts_less_as_its_feature_leaves():
+    own = Candidate("own", 7000, 0.2, 8.0)
+    near, far = (judge_soft(own, {"a": [Candidate("a", f, 0.2, 8.0)]}, 0.1).candidates[1] for f in (7000, 7000 * 2**0.25))
+    assert near.height_db == pytest.approx(8) and 0 < far.height_db < 4
+
+
+def test_soft_veto_runs_through_the_pipeline_and_a_centre_ignores_which_extreme_is_deepest():
+    corrected = _corrected([OWN + SHARED, SHARED, SHARED], veto=True, veto_softness=0.1)
+    x = np.log2(corrected.freqs)
+    assert abs(np.interp(np.log2(5800), x, corrected.target) + 5) < 1  # only here: removed
+    assert abs(np.interp(np.log2(7500), x, corrected.target)) < 1  # shared: kept
+    two = bump(5000, 0.2, 4.0) + bump(5900, 0.2, 4.0)
+    a, b = two + bump(5000, 0.05, 0.1), two + bump(5900, 0.05, 0.1)
+    fa, fb = (max(find_features(G, c, np.eye(G.size) * 0.04), key=lambda f: abs(f.peak_db)) for c in (a, b))
+    assert abs(np.log2(fa.fc / fb.fc)) > 0.15  # the deepest point jumps
+    assert abs(np.log2(fa.centre_hz / fb.centre_hz)) < 0.02  # the centre doesn't

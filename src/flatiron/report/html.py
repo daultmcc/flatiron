@@ -54,6 +54,9 @@ def veto_line(f) -> str:
     v = f.veto
     seen = ", ".join(f"{c.label} {c.height_db:+.1f} dB at {c.fc:,.0f} Hz" if c.present else f"{c.label} nothing"
                      for c in v.candidates)
+    if v.weighed:
+        mix = ", ".join(f"{c.label if c.present else 'nothing'} {w:.0%}" for c, w in zip(v.weighed, v.weights) if w >= 0.005)
+        return f"{seen}; weighed: {mix}"
     if v.median is None:
         return f"{seen}; median: nothing there"
     return f"{seen}; median: {v.median.height_db:+.1f} dB at {v.median.fc:,.0f} Hz" + (" (elsewhere)" if v.moved else "")

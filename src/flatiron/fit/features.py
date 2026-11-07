@@ -68,6 +68,10 @@ class Feature:
     correction_db: float | None = None  # pointwise veto: what's corrected at the feature's largest correction
     shared_db: float | None = None  # pointwise veto: how much of the residual there is kept as shared
     inside_broad: bool = False
+    # Continuous in the residual, unlike fc and width_oct, which can jump across a
+    # lobe with two near-equal extremes (the soft veto uses these).
+    centre_hz: float = 0.0  # weighted over the part of the lobe above half height
+    eq_width_oct: float = 0.0  # its area over its height, scaled to match FWHM for a Gaussian
     scale: float = 1.0  # share of the residual corrected: the median seating's level over L_avg's
     weight: float = 1.0  # share corrected because of how significant it is (soft rejection)
     run: int = -1  # which same-sign stretch of the residual it was split from
@@ -109,6 +113,19 @@ def _half_width(x, r, lo, hi, k):
     return edge(1) - edge(-1)
 
 
+def _centre_and_width(x, r, lo, hi):
+    """(Hz, octaves). Weighting by the excess over half height, so a point joins or
+    leaves with no weight, keeps the centre continuous."""
+    a = np.abs(r[lo:hi + 1])
+    top = float(a.max())
+    if top <= 0:
+        return float(2.0 ** x[lo]), 0.0
+    xs, dx = x[lo:hi + 1], np.gradient(x)[lo:hi + 1]
+    excess = np.maximum(a - top / 2, 0.0)
+    centre = float(xs @ excess / excess.sum())
+    return float(2.0**centre), float(0.939 * (a @ dx) / top)
+
+
 def _mean_stats(x, r, cov, lo, hi):
     w = np.gradient(x)[lo:hi + 1]
     w = w / w.sum()
@@ -131,6 +148,7 @@ def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3, soft_w
         kind = NARROW if width < narrow_max_oct else BROAD
         f = Feature(lo, hi, float(grid[k_pk]), float(r[k_pk]), float(width), kind,
                     pair_z if kind == NARROW else abs(mean) / msd, mean, msd, run=n)
+        f.centre_hz, f.eq_width_oct = _centre_and_width(x, r, lo, hi)
         f.weight = soft_weight(f.z, k if kind == NARROW else k_broad, soft_width)
         f.accepted = f.weight > 0
         if not f.accepted:

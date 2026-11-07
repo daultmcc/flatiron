@@ -161,6 +161,7 @@ Every setting is downstream of the cached perceptual fit, so changing it needs n
 | Reference, listening level | `iso226`, 60 phon | `-r/--reference`, `--phon` |
 | Consensus reference, its smoothing | none, 1/2 octave | `-r consensus:A,B`, `--consensus-smooth` |
 | Veto against other profiles | none, 1.5 dB import | `--veto A,B`, `--veto-mode feature\|pointwise`, `--veto-import` |
+| Soft veto | 0 (off) | `--veto-softness` |
 | Significance k, k\_broad | 2, 2.5 SD | `-k/--k`, `--k-broad` |
 | Soft rejection width | 0 SD (off) | `--soft-width` |
 | Broad correction, strength | off, 100% | `--broad`, `-s/--broad-strength` (needs `--broad`) |
@@ -263,6 +264,16 @@ Why not the alternatives:
 This profile's own vote doesn't protect against imports when the other two agree: at 8.2, 7 and 7 kHz the median ignores it. That's why the import limit is explicit.
 
 `--veto-mode pointwise` is the alternative. Features are found on the excess over the soft median m of the voters' residuals, each with its own baseline and this profile's included, and at each frequency what exceeds that median is corrected, never past zero: C = −sign(R) max(0, |R| − max(0, sign(R) m)). A checkpoint's filters are part of R but not of the median, so a peak they already took out leaves nothing to correct. This mode can't import or move anything, and it's sensitive to broad differences between headphones because of the separate baselines. `--veto-import` doesn't apply to it.
+
+**Soft veto** (`--veto-softness`, off by default; 0.1 is a reasonable value). The steps above are all or nothing, so a small change in a curve can move a correction by decibels: a near-tie flips the median feature, and a voter's feature counts or doesn't. With a softness s above 0, each is gradual:
+
+- **Weights.** A candidate with total shape difference D weighs exp(−(D/D\_min − 1)/s), normalised, where D\_min is the most central candidate's. The correction is the weighted mean of what each candidate would lead to as the median feature. A clear winner gives the rule above, and this profile taking all the weight still gives no correction. Near a tie this mixes two shapes, not their parameters, so it doesn't bring back the independent medians' problem: a clear winner comes through as itself.
+- **Matching.** A voter's same-sign features count by how far they overlap this one, 1/2 at the literal limit, falling from 1 to 0 across half that limit either side. Among several, a taller one dominates in proportion to height⁴. A voter's feature that isn't significant counts by height from 0 at 0.5 dB to 1 at 1.5 dB, and one that is counts by at least its significance share.
+- **Same place.** The import limit, and an import's reach outside the feature, come on from 1/24 to 1/8 octave.
+- **Location.** A candidate's centre is weighted over the part of the lobe above half height, and its width is its area over its height, scaled to match FWHM for a Gaussian. The peak frequency can jump between two near-equal extremes of a lobe, and these can't.
+- **The 0.5 dB rule** doesn't apply; the filter fit's own smallest filter is what's left.
+
+Lobe splitting, narrow/broad classification and the broad region search keep their hard edges.
 
 ### Experimental: the smooth and match methods
 
@@ -505,6 +516,34 @@ These come from scratch code, not in the repository, on `ft1`, `hd560` and poole
 Marginal flips are about a third of the peak change and about 13% of the RMS change at width 0.5; the rest is the curve moving. With the veto on, the jumps are veto flips, which this doesn't touch. Filter fits jump by themselves, by up to 2.9 dB with no change in the target, because anything within 2 SD is accepted. At the current stop rule soft rejection worsens that: the mean largest step goes from 0.55 to 1.20 dB. So compare targets rather than filters when judging a model change.
 
 On known curves (40 simulations for each of six ears), two runs from the same curve differ by 1.78 dB RMS in the target when hard, 1.76 at width 0.5 and 1.74 at width 1, with error against the truth unchanged. Soft rejection doesn't reduce false left/right imbalance: that's measurement noise.
+
+### Soft veto
+
+These come from scratch code, not in the repository, with `sundara`'s real settings (a consensus reference and a veto by `ft1` and `hd560`). The hard veto's target jumps between a fit without treble noise and one with it (r, built on a separate branch) came from four edges: near-ties in the median (1.24 and 1.09 dB), a voter lost from the overlap check after a peak jumped across a two-dip lobe (2.23 dB), and the 1/12-octave limit (0.52 dB).
+
+Soft rejection at width 0.5 is on in the soft rows. Interpolating the fit between the two models in 40 steps, largest values in dB, left and right:
+
+| Veto | Largest target step | Target, one model to the other | Filters, one model to the other |
+| --- | --- | --- | --- |
+| Hard, no soft rejection | 2.23, 1.09 | 2.44, 1.29 | 1.81, 0.37 |
+| s = 0.05 | 0.03, 0.02 | 0.81, 0.73 | 0.53, 1.08 |
+| s = 0.1 | 0.02, 0.02 | 0.56, 0.71 | 0.42, 1.00 |
+| s = 0.2 | 0.02, 0.02 | 0.44, 0.68 | 0.32, 0.90 |
+
+That's one path, so it doesn't show the target is continuous everywhere. Filters still step by up to 0.89 dB on the right ear with soft rejection on, and 0.05 dB without it.
+
+On known curves (40 simulations for each ear of all three profiles, averaged over `sundara`'s two ears, no error bars, one fit of 240 not converged), in dB RMS:
+
+| Setup | Two runs from one curve: target | Filters | Target error against the truth | Target size |
+| --- | --- | --- | --- | --- |
+| Hard | 1.16 | 0.90 | 0.98 | 1.98 |
+| Soft rejection only | 1.15 | 0.88 | 0.95 | 1.97 |
+| s = 0.1 only | 1.07 | 0.80 | 0.89 | 1.99 |
+| Both, s = 0.1 | 1.06 | 0.78 | 0.86 | 1.98 |
+| Both, s = 0.2 | 1.02 | 0.75 | 0.83 | 1.96 |
+| Pointwise, soft rejection | 1.01 | 0.73 | 0.79 | 1.75 |
+
+The truth is each setup's own correction of the true curves. So the soft veto helps modestly, and most of the difference between runs is measurement noise. Pointwise scores about as well but corrects about 12% less overall, and it still has a target step of 0.88 dB on the same path.
 
 ### Unit and truth tests
 

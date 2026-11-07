@@ -15,7 +15,8 @@ from flatiron.fit.features import BROAD, NARROW, Feature, GroupCurve, find_featu
 from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
 from flatiron.fit.features import weighted_median
 from flatiron.fit.reference import CONSENSUS_PREFIX, reference
-from flatiron.fit.veto import MIN_LOBE_DB, OWN_LABEL, Candidate, correction, correction_rule, judge
+from flatiron.fit.veto import (LOBE_HI_DB, LOBE_LO_DB, MIN_LOBE_DB, OWN_LABEL, OWN_WINS, Candidate, correction,
+                               correction_rule, judge, judge_soft, smoothstep, soft_correction)
 from flatiron.model.grid import interp_matrix, log_grid
 from flatiron.model.probit import ProbitFit
 
@@ -79,6 +80,11 @@ class CorrectionSettings:
     # When the median feature is somewhere else, how far the correction may go
     # past removing this feature, in dB (0: it can't add anything).
     veto_import_db: float = 1.5
+    # Above 0, the feature veto weighs its candidates instead of picking one, with
+    # no sharp edges anywhere in it (fit/veto.py). How far the weights spread: a
+    # candidate this share further from the others than the most central one
+    # weighs 1/e of it.
+    veto_softness: float = 0.0
 
     def __post_init__(self):
         object.__setattr__(self, "veto", tuple(self.veto))
@@ -94,6 +100,8 @@ class CorrectionSettings:
             raise ValueError(f"veto mode must be one of {', '.join(VETO_MODES)}")
         if self.veto_import_db < 0:
             raise ValueError("the veto's import limit can't be negative")
+        if not 0 <= self.veto_softness <= 1:
+            raise ValueError("the veto's softness must be 0 to 1")
         if not 1 / 3 - 1e-9 <= self.max_width_oct <= 2 + 1e-9:
             raise ValueError("max feature width must be 1/3 to 2 octaves")
         if not 0 <= self.broad_strength <= 1:
@@ -174,11 +182,17 @@ def build_target(features, R, settings: CorrectionSettings, grid=None, median_R=
         strength = settings.broad_strength if f.kind == BROAD else 1.0
         if f.veto is not None:
             seg = R[f.span] if f.residual is None else f.residual
-            full = correction(seg, x, f.span, f.veto, np.sign(f.peak_db), f.scale * f.weight, settings.veto_import_db)
+            soft = bool(f.veto.weighed)
+            if soft:
+                full = soft_correction(seg, x, f.span, f.veto, f.veto.candidates[0], f.scale * f.weight,
+                                       settings.veto_import_db)
+            else:
+                full = correction(seg, x, f.span, f.veto, np.sign(f.peak_db), f.scale * f.weight,
+                                  settings.veto_import_db)
             full = np.clip(full, -settings.max_cut_db, boost) * strength
             k = int(np.argmax(np.abs(full)))
             f.veto.correction_db = float(full[k])
-            if abs(full[k]) < settings.min_gain_db:
+            if abs(full[k]) < (1e-3 if soft else settings.min_gain_db):
                 f.accepted, f.reason = False, "shared: nothing of it to remove"
                 continue
             c += full
@@ -296,6 +310,14 @@ def voter_candidates(label: str, fit: ProbitFit, settings: CorrectionSettings,
     M = np.eye(g.size) - _baseline(g, D, np.sqrt(np.clip(np.diag(cov), 1e-12, None)), settings)
     R = M @ D
     feats = _found(g, R, M @ cov @ M.T, _group_curves(fit, M, 0.0, E), settings)
+    if settings.veto_softness > 0:
+        # Each counts as far as it's significant or tall, so none appears or vanishes at an edge.
+        def counted(f):
+            own = f.weight if f.accepted else 0.0
+            if f.kind == NARROW:
+                return max(own, smoothstep((abs(f.peak_db) - LOBE_LO_DB) / (LOBE_HI_DB - LOBE_LO_DB)))
+            return own if not settings.preserve_tonality else 0.0
+        return [Candidate(label, f.centre_hz, f.eq_width_oct, f.peak_db * counted(f)) for f in feats if counted(f) > 0]
     keep = lambda f: (f.kind == NARROW and (f.accepted or abs(f.peak_db) >= MIN_LOBE_DB)
                       or f.kind == BROAD and f.accepted and not settings.preserve_tonality)
     return [Candidate(label, f.fc, f.width_oct, f.peak_db) for f in feats if keep(f)]
@@ -306,6 +328,12 @@ def apply_veto(feats: list[Feature], voters: dict[str, list[Candidate]], setting
     """Judge each feature that would be corrected against the others'."""
     for f in feats:
         if not f.accepted or (f.kind == BROAD and settings.preserve_tonality):
+            continue
+        if settings.veto_softness > 0:
+            own = Candidate(OWN_LABEL, f.centre_hz, f.eq_width_oct, f.peak_db)
+            f.veto = judge_soft(own, voters, settings.veto_softness, own_votes)
+            if own_votes and f.veto.weights[0] >= OWN_WINS:
+                f.accepted, f.reason = False, "shared: it's the median feature"
             continue
         own = Candidate(OWN_LABEL, f.fc, f.width_oct, f.peak_db)
         f.veto = judge(own, voters, own_votes)
@@ -414,7 +442,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
             sd_g[f.span] = f.residual_sd
         sd = np.minimum(sd, m @ sd_g)
     sd_fit = sd
-    if settings.soft_width > 0 and not (smooth or match):
+    if (settings.soft_width > 0 or (settings.veto and settings.veto_softness > 0)) and not (smooth or match):
         sd_g = np.sqrt(np.clip(np.diag(cov_T), 1e-12, None))
         sd_fit = sd * (m @ soft_fit_sd(feats, C, sd_g, settings))
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, settings.q_max, settings.max_gain_db)
