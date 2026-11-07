@@ -340,6 +340,8 @@ FIT_OPTIONS = [
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),
+    (("--soft-width",), "soft_width",
+     dict(type=float, help="partly correct features within this many SDs of the significance threshold (0: all or nothing)")),
     (("--broad",), "preserve_tonality",
      dict(action=argparse.BooleanOptionalAction,
           help="correct broad features too, toward the fixed target (off, the default: correct narrow "
@@ -589,6 +591,7 @@ def _print_fit(pf):
             if acc:
                 print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({_correction_of(x):+.1f} dB"
                                                          + (", inside a broad region" if x.inside_broad else "")
+                                                         + (f", {x.weight:.0%} by significance" if x.weight < 1 else "")
                                                          + ")" for x in acc))
             if rej and kind == "narrow":
                 print("  dropped, most seatings show little of it: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
@@ -610,7 +613,7 @@ def _print_fit(pf):
 def _correction_of(f) -> float:
     if f.veto is not None:
         return 0.0 if not f.accepted else f.veto.correction_db
-    return -f.peak_db if f.correction_db is None else f.correction_db
+    return -f.peak_db * f.weight if f.correction_db is None else f.correction_db
 
 
 def cmd_compare(args):

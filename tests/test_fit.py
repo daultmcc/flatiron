@@ -5,11 +5,12 @@ import pytest
 
 from flatiron.audio.biquad import PeakingFilter, response_db
 from flatiron.fit.baseline import fit_baseline
-from flatiron.fit.features import BROAD, NARROW, GroupCurve, find_features, seating_step
+from flatiron.fit.features import BROAD, NARROW, GroupCurve, find_features, seating_step, soft_weight
 from flatiron.fit.filters import FilterBounds, fit_filters, preamp_db, response
 from flatiron.fit.pipeline import CorrectionSettings, correct_ear, taper
 from flatiron.fit.reference import read_curve_csv, reference
 from flatiron.model.grid import log_grid
+from flatiron.model.probit import ProbitFit
 
 G = log_grid()
 X = np.log2(G)
@@ -435,3 +436,65 @@ def test_none_is_not_a_profile_name(tmp_path, monkeypatch, capsys):
     assert main(["run", "-p", "none", "--dry-run"]) == 1
     assert "can't be a profile name" in capsys.readouterr().out and not Profile.all()
     assert main(["run", "-p", "!!!", "--dry-run"]) == 1  # no letters or digits: a message, not a traceback
+
+
+def _bump_residual(height, width_oct=0.25, sd=1.0):
+    g = log_grid(1000, 13000, 1 / 24)
+    x = np.log2(g / 5000)
+    return g, height * np.exp(-0.5 * (x / (width_oct / 2.355)) ** 2), np.eye(g.size) * sd**2
+
+
+def test_soft_weight_ramps_across_the_threshold():
+    assert soft_weight(1.5, 2.0, 0.5) == 0 and soft_weight(2.5, 2.0, 0.5) == 1
+    assert soft_weight(2.0, 2.0, 0.5) == pytest.approx(0.5)
+    assert soft_weight(2.01, 2.0, 0.0) == 1 and soft_weight(1.99, 2.0, 0.0) == 0
+
+
+def test_soft_width_keeps_the_hard_test_at_its_edges():
+    """Hard acceptance is the same statistic at width 0, and wide of the ramp soft agrees."""
+    g, r, cov = _bump_residual(1.9)
+    assert not max(find_features(g, r, cov), key=lambda f: abs(f.peak_db)).accepted
+    g, r, cov = _bump_residual(3.0)
+    hard = max(find_features(g, r, cov), key=lambda f: abs(f.peak_db))
+    soft = max(find_features(g, r, cov, soft_width=0.5), key=lambda f: abs(f.peak_db))
+    assert hard.accepted and soft.weight == 1
+
+
+def _fit_with_bump(height, sd=0.8):
+    """A curve with one narrow peak around 5 kHz, whose significance is set by its height."""
+    g = log_grid(850, 15000, 1 / 24)
+    x = np.log2(g / 5000)
+    L = height * np.exp(-0.5 * (x / (0.25 / 2.355)) ** 2)
+    return ProbitFit(g, L, np.eye(g.size) * sd**2, 1.0, 0.5, 0.02, 100, 0.0, True)
+
+
+def _max_step(settings, heights):
+    prev = None
+    out = [0.0, 0.0]
+    for h in heights:
+        c = correct_ear("L", _fit_with_bump(h), settings)
+        if prev is not None:
+            out = [max(out[0], float(np.abs(c.target - prev.target).max())),
+                   max(out[1], float(np.abs(c.fit.response - prev.fit.response).max()))]
+        prev = c
+    return out
+
+
+def test_soft_rejection_removes_the_jump_at_the_threshold():
+    """A peak growing through the threshold: hard, the correction appears all at
+    once. Soft, the target and the filters both follow it, the filters to within
+    the smallest filter allowed."""
+    heights = np.arange(0.8, 3.4, 0.05)
+    base = dict(reference="none", consistency=False)
+    target, resp = _max_step(CorrectionSettings(**base), heights)
+    assert target > 1.0 and resp > 1.0
+    target, resp = _max_step(CorrectionSettings(soft_width=0.5, **base), heights)
+    assert target < 0.4 and resp < 0.7
+
+
+def test_a_partly_corrected_feature_gets_its_filter():
+    """Without its own tolerance the fit would stop within 2 SD and place nothing."""
+    c = correct_ear("L", _fit_with_bump(1.85), CorrectionSettings(reference="none", consistency=False, soft_width=0.5))
+    f = max(c.features, key=lambda f: abs(f.peak_db))
+    assert 0.2 < f.weight < 0.8
+    assert abs(c.target).max() > 0.5 and np.abs(c.target - c.fit.response).max() < 0.4

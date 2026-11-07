@@ -35,6 +35,9 @@ class CorrectionSettings:
     baseline_penalty: float = 0.1  # baseline stiffness (tuned in the simulator; 1e-3 absorbed clustered features)
     k: float = 2.0
     k_broad: float = 2.5
+    # Soft rejection: features within this many SDs of k or k_broad are partly
+    # corrected instead of kept or dropped. 0: the plain test.
+    soft_width: float = 0.0
     narrow_max_oct: float = 1 / 2  # 1/3 dropped a 0.4-octave, 7 dB resonance as broad
     broad_strength: float = 1.0  # 0..1, scales broad features only
     max_cut_db: float = 12.0
@@ -81,6 +84,8 @@ class CorrectionSettings:
         object.__setattr__(self, "veto", tuple(self.veto))
         if self.reference.startswith(CONSENSUS_PREFIX) and not self.consensus:
             raise ValueError("a consensus reference needs at least one profile")
+        if not 0 <= self.soft_width <= 2:
+            raise ValueError("the soft width must be 0 to 2 SDs")
         if not 0 <= self.consensus_smooth_oct <= 2:
             raise ValueError("consensus smoothing must be 0 to 2 octaves")
         if self.veto and self.method != "features":
@@ -169,7 +174,7 @@ def build_target(features, R, settings: CorrectionSettings, grid=None, median_R=
         strength = settings.broad_strength if f.kind == BROAD else 1.0
         if f.veto is not None:
             seg = R[f.span] if f.residual is None else f.residual
-            full = correction(seg, x, f.span, f.veto, np.sign(f.peak_db), f.scale, settings.veto_import_db)
+            full = correction(seg, x, f.span, f.veto, np.sign(f.peak_db), f.scale * f.weight, settings.veto_import_db)
             full = np.clip(full, -settings.max_cut_db, boost) * strength
             k = int(np.argmax(np.abs(full)))
             f.veto.correction_db = float(full[k])
@@ -183,14 +188,14 @@ def build_target(features, R, settings: CorrectionSettings, grid=None, median_R=
             # Inside a broad region, both against the same local smooth.
             m = median_R[f.span] if f.residual is None else own - f.residual
             rule = correction_rule(own, m)
-            seg = rule * f.scale
+            seg = rule * f.scale * f.weight
             k = int(np.argmax(np.abs(seg)))
             f.correction_db, f.shared_db = float(seg[k]), float(np.max(np.abs(own)) - abs(rule[k]))
             if abs(seg[k]) < settings.min_gain_db:
                 f.accepted, f.reason = False, "shared: nothing of it to remove"
                 continue
         else:
-            seg = -(R[f.span] if f.residual is None else f.residual) * f.scale
+            seg = -(R[f.span] if f.residual is None else f.residual) * f.scale * f.weight
         c[f.span] += np.maximum(np.minimum(seg, boost) * strength, -settings.max_cut_db)
     return c
 
@@ -231,7 +236,7 @@ def inner_features(g, R, cov_R, lo: int, hi: int, settings: CorrectionSettings,
     M = np.eye(gi.size) - local_linear_smoother(gi, INNER_SMOOTH_OCT, w)
     r = M @ R[sl]
     cov = M @ cov_R[sl, sl] @ M.T
-    found = [f for f in find_features(gi, r, cov, settings.k, settings.k_broad, np.inf) if f.accepted]
+    found = [f for f in find_features(gi, r, cov, settings.k, settings.k_broad, np.inf, settings.soft_width) if f.accepted]
     seating_step(found, gi, r, cov, [GroupCurve(M @ c.r[sl], M @ c.cov[sl, sl] @ M.T, M @ c.u_cov[sl, sl] @ M.T)
                                      for c in groups], settings.consistency)
     for f in found:
@@ -257,7 +262,8 @@ def _found(g, T, cov_T, groups, settings: CorrectionSettings, own_R=None) -> lis
     of what's significant; the target is the whole residual."""
     whole = settings.method != "features"
     sd = np.sqrt(np.clip(np.diag(cov_T), 1e-12, None))
-    feats = find_features(g, T, cov_T, settings.k, settings.k_broad, np.inf if whole else settings.narrow_max_oct)
+    feats = find_features(g, T, cov_T, settings.k, settings.k_broad, np.inf if whole else settings.narrow_max_oct,
+                          settings.soft_width)
     seating_step(feats, g, T, cov_T, groups, settings.consistency)
     if not whole:
         for region in broad_regions(feats, T, sd, settings):
@@ -305,6 +311,23 @@ def apply_veto(feats: list[Feature], voters: dict[str, list[Candidate]], setting
         f.veto = judge(own, voters, own_votes)
         if f.veto.median is own:
             f.accepted, f.reason = False, "shared: it's the median feature"
+
+
+def soft_fit_sd(feats: list[Feature], C, sd_g, settings: CorrectionSettings) -> np.ndarray:
+    """On the grid, the fraction of the target's SD the filter fit may use as its
+    tolerance. The fit stops within stop_z SDs, so a partly corrected feature
+    would get no filter at all as soon as its target fell inside that, and the
+    jump the weight removed would come back. So a feature's tolerance is tightened
+    just enough that its height stays beyond the stop, and no further: a tighter
+    fit chases noise with cancelling filters. What's left is min_gain_db: nothing
+    smaller gets a filter. A feature tall enough already fits as it would have."""
+    share = np.ones_like(C)
+    floor = settings.min_gain_db / settings.stop_z
+    for f in feats:
+        if f.accepted and not (f.kind == BROAD and settings.preserve_tonality):
+            height = float(np.max(np.abs(C[f.span])))
+            share[f.span] = np.minimum(1.0, max(height / (1.25 * settings.stop_z), floor) / sd_g[f.span])
+    return share
 
 
 def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = CorrectionSettings(),
@@ -390,8 +413,12 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         for f in inner:
             sd_g[f.span] = f.residual_sd
         sd = np.minimum(sd, m @ sd_g)
+    sd_fit = sd
+    if settings.soft_width > 0 and not (smooth or match):
+        sd_g = np.sqrt(np.clip(np.diag(cov_T), 1e-12, None))
+        sd_fit = sd * (m @ soft_fit_sd(feats, C, sd_g, settings))
     bounds = FilterBounds(settings.f_lo, settings.f_hi, settings.q_min, settings.q_max, settings.max_gain_db)
-    ff = fit_filters(freqs, target, sd, max(settings.bands - len(fixed), 0), bounds, settings.stop_z,
+    ff = fit_filters(freqs, target, sd_fit, max(settings.bands - len(fixed), 0), bounds, settings.stop_z,
                      settings.min_gain_db)
     comp: list[PeakingFilter] = []
     if settings.preserve_tonality and not match:

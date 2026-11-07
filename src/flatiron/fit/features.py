@@ -10,6 +10,10 @@ if its mean exceeds k_broad times the SD of that mean. (A broad lobe is never
 re-tested point by point: its errors are correlated, so a pointwise test would
 pass the top of a hump whose mean isn't significant.)
 
+With a soft width the test isn't all or nothing: a feature's statistic z is
+compared with the threshold through soft_weight, and that share of it is
+corrected, so a feature doesn't appear or vanish as z crosses the threshold.
+
 Kept features then go through the seating step. Each one's level is taken in
 every group's curve (L_avg + u_g, posterior mean) over the feature's half-height
 core. The feature is corrected to the median group's level (weighted by
@@ -46,7 +50,7 @@ class Feature:
     peak_db: float  # residual at the extreme
     width_oct: float  # full width at half height
     kind: str
-    z: float  # narrow: largest run minimum |R|/SD; broad: mean / SD(mean)
+    z: float  # narrow: the smaller |R|/SD of its best two adjacent points; broad: mean / SD(mean)
     mean_db: float
     mean_sd: float
     accepted: bool = False
@@ -65,6 +69,7 @@ class Feature:
     shared_db: float | None = None  # pointwise veto: how much of the residual there is kept as shared
     inside_broad: bool = False
     scale: float = 1.0  # share of the residual corrected: the median seating's level over L_avg's
+    weight: float = 1.0  # share corrected because of how significant it is (soft rejection)
     run: int = -1  # which same-sign stretch of the residual it was split from
 
     def shifted(self, n: int) -> "Feature":
@@ -75,6 +80,15 @@ class Feature:
     @property
     def span(self) -> slice:
         return slice(self.lo, self.hi + 1)
+
+
+def soft_weight(z: float, k: float, width: float) -> float:
+    """The share of a feature to correct: 0 at k − width, 1 at k + width, with a
+    smooth step between. Width 0 is the plain test, z > k."""
+    if width <= 0:
+        return float(z > k)
+    t = float(np.clip((z - (k - width)) / (2 * width), 0.0, 1.0))
+    return t * t * (3 - 2 * t)
 
 
 def _half_width(x, r, lo, hi, k):
@@ -95,18 +109,6 @@ def _half_width(x, r, lo, hi, k):
     return edge(1) - edge(-1)
 
 
-def _runs(mask):
-    """(start, end) inclusive index runs where mask is true."""
-    out, start = [], None
-    for i, m in enumerate(np.append(mask, False)):
-        if m and start is None:
-            start = i
-        elif not m and start is not None:
-            out.append((start, i - 1))
-            start = None
-    return out
-
-
 def _mean_stats(x, r, cov, lo, hi):
     w = np.gradient(x)[lo:hi + 1]
     w = w / w.sum()
@@ -115,7 +117,7 @@ def _mean_stats(x, r, cov, lo, hi):
     return float(w @ seg), float(np.sqrt(max(v, 1e-12)))
 
 
-def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3) -> list[Feature]:
+def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3, soft_width=0.0) -> list[Feature]:
     x = np.log2(grid)
     sd = np.sqrt(np.clip(np.diag(cov), 1e-12, None))
     sign = np.sign(r)
@@ -124,18 +126,16 @@ def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3) -> lis
         k_pk = lo + int(np.argmax(np.abs(r[lo:hi + 1])))
         width = _half_width(x, r, lo, hi, k_pk)
         mean, msd = _mean_stats(x, r, cov, lo, hi)
-        over = _runs(np.abs(r[lo:hi + 1]) > k * sd[lo:hi + 1])
-        long_runs = [(a + lo, b + lo) for a, b in over if b > a]
-        run_z = max((np.min(np.abs(r[a:b + 1]) / sd[a:b + 1]) for a, b in long_runs), default=0.0)
+        seg_z = np.abs(r[lo:hi + 1]) / sd[lo:hi + 1]
+        pair_z = float(np.minimum(seg_z[:-1], seg_z[1:]).max()) if hi > lo else 0.0
         kind = NARROW if width < narrow_max_oct else BROAD
         f = Feature(lo, hi, float(grid[k_pk]), float(r[k_pk]), float(width), kind,
-                    float(run_z if kind == NARROW else abs(mean) / msd), mean, msd, run=n)
-        if kind == NARROW:
-            f.accepted = bool(long_runs)
-            f.reason = "" if f.accepted else f"no two adjacent points beyond {k:g} SD"
-        else:
-            f.accepted = abs(mean) > k_broad * msd
-            f.reason = "" if f.accepted else f"mean {mean:+.2f} dB is within {k_broad:g} SD ({msd:.2f} dB)"
+                    pair_z if kind == NARROW else abs(mean) / msd, mean, msd, run=n)
+        f.weight = soft_weight(f.z, k if kind == NARROW else k_broad, soft_width)
+        f.accepted = f.weight > 0
+        if not f.accepted:
+            f.reason = (f"no two adjacent points beyond {k - soft_width:g} SD" if kind == NARROW
+                        else f"mean {mean:+.2f} dB is within {k_broad - soft_width:g} SD ({msd:.2f} dB)")
         feats.append(f)
     return feats
 

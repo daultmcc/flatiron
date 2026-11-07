@@ -142,6 +142,7 @@ Two optional ways to tell the scheduler where to look:
 2. **Baseline.** A penalised cubic B-spline in log2 f with knots every 2W. The curvature penalty sets its stiffness, so it scales as W⁴ (0.1 relative to the data weight at W = 1 octave); a smoothing spline's scale goes as the penalty's fourth root. It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly.
 3. **Residual.** R = D − baseline, with its full covariance.
 4. **Features.** R is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. A lobe narrower than 1/2 octave at half height is *narrow*: it's kept if at least two adjacent points exceed k·SD (k = 2). A wider lobe is *broad*: it's kept if its mean exceeds k\_broad times the SD of that mean (k\_broad = 2.5). Features outside \[f\_lo, f\_hi\] are dropped.
+   **Soft rejection** (`--soft-width`, off by default). A feature within that many SDs of k or k\_broad is partly corrected, by a smooth step from 0 at the threshold minus the width to 1 at the threshold plus the width, so it doesn't appear or vanish as its statistic crosses the threshold. The statistic for a narrow feature is the smaller |R|/SD of its best two adjacent points, which is the quantity the plain test compares with k. The filter fit's tolerance is tightened over a partial feature just enough to give it a filter, because its target can otherwise fall inside the fit's stopping rule; that leaves the smallest filter allowed as the only gate on it.
    **Inside broad regions.** A broad lobe that isn't corrected as a whole (kept as tonality, the default, or not significant) can still carry narrow features. It's searched again: together with the same-sign pieces it was split from at a valley that stays clear of zero (beyond k SD), so the flank beside a narrow dip isn't taken for a feature of its own. The region's residual is taken against a Gaussian-weighted local linear smooth over the region alone (FWHM 1/2 octave; local linear, so it doesn't lag at the region's ends), and every lobe of that is given the narrow test. Features found this way are corrected against the local smooth, with its (smaller) error bars, and checked for consistency the same way.
 5. **Seating.** With two or more sessions, each kept feature's level over its half-height core is taken in every session's curve. It's corrected to the median session's level (the sessions weighted by precision), as a share of its level in L, and dropped if that's under 20% (most seatings show little of it). A resonance only some seatings have sits lower in L than in those seatings, so the share can be above 100%. The model has already shrunk the sessions together as far as the data allow, so there's no significance gate and no abrupt switch at a p-value; the share stays near 100% when they agree. `--no-consistency` turns the scaling and dropping off. A Gaussian deviation can shrink an on-or-off resonance toward the average, which criterion 11 tests. The report gives two numbers per feature, even with one session: the SD of its average level, which decides whether it's real, and the spread between seatings, which says how far off the correction will be on a typical seating. The spread is the RMS of each session's difference from the average level, with that deviation's posterior variance included, since the posterior means alone are shrunk together.
 6. **Target.** C = −R over kept features, cuts limited to 12 dB. Boosts are capped at +4 dB for narrow features (often fit-dependent cancellations) and +6 dB for broad ones. With `--broad`, the broad part is scaled by the strength (0 to 100%, default 100%). Without it, broad features aren't in the target at all.
@@ -161,6 +162,7 @@ Every setting is downstream of the cached perceptual fit, so changing it needs n
 | Consensus reference, its smoothing | none, 1/2 octave | `-r consensus:A,B`, `--consensus-smooth` |
 | Veto against other profiles | none, 1.5 dB import | `--veto A,B`, `--veto-mode feature\|pointwise`, `--veto-import` |
 | Significance k, k\_broad | 2, 2.5 SD | `-k/--k`, `--k-broad` |
+| Soft rejection width | 0 SD (off) | `--soft-width` |
 | Broad correction, strength | off, 100% | `--broad`, `-s/--broad-strength` (needs `--broad`) |
 | Band budget | 20 per channel | `-b/--bands` |
 | Boost caps, cut cap | +4 narrow, +6 broad, −12 dB | `--boost-narrow`, `--boost-broad`, `--max-cut` |
@@ -491,6 +493,18 @@ These come from scratch code, not in the repository, run on the `sundara` and `s
 
 - The covariance has rank 106 on both grids. Neighbour correlation rises from 0.72 to 0.98 on the finer one.
 - Consensus SD, measurement noise only, compared with Monte Carlo: per-frequency weights give 0.19 dB against 0.43 dB with τ\_hp = 0, and 0.28 dB against 0.42 dB with τ\_hp = 1 dB. The covariance formula under Comparing profiles matches Monte Carlo in both. This test ran on 1/96-octave curves, without robust reweighting.
+
+### Soft rejection
+
+These come from scratch code, not in the repository, on `ft1`, `hd560` and pooled `sundara`, comparing the fit with and without treble noise (r, built on a separate branch). The table gives the largest target difference between the two per ear, averaged over six ears on default settings, with "no gate" accepting every narrow lobe.
+
+| Width | 0 | 0.5 | 1 | No gate |
+| --- | --- | --- | --- | --- |
+| Largest target difference | 0.73 dB | 0.48 dB | 0.43 dB | 0.46 dB |
+
+Marginal flips are about a third of the peak change and about 13% of the RMS change at width 0.5; the rest is the curve moving. With the veto on, the jumps are veto flips, which this doesn't touch. Filter fits jump by themselves, by up to 2.9 dB with no change in the target, because anything within 2 SD is accepted. At the current stop rule soft rejection worsens that: the mean largest step goes from 0.55 to 1.20 dB. So compare targets rather than filters when judging a model change.
+
+On known curves (40 simulations for each of six ears), two runs from the same curve differ by 1.78 dB RMS in the target when hard, 1.76 at width 0.5 and 1.74 at width 1, with error against the truth unchanged. Soft rejection doesn't reduce false left/right imbalance: that's measurement noise.
 
 ### Unit and truth tests
 

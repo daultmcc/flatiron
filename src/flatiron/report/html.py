@@ -66,6 +66,7 @@ def _features_table(feats, veto=False):
              *(("" if f.veto is None else veto_line(f),
                 "" if f.veto is None else f"{f.veto.correction_db:+.1f}",) if veto else ()),
              ("yes" + (", inside a broad region" if f.inside_broad else "")
+              + (f", {f.weight:.0%} by significance" if f.weight < 1 else "")
               + (f"; {f.reason}" if f.reason else "")) if f.accepted else f"no: {f.reason}")
             for f in sorted(feats, key=lambda f: f.fc)]
     head = ["centre", "width (oct)", "residual dB", "z", "level SD", "seating spread"]
