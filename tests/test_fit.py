@@ -280,6 +280,7 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     import flatiron.fit.run as run_mod
 
     monkeypatch.setattr(run_mod, "fit_hierarchical", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
+    monkeypatch.setattr(run_mod, "fit_balanced", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
     assert main(["config", "-b", "2"]) == 0
     assert main(["report"]) == 0
     out = capsys.readouterr().out
@@ -301,6 +302,26 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     assert main(["config", "--sessions", ids[0]]) == 0
     assert run_mod.current_fit(prof).fits["L"].n_trials == 80
     assert main(["config", "--sessions", "all"]) == 0 and run_mod.profile_session_ids(prof) is None
+
+    # The balance prior: a scale on its SDs, 0 for each ear on its own.
+    from flatiron.model.grid import interp_matrix
+
+    def lr(pf):
+        f = np.geomspace(1000, 13000, 100)
+        d = interp_matrix(pf.fits["L"].grid, f) @ pf.fits["L"].L - interp_matrix(pf.fits["R"].grid, f) @ pf.fits["R"].L
+        return float(np.std(d))
+
+    coupled = lr(run_mod.current_fit(prof))
+    assert main(["config", "--balance", "-1"]) == 1
+    assert main(["config", "--balance", "0"]) == 0 and "balance: 1 -> 0" in capsys.readouterr().out
+    alone = run_mod.current_fit(prof)
+    assert lr(alone) > coupled
+    trials, _ = prof.history()
+    for e in "LR":  # off, the fit is each ear's own
+        own = run_mod.cached_fit(prof, trials[e], alone.fits[e].grid)
+        assert np.allclose(alone.fits[e].L, own.L)
+    assert main(["config", "--balance", "3"]) == 0
+    assert coupled < lr(run_mod.current_fit(prof)) < lr(alone)
 
 
 def test_preserve_tonality_keeps_the_broad_shape(sim_design):

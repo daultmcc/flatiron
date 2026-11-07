@@ -340,6 +340,9 @@ FIT_OPTIONS = [
     (("--veto-softness",), "veto_softness",
      dict(type=float, help="above 0, the feature veto weighs its candidates instead of picking one, with no sharp "
                            "edges; 0: all or nothing")),
+    (("--balance",), "balance",
+     dict(type=float, help="strength of the prior that the ears are alike, as a multiple of the default SDs "
+                           "(1.5 dB below 5 kHz, 3 above 8 kHz): larger is looser; 0: each ear on its own")),
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),

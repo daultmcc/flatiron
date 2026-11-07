@@ -332,3 +332,61 @@ def test_warm_start_keeps_treble_noise():
     t = simulate(EarTruth(phon=None), 800, 4, g, treble_noise=2.5)
     full = fit_hierarchical(t, g)
     assert fit_hierarchical(t, g, init=full, fit_hyper=False).treble_noise == pytest.approx(full.treble_noise)
+
+
+# -- channel balance -----------------------------------------------------------
+
+def _two_ears(n=300, seed=0, r_extra=()):
+    from flatiron.audio.biquad import PeakingFilter
+
+    g = log_grid()
+    gr = log_grid(step_oct=1 / 20)  # the ears' grids needn't match
+    base = [PeakingFilter(3000.0, 5.0, 4.0), PeakingFilter(8000.0, -4.0, 6.0)]
+    tL = EarTruth(phon=None, features=base)
+    tR = EarTruth(phon=None, features=base + list(r_extra))
+    parts = {"L": [simulate(tL, n, seed + s, g) for s in range(2)],
+             "R": [simulate(tR, n, seed + 10 + s, gr) for s in range(2)]}
+    trials = {e: Trials.grouped(p) for e, p in parts.items()}
+    fits = {"L": fit_hierarchical(trials["L"], g), "R": fit_hierarchical(trials["R"], gr)}
+    return trials, fits, {"L": tL, "R": tR}
+
+
+def _shape(f, freqs):
+    from flatiron.model.grid import interp_matrix
+
+    x = interp_matrix(f.grid, freqs) @ f.L
+    return x - x.mean()
+
+
+def test_a_weak_balance_prior_leaves_each_ear_as_it_was():
+    from flatiron.model.hierarchical import fit_balanced
+    from flatiron.model.probit import BalancePrior
+
+    trials, fits, _ = _two_ears()
+    out = fit_balanced(trials, fits, BalancePrior(100.0, 100.0))
+    for e in "LR":
+        assert np.abs(out[e].L - fits[e].L).max() < 0.05
+        assert np.allclose(out[e].sd, fits[e].sd, rtol=0.01)
+        assert out[e].sigma0 == fits[e].sigma0 and out[e].tau_hi == fits[e].tau_hi
+        assert out[e].group_cov.shape == fits[e].group_cov.shape
+
+
+def test_the_balance_prior_pulls_equal_ears_together_and_keeps_a_large_real_difference_in_part():
+    from flatiron.audio.biquad import PeakingFilter
+    from flatiron.model.hierarchical import fit_balanced
+
+    f = np.geomspace(1000, 13000, 200)
+    trials, fits, _ = _two_ears()
+    out = fit_balanced(trials, fits)
+    before = np.sqrt(np.mean((_shape(fits["L"], f) - _shape(fits["R"], f)) ** 2))
+    after = np.sqrt(np.mean((_shape(out["L"], f) - _shape(out["R"], f)) ** 2))
+    assert after < 0.7 * before
+    for e in "LR":  # the coupling adds information, so error bars shrink
+        assert np.median(out[e].sd) < np.median(fits[e].sd)
+
+    # An 8 dB peak in one ear alone is kept, but shrunk: a Gaussian prior pulls
+    # hardest on the largest differences (about 55% kept at 600 trials per ear).
+    trials, fits, truth = _two_ears(r_extra=[PeakingFilter(5000.0, 8.0, 3.0)])
+    out = fit_balanced(trials, fits)
+    d = lambda fs: float((_shape(fs["R"], f) - _shape(fs["L"], f))[np.argmin(np.abs(f - 5000))])
+    assert d(out) > 0.45 * d(fits) and d(out) > 4.0

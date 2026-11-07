@@ -86,6 +86,10 @@ class CorrectionSettings:
     # candidate this share further from the others than the most central one
     # weighs 1/e of it.
     veto_softness: float = 0.1
+    # The channel-balance prior's SDs (DESIGN.md, "Channel balance") as a
+    # multiple of the defaults; 0: each ear fitted on its own. Unlike the rest,
+    # this changes the perceptual fit (cached separately, and quick).
+    balance: float = 1.0
 
     def __post_init__(self):
         object.__setattr__(self, "veto", tuple(self.veto))
@@ -103,6 +107,8 @@ class CorrectionSettings:
             raise ValueError("the veto's import limit can't be negative")
         if not 0 <= self.veto_softness <= 1:
             raise ValueError("the veto's softness must be 0 to 1")
+        if not 0 <= self.balance <= 10:
+            raise ValueError("the balance prior's scale must be 0 to 10 (0: off)")
         if not 1 / 3 - 1e-9 <= self.max_width_oct <= 2 + 1e-9:
             raise ValueError("max feature width must be 1/3 to 2 octaves")
         if not 0 <= self.broad_strength <= 1:

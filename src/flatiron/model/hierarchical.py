@@ -39,8 +39,8 @@ from scipy import optimize
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.special import expit, logit, ndtr
 
-from flatiron.model.grid import second_difference
-from flatiron.model.probit import Priors, ProbitFit, Trials, band_rows, noise_sd
+from flatiron.model.grid import interp_matrix, log_grid, second_difference
+from flatiron.model.probit import BalancePrior, Priors, ProbitFit, Trials, band_rows, noise_sd
 
 SQRT_2PI = np.sqrt(2 * np.pi)
 # Box bounds on the hyperparameters, in their unconstrained coordinates.
@@ -173,7 +173,10 @@ class _Model:
         dp = (1 - self.lam) * np.exp(-0.5 * z * z) / SQRT_2PI / self.sigma
         return -(self.y / p - (1 - self.y) / (1 - p)) * dp, dp * dp / (p * (1 - p))
 
-    def factor(self, a, v) -> _Factor:
+    def schur(self, a, v):
+        """The Fisher matrix with every group eliminated: the Schur complement
+        on (L, bias) and its right-hand side, the gradient on (L, bias), and
+        each group's factor, coupling and gradient."""
         n = self.n
         g, w = self._trial_terms(a, v)
         L = a[:n]
@@ -204,10 +207,17 @@ class _Model:
             rhs -= X.T @ solve_triangular(Lk, gk, lower=True, check_finite=False)
             logdet += 2 * np.log(np.diag(Lk)).sum()
             H[k], C[k], gv[k] = Lk, Ck, gk
+        return S, rhs, ga, H, C, gv, logdet
+
+    def group_steps(self, da, H, C, gv) -> dict:
+        return {k: -cho_solve((H[k], True), gv[k] + C[k].T @ da, check_finite=False) for k in self.nonempty}
+
+    def factor(self, a, v) -> _Factor:
+        S, rhs, ga, H, C, gv, logdet = self.schur(a, v)
         cS = cho_factor(S, lower=True, check_finite=False)
         logdet += 2 * np.log(np.diag(cS[0])).sum()
         da = -cho_solve(cS, rhs, check_finite=False)
-        dv = {k: -cho_solve((H[k], True), gv[k] + C[k].T @ da, check_finite=False) for k in self.nonempty}
+        dv = self.group_steps(da, H, C, gv)
         slope = ga @ da + sum(gv[k] @ dv[k] for k in self.nonempty)
         return _Factor(cS, H, C, da, dv, -0.5 * float(slope), float(logdet))
 
@@ -241,9 +251,12 @@ class _Model:
 
     # -- the answer -----------------------------------------------------------
 
-    def covariances(self, a, v, fac: _Factor, all_groups: bool):
+    def covariances(self, a, v, fac: _Factor, all_groups: bool, Sinv: np.ndarray | None = None):
+        """Sinv: the inverse of the Schur complement on (L, bias), if it isn't
+        fac.S's (the ear's block of a joint fit's)."""
         n = self.n
-        Sinv = cho_solve(fac.S, np.eye(n + 1), check_finite=False)
+        if Sinv is None:
+            Sinv = cho_solve(fac.S, np.eye(n + 1), check_finite=False)
         P = np.eye(n) - 1.0 / n
         cov_L = P @ Sinv[:n, :n] @ P
 
@@ -366,12 +379,120 @@ def fit_hierarchical(trials: Trials, grid: np.ndarray, priors: Priors = Priors()
     m.set_noise(h0)
     m.set_tau(t0)
     a, v, val, fac, ok = m.solve(a0, v0, tol)
-    cov_L, bias_sd, focus_cov, focus_cross, group_cov, group_u_cov = m.covariances(a, v, fac, all_groups)
+    return _result(m, a, v, val, fac, converged and ok, tau_free, len(trials), all_groups)
+
+
+def _result(m: _Model, a, v, val, fac: _Factor, converged: bool, tau_free: bool, n_trials: int,
+            all_groups: bool, Sinv: np.ndarray | None = None) -> ProbitFit:
+    cov_L, bias_sd, focus_cov, focus_cross, group_cov, group_u_cov = m.covariances(a, v, fac, all_groups, Sinv)
     L = a[:m.n]
     return ProbitFit(
-        grid=m.grid, L=L - L.mean(), cov=cov_L, sigma0=m.s0, d0=m.d0, lapse=m.lam, n_trials=len(trials),
-        neg_log_post=val, converged=converged and ok, bias_db=float(a[m.n]), bias_sd=bias_sd,
+        grid=m.grid, L=L - L.mean(), cov=cov_L, sigma0=m.s0, d0=m.d0, lapse=m.lam, n_trials=n_trials,
+        neg_log_post=val, converged=converged, bias_db=float(a[m.n]), bias_sd=bias_sd,
         treble_noise=m.treble_noise,
         tau_lo=m.tau_lo, tau_hi=m.tau_hi, tau_fitted=tau_free, tau=m.tau, u=v @ m.Phi.T, v=v,
         group_trials=np.diff(m.starts), group_cov=group_cov, group_u_cov=group_u_cov,
         focus_cov=focus_cov, focus_cross=focus_cross)
+
+
+# -- the two ears together (DESIGN.md, "Channel balance") ----------------------
+
+BALANCE_STEP_OCT = 1 / 48  # the grid the L-R difference is judged on
+BALANCE_NUGGET = 1e-3  # share of the variance left uncorrelated: numerical, and keeps the precision finite
+
+
+def balance_precision(grid_a: np.ndarray, grid_b: np.ndarray, balance: BalancePrior) -> np.ndarray:
+    """The prior precision on (L_a, L_b) of their difference D = L_a - L_b:
+    D ~ N(0, K) on a common grid, K with amplitude lo_db below 5 kHz and
+    hi_db above 8 kHz and a squared-exponential correlation of width
+    ell_oct, plus a free constant (each ear's level is a gauge)."""
+    lo, hi = max(grid_a[0], grid_b[0]), min(grid_a[-1], grid_b[-1])
+    G = log_grid(lo, hi, BALANCE_STEP_OCT)
+    x = np.log2(G)
+    amp = tau_curve(G, balance.lo_db, balance.hi_db)
+    K = amp[:, None] * np.exp(-0.5 * ((x[:, None] - x[None, :]) / balance.ell_oct) ** 2) * amp[None, :]
+    K[np.diag_indices_from(K)] += BALANCE_NUGGET * amp**2
+    Q = cho_solve(cho_factor(K, lower=True), np.eye(G.size))
+    q1 = Q.sum(axis=1)
+    Q -= np.outer(q1, q1) / q1.sum()
+    M = np.hstack([interp_matrix(grid_a, G), -interp_matrix(grid_b, G)])
+    return M.T @ Q @ M
+
+
+def fit_balanced(trials: dict, fits: dict, balance: BalancePrior = BalancePrior(), priors: Priors = Priors(),
+                 all_groups: bool = True, tol: float = TOL_FINAL) -> dict:
+    """Both ears' curves fitted together, with a prior that their difference
+    is small (`balance`). Each ear keeps the noise and seating spread of its
+    own fit in `fits` (from fit_hierarchical, which also warm-starts this):
+    those are estimated ear by ear, and only the curves are coupled."""
+    ears = list(fits)
+    if len(ears) != 2:
+        raise ValueError("a balanced fit needs exactly two ears")
+    ms, a0, v0 = [], [], []
+    for e in ears:
+        f = fits[e]
+        m = _Model(trials[e], f.grid, priors)
+        m.set_noise([np.log(f.sigma0), np.log(f.d0), logit(f.lapse), np.log(f.treble_noise)])
+        m.set_tau(np.log([f.tau_lo, f.tau_hi]))
+        v = np.zeros((m.n_groups, m.r))
+        if f.v is not None and f.v.shape[1] == m.r:
+            k = min(f.v.shape[0], m.n_groups)
+            v[:k] = f.v[:k]
+        ms.append(m), a0.append(np.append(f.L, f.bias_db)), v0.append(v)
+    sizes = [m.n + 1 for m in ms]
+    cut = np.cumsum([0] + sizes)
+    Q = np.zeros((cut[-1], cut[-1]))
+    Qc = balance_precision(ms[0].grid, ms[1].grid, balance)
+    idx = np.r_[cut[0]:cut[0] + ms[0].n, cut[1]:cut[1] + ms[1].n]  # the levels, not the biases
+    Q[np.ix_(idx, idx)] = Qc
+
+    def objective(a, vs):
+        return sum(m.objective(a[cut[i]:cut[i + 1]], vs[i]) for i, m in enumerate(ms)) + 0.5 * a @ Q @ a
+
+    def step(a, vs):
+        parts = [m.schur(a[cut[i]:cut[i + 1]], vs[i]) for i, m in enumerate(ms)]
+        S = Q.copy()
+        for i, p in enumerate(parts):
+            S[cut[i]:cut[i + 1], cut[i]:cut[i + 1]] += p[0]
+        Qa = Q @ a
+        ga = np.concatenate([p[2] for p in parts]) + Qa
+        rhs = np.concatenate([p[1] for p in parts]) + Qa
+        cS = cho_factor(S, lower=True, check_finite=False)
+        da = -cho_solve(cS, rhs, check_finite=False)
+        dvs = [m.group_steps(da[cut[i]:cut[i] + m.n + 1], *parts[i][3:6]) for i, m in enumerate(ms)]
+        slope = ga @ da + sum(parts[i][5][k] @ dvs[i][k] for i, m in enumerate(ms) for k in m.nonempty)
+        return cS, parts, da, dvs, -0.5 * float(slope)
+
+    a, vs = np.concatenate(a0), v0
+    val = objective(a, vs)
+    ok = False
+    for _ in range(MAX_ITER):
+        cS, parts, da, dvs, decrement = step(a, vs)
+        if decrement < tol:
+            ok = True
+            break
+        t = 1.0
+        while True:
+            na = a + t * da
+            nvs = [v.copy() for v in vs]
+            for i, m in enumerate(ms):
+                for k in m.nonempty:
+                    nvs[i][k] += t * dvs[i][k]
+            new = objective(na, nvs)
+            if new <= val or t < 1e-4:
+                break
+            t /= 2
+        if new > val:
+            ok = decrement < 1e-2
+            break
+        a, vs, val = na, nvs, new
+    else:
+        cS, parts, da, dvs, decrement = step(a, vs)
+    Sinv = cho_solve(cS, np.eye(cut[-1]), check_finite=False)
+    out = {}
+    for i, (e, m) in enumerate(zip(ears, ms)):
+        ai = a[cut[i]:cut[i + 1]]
+        fac = _Factor(None, parts[i][3], parts[i][4], da[cut[i]:cut[i + 1]], dvs[i], decrement, 0.0)
+        out[e] = _result(m, ai, vs[i], m.objective(ai, vs[i]), fac, fits[e].converged and ok, fits[e].tau_fitted,
+                         len(trials[e]), all_groups, Sinv[cut[i]:cut[i + 1], cut[i]:cut[i + 1]])
+    return out

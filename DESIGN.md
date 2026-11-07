@@ -120,7 +120,23 @@ P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{\bar L_{g,a} - \bar 
 - σ₀, d₀, r and λ, and then τ, are set by maximising the Laplace-approximated marginal likelihood with L and the u\_g integrated out (empirical Bayes, Nelder–Mead started from both the prior means and the warm start). A joint MAP over the curve and the noise overfits: with a few trials per point, the curve separates the answers and σ₀ collapses. Below 200 trials per ear the noise, r included, stays at the prior, because the evidence underestimates σ₀ with fewer trials. The noise is fitted with τ at its prior, then τ once with the noise fixed. Searching both together, or repeating the pass, runs away at sessions of about 110 trials: τ grows to several times the truth while σ₀ collapses. One pass leaves some of a large spread in σ₀, so a true 3 dB reads low. The curves are then the MAP given these.
 - The solve is Fisher scoring. Each u\_g is held in a whitened basis of the correlation's significant eigenvectors (about 85 unknowns), and sessions connect only through (L, b), so the matrix is block-arrow: eliminating each session in turn leaves a Schur complement on (L, b), and the work grows linearly with the number of sessions.
 - Error bars come from the Laplace approximation (inverse Fisher information), projected onto the gauge. L's SD includes τ² divided by the number of sessions, so it stops shrinking in proportion to trials once each seating is well known. Every displayed curve carries a ±1 SD band.
+- The two ears' curves are fitted together under a prior that they're alike: see "Channel balance".
 - A session selected with `--sessions`, pooled in with `--pool`, or run by `verify` is simply one more group, and checkpoints work as usual. Perceptual fits carry a model version. Bumping it recomputes every fit from the stored trials on next use, so results can change with no new trials, features near the threshold most of all.
+
+### Channel balance
+
+Each ear is first fitted on its own, as above; that fit gives the ear's noise and τ. The two curves are then fitted together, with those held fixed, under a prior on their difference D = L\_L − L\_R. D is Gaussian on a common 1/48-octave grid, with an SD of 1.5 dB below 5 kHz and 3 dB above 8 kHz (log-interpolated between them) and a squared-exponential correlation of width 1/8 octave. Its constant is free, since each ear's level is a gauge. `config --balance` scales both SDs (larger is looser; 0 fits each ear on its own). A profile in a consensus or veto uses its own setting. The joint solve is the same Fisher scoring with both ears' Schur complements in one matrix: sessions belong to one ear, so the coupling is only between the two curves. Error bars and session curves come from the joint fit. The scheduler still fits each ear on its own while it picks trials (`model/hierarchical.py`, `fit_balanced`; `fit/run.py`, `BALANCE`).
+
+Why: at the real profiles' trial counts, most of each L−R difference is within its error bars, and a consensus reference passed one headphone's apparent imbalance on to the others. For Sundara, the reference's L−R was 1.62 dB RMS (4.9 at most, mostly HD560 above 11 kHz) and is about 0.9 with the prior. The size comes from the real profiles. A rough empirical-Bayes fit of D, pooled over FT1, HD560 and Sundara, gave 1 to 1.5 dB below 5 kHz and 2 to 4 dB above 8 kHz, and preferred a width of 1/8 octave to 1/12 or 1/4.
+
+Real differences are kept, but shrunk. They still show where the data are strong: HD560's right ear is 8 to 12 dB down above 11 kHz (about 4 SD). Sundara's own sessions and SundaraTone's, which share no trials, have L−R curves correlated at +0.57. Other headphone pairs correlate at +0.2 to +0.5, so part of the difference may be the listener's ears rather than the drivers. A Gaussian prior pulls hardest on the largest differences: an 8 dB, Q 3 peak in one ear at 600 trials per ear keeps about 55% of its L−R difference. It washes out as trials grow, but slowly.
+
+Thicker tails may be worth trying later: a Student-t or a mixture (a narrow and a wide Gaussian) for D, in place of the Gaussian. It would pull small differences together as much as now, but leave large, well-measured ones nearly alone. The soft local pooling below is close to the mixture, and it kept slightly more of an ear-specific peak in simulation. Not tried in the joint fit: a non-Gaussian D needs an inner iteration (e.g. reweighting) and makes the result depend on the starting point.
+
+Measured in scratch with a prototype that applied the prior to each ear's finished fit as a Gaussian update; on the real profiles it agrees with the joint fit within 0.4 dB. The test used 150 simulated two-ear listeners (seating spread 0.5/1.5 dB, independent between ears) at 1 to 3 sessions of 110 trials per ear. The true L−R was none, a mild Gaussian difference (0.5/1.5 dB), one the real profiles' size (1/2.5 dB), or mild plus a 3 to 5 dB, Q 6 peak in one ear. Against fitting each ear alone, the target error fell 0.12 to 0.24 dB RMS in every scenario, with fewer misses and false corrections and coverage unchanged. The cost is the ear-specific peak: at 3 sessions, 0.47 of it is corrected, against 0.58 with no prior. Also tried, the same way:
+
+- Firmer priors (0.5/1.5 and 1/2 dB) and always pooling the ears gained a little more on the target. They kept less of the ear-specific peak (0.28 to 0.39) and made the error bars overconfident.
+- Pooling locally where the ears are consistent: the Bayes factor in half-octave windows, equal against a 1.5/3 dB difference. Blended by the probability of equality, it did about as well as the prior (0.49 of the peak) with slightly overconfident error bars. Pooled outright where that probability is over 1/2, it gained least and added false corrections, from the steps between pooled and separate.
 
 ### Adaptive selection
 
@@ -155,11 +171,12 @@ Two optional ways to tell the scheduler where to look:
 
 ### Settings
 
-Every setting is downstream of the cached perceptual fit, so changing it needs no new trials. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
+Every setting but the channel balance is downstream of the cached perceptual fit, so changing it needs no new trials. The balance changes the joint fit of the two ears, which is quick and cached separately. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
 
 | Setting | Default | `config` option |
 | --- | --- | --- |
 | Max feature width W | 1 octave (1/3 to 2) | `-w/--width` |
+| Channel balance | 1 (scale on 1.5/3 dB; 0: off) | `--balance` |
 | Reference, listening level | `iso226`, 60 phon | `-r/--reference`, `--phon` |
 | Consensus reference, its smoothing | none, 1/2 octave | `-r consensus:A,B`, `--consensus-smooth` |
 | Veto against other profiles | none, 1.5 dB import | `--veto A,B`, `--veto-mode feature\|pointwise`, `--veto-import` |
@@ -176,7 +193,7 @@ Every setting is downstream of the cached perceptual fit, so changing it needs n
 | Other profiles pooled in | none | `--pool` |
 | Method | features | `--method features\|smooth\|match`, `--smooth-width` |
 
-`config` with no options lists every setting, starred where changed. `--reset [name ...]` returns the named settings, or all of them, to their defaults. Some combinations are refused: `--veto` needs `--method features`, `--method smooth` doesn't combine with `--broad`, and `--smooth-width`, `--veto-mode`, `--veto-import` and `--consensus-smooth` need the setting they modify. Limits: W 1/3 to 2 octaves, `--consensus-smooth` 0 to 2 octaves, `--smooth-width` 1/8 to 1 octave, strength 0 to 100%, 1 to 32 bands.
+`config` with no options lists every setting, starred where changed. `--reset [name ...]` returns the named settings, or all of them, to their defaults. Some combinations are refused: `--veto` needs `--method features`, `--method smooth` doesn't combine with `--broad`, and `--smooth-width`, `--veto-mode`, `--veto-import` and `--consensus-smooth` need the setting they modify. Limits: W 1/3 to 2 octaves, `--balance` 0 to 10, `--consensus-smooth` 0 to 2 octaves, `--smooth-width` 1/8 to 1 octave, strength 0 to 100%, 1 to 32 bands.
 
 The correction range can only move within the measured range, and the measured range, grid and stimulus are fixed when the trials are collected. Features wider than about an octave are only as well constrained as the longest jumps (1 octave).
 
@@ -633,6 +650,7 @@ Those are 7 of the 14 alternatives tried. Much heavier and lighter tails both pr
 ## Known limitations
 
 - The MAP isn't unique: the lapse term makes the posterior non-concave, so two nearby solutions can exist. On one simulated data set, moving σ₀ from 1.12 to 1.15 dB moved the curve by up to 1 dB, with nothing else changed. Which solution a fit lands on can depend on small changes to the noise parameters, which is one way a feature near the threshold can flip. Over 45 seeds this averages out (0.66 dB shape error, 1.12 worst).
+- **The baseline can tip.** The robust baseline's Tukey weights depend on residual/SD. When a block wider than W sits far off the reference, the baseline either rises to meet it or rejects it as a feature, and the choice can turn on the error bars' scale. Two solutions coexist near the edge. On SundaraTone L against ISO 226, 6 to 13 kHz sits 8 to 15 dB above 4 kHz. Scaling the SDs by 0.875 against 0.9 moved the baseline at 13 kHz from 3.5 to 7.6 dB, and the target by up to 6 dB, merging the 7 and 11 kHz peaks. Sundara L is as close to the edge (3.5 dB per 2.5% of SD) and HD560 R is moderately sensitive (1 dB); FT1 isn't. Any change that shrinks the error bars can tip it, the channel-balance prior included, and so can a new session. Against the consensus reference the block is mostly in the reference and the baseline is stable (0.4 dB at most per 2.5%).
 - Broad corrections (with `--broad`) are only as good as the reference. Individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
 - Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
 - The diffuse-field reference needs a user-supplied ISO 389-7 difference table.
