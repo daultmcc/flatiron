@@ -2,8 +2,9 @@
 
 Per ear, a trial in group g (a session) depends on L_g = L + u_g:
 
-    P(A) = lapse/2 + (1 - lapse) * Phi((Lg_a - Lg_b + off + bias * order) / sigma(d)),
-    sigma(d) = sigma0 * sqrt(1 + (d/d0)^2), d = |log2(f_a/f_b)|,
+    P(A) = lapse/2 + (1 - lapse) * Phi((Lg_a - Lg_b + off + bias * order) / sigma),
+    sigma = sigma0 * sqrt((s(f_a)^2 + s(f_b)^2) / 2) * sqrt(1 + (d/d0)^2), d = |log2(f_a/f_b)|,
+    s(f) = 1 below 6 kHz, treble_noise above 10 kHz, log-interpolated between,
 
 where `off` is every known level difference between A and B (Δ_a − Δ_b plus any
 active or preview EQ gain), Lg_a and Lg_b are L_g averaged (in dB) over each
@@ -23,7 +24,7 @@ The solve is Fisher scoring. Groups connect only through (L, bias), so the
 Fisher matrix is block-arrow: eliminating each v_g in turn leaves a Schur
 complement on (L, bias), and the work grows linearly with the number of groups.
 
-The noise (sigma0, d0, lapse) and then tau are set by maximising the
+The noise (sigma0, d0, lapse, treble_noise) and then tau are set by maximising the
 Laplace-approximated marginal likelihood with L and the u_g integrated out. A
 joint MAP overfits: with a few trials per grid point the curve can separate the
 answers and sigma0 collapses. With few trials the noise stays at the prior; with
@@ -38,14 +39,15 @@ from scipy import optimize
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.special import expit, logit, ndtr
 
-from flatiron.model.grid import octaves, second_difference
-from flatiron.model.probit import Priors, ProbitFit, Trials, band_rows
+from flatiron.model.grid import second_difference
+from flatiron.model.probit import Priors, ProbitFit, Trials, band_rows, noise_sd
 
 SQRT_2PI = np.sqrt(2 * np.pi)
 # Box bounds on the hyperparameters, in their unconstrained coordinates.
 LOG_SIGMA0_BOUNDS = (np.log(0.1), np.log(10.0))
 LOG_D0_BOUNDS = (np.log(0.05), np.log(4.0))
 LOGIT_LAPSE_BOUNDS = (logit(1e-4), logit(0.3))
+LOG_TREBLE_NOISE_BOUNDS = (np.log(0.2), np.log(5.0))
 LOG_TAU_BOUNDS = (np.log(0.02), np.log(15.0))
 GAUGE_SD = 0.01  # dB, soft gauge mean(L) = 0 used during optimisation
 # With fewer trials than this the evidence's spurious small-sigma0 basin wins,
@@ -57,7 +59,7 @@ TAU_LO_HZ, TAU_HI_HZ = 5000.0, 8000.0
 BASIS_TOL = 1e-6  # eigenvalues below this share of the largest are dropped
 TOL_FINAL = 1e-7  # Newton decrement (nats) for a converged fit
 TOL_REFIT = 1e-3  # looser, for the refit after each answer: it starts next to the answer
-MAX_ITER = 60
+MAX_ITER = 200  # Fisher scoring can crawl along a nearly flat ridge: the lapse term makes this non-concave
 
 
 def tau_curve(grid, tau_lo: float, tau_hi: float) -> np.ndarray:
@@ -99,7 +101,7 @@ class _Model:
         self.off = trials.offset[order]
         self.order = trials.order[order]
         self.y = trials.a_louder[order].astype(float)
-        self.d = octaves(f_a, f_b)
+        self.f_a, self.f_b = f_a, f_b
         d2, w = second_difference(grid)
         scale = priors.smooth_sd_db * 24**1.5
         self.K = d2.T @ (w[:, None] * d2) / scale**2 + np.eye(n) / priors.level_sd_db**2
@@ -108,18 +110,19 @@ class _Model:
         self.P0[n, n] = 1.0 / priors.bias_sd_db**2
         self.Phi0 = _kernel_basis(grid.tobytes(), priors.ell_oct)
         self.r = self.Phi0.shape[1]
-        self.mu = np.array([np.log(priors.sigma0), np.log(priors.d0), logit(priors.lapse)])
+        self.mu = np.array([np.log(priors.sigma0), np.log(priors.d0), logit(priors.lapse), 0.0])
         self.mu_tau = np.log([priors.tau_lo, priors.tau_hi])
 
     # -- hyperparameters -----------------------------------------------------
 
     def set_noise(self, h) -> None:
         self.s0, self.d0, self.lam = float(np.exp(h[0])), float(np.exp(h[1])), float(expit(h[2]))
-        self.sigma = self.s0 * np.sqrt(1.0 + (self.d / self.d0) ** 2)
+        self.treble_noise = float(np.exp(h[3]))
+        self.sigma = noise_sd(self.f_a, self.f_b, self.s0, self.d0, self.treble_noise)
 
     def noise_prior(self, h) -> float:
         p = self.p
-        d = (np.asarray(h) - self.mu) / [p.sigma0_log_sd, p.d0_log_sd, p.lapse_logit_sd]
+        d = (np.asarray(h) - self.mu) / [p.sigma0_log_sd, p.d0_log_sd, p.lapse_logit_sd, p.treble_noise_log_sd]
         return 0.5 * float(d @ d)
 
     def set_tau(self, log_tau) -> None:
@@ -299,15 +302,15 @@ def fit_hierarchical(trials: Trials, grid: np.ndarray, priors: Priors = Priors()
     """
     fit_tau = fit_hyper if fit_tau is None else fit_tau
     m = _Model(trials, grid, priors, n_groups)
-    noise_lo = np.array([LOG_SIGMA0_BOUNDS[0], LOG_D0_BOUNDS[0], LOGIT_LAPSE_BOUNDS[0]])
-    noise_hi = np.array([LOG_SIGMA0_BOUNDS[1], LOG_D0_BOUNDS[1], LOGIT_LAPSE_BOUNDS[1]])
+    noise_lo = np.array([LOG_SIGMA0_BOUNDS[0], LOG_D0_BOUNDS[0], LOGIT_LAPSE_BOUNDS[0], LOG_TREBLE_NOISE_BOUNDS[0]])
+    noise_hi = np.array([LOG_SIGMA0_BOUNDS[1], LOG_D0_BOUNDS[1], LOGIT_LAPSE_BOUNDS[1], LOG_TREBLE_NOISE_BOUNDS[1]])
     tau_lo, tau_hi = np.full(2, LOG_TAU_BOUNDS[0]), np.full(2, LOG_TAU_BOUNDS[1])
 
     a0, v0 = np.zeros(m.n + 1), np.zeros((m.n_groups, m.r))
     h0, t0 = m.mu.copy(), m.mu_tau.copy()
     if init is not None:
         a0 = np.append(init.at(m.grid)[0], init.bias_db)
-        h0 = np.array([np.log(init.sigma0), np.log(init.d0), logit(init.lapse)])
+        h0 = np.array([np.log(init.sigma0), np.log(init.d0), logit(init.lapse), np.log(init.treble_noise)])
         t0 = np.log([init.tau_lo, init.tau_hi])
         if init.v is not None and init.v.shape[1] == m.r and np.array_equal(init.grid, m.grid):
             k = min(init.v.shape[0], m.n_groups)
@@ -368,6 +371,7 @@ def fit_hierarchical(trials: Trials, grid: np.ndarray, priors: Priors = Priors()
     return ProbitFit(
         grid=m.grid, L=L - L.mean(), cov=cov_L, sigma0=m.s0, d0=m.d0, lapse=m.lam, n_trials=len(trials),
         neg_log_post=val, converged=converged and ok, bias_db=float(a[m.n]), bias_sd=bias_sd,
+        treble_noise=m.treble_noise,
         tau_lo=m.tau_lo, tau_hi=m.tau_hi, tau_fitted=tau_free, tau=m.tau, u=v @ m.Phi.T, v=v,
         group_trials=np.diff(m.starts), group_cov=group_cov, group_u_cov=group_u_cov,
         focus_cov=focus_cov, focus_cross=focus_cross)

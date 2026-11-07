@@ -53,6 +53,7 @@ Flatiron doesn't:
 | τ(f), or τ\_seat | How much a seating typically differs from the average at frequency f. `tau_lo` and `tau_hi` in the code |
 | ℓ | Correlation width of u\_g across frequency |
 | λ, κ | The lapse rate, and the soft median's curvature penalty |
+| r | Listener noise above 10 kHz as a multiple of σ₀ (`treble_noise`) |
 | τ\_hp | Between-headphone spread in the soft median: one value per ear and profile set |
 | R\_h, m | Headphone h's residual, and the consensus |
 | A\_p | The interpolation matrix from the common grid to profile p's own grid |
@@ -101,21 +102,22 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 
 Sessions are groups in a hierarchical model. A reseat isn't judgment noise: judgment noise is new on every trial, while everything in a session shares one seating, so more trials in a session say more about that seating and little about seatings in general. Modelling that directly also works with a single session, where a consistency check run afterwards can't.
 
-Per ear, the unknowns are the average perceived levels L at the grid points (dB), each session g's deviation from them u\_g, a time-order bias b, and the parameters σ₀, d₀, λ and τ. A trial in session g depends on that seating's curve, L\_g = L + u\_g:
+Per ear, the unknowns are the average perceived levels L at the grid points (dB), each session g's deviation from them u\_g, a time-order bias b, and the parameters σ₀, d₀, r, λ and τ. A trial in session g depends on that seating's curve, L\_g = L + u\_g:
 
 ```latex
-P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{\bar L_{g,a} - \bar L_{g,b} + o + b\cdot s}{\sigma(d)}\right),
-\qquad \sigma(d) = \sigma_0 \sqrt{1 + (d/d_0)^2}
+P(A) = \frac{\lambda}{2} + (1 - \lambda)\,\Phi\!\left(\frac{\bar L_{g,a} - \bar L_{g,b} + o + b\cdot s}{\sigma}\right),
+\qquad \sigma = \sigma_0 \sqrt{\frac{q(f_a)^2 + q(f_b)^2}{2}} \sqrt{1 + (d/d_0)^2}
 ```
 
 - o is every known level difference between A and B: Δ\_a − Δ\_b, plus the gain of any EQ in effect (an active system EQ recorded for the session, or the preview EQ of a verify session).
 - L̄ is the curve averaged in dB over the trial's stimulus spectrum (11 points across a noise band; one point for tones), interpolated linearly in log-frequency from the grid.
 - s = +1 when A played first and −1 when B did; b is how many dB louder the first interval sounds. (The user's real data showed a strong first-interval preference, about +1 dB.) b has a N(0, 3 dB) prior and is a fixed effect, so its uncertainty is part of L's error bars.
 - d is the pair's separation in octaves.
-- Priors: smoothness, as a grid-independent curvature penalty equivalent to a 1 dB SD on second differences at 1/24 octave; a very weak N(0, 100 dB) prior on each level so the fit is well-posed with few trials; log-normal priors around σ₀ = 1 dB and d₀ = 0.5 octave; λ around 2%. The gauge is fixed by mean(L) = 0.
+- q(f) is 1 below 6 kHz and r above 10 kHz, log-interpolated between: listener noise can rise in the treble. Each tone brings its own variance, so a pair straddling the ramp gets a value in between. r has a log-normal prior centred on 1 (log SD 0.5). On the real data it reads about 2.5 in two left ears and 1.25 to 1.4 in the other four, where it can't be told from 1. The ramp's position is fixed, not fitted: anything from 6 to 12 kHz fits about equally well, and a hard cutoff fits no differently. The ramp only removes dependence on exactly where an edge falls.
+- Priors: smoothness, as a grid-independent curvature penalty equivalent to a 1 dB SD on second differences at 1/24 octave; a very weak N(0, 100 dB) prior on each level so the fit is well-posed with few trials; log-normal priors around σ₀ = 1 dB and d₀ = 0.5 octave; r around 1; λ around 2%. The gauge is fixed by mean(L) = 0.
 - u\_g is a Gaussian deviation with amplitude τ(f) and correlation width 1/12 octave (a squared-exponential correlation in log frequency), centred across frequency, because a constant offset cancels within a session. It also picks up anything else that changes between sessions: the noise token, the listener's state, or the stimulus when profiles are pooled. A session with few trials is pulled strongly toward the average, and a well-measured one can stand further from it. The width ℓ is fixed: on the real data the evidence shows no clear preference for a value. σ₀, d₀, λ and b are shared across an ear's sessions, so σ₀ doesn't have to absorb seating differences.
 - τ has two values, below 5 kHz and above 8 kHz, log-interpolated between them, per ear and profile, with log-normal priors (medians 0.5 and 1.5 dB, log SD 0.7). With fewer than two sessions of at least 60 trials in the ear, τ stays at those medians, so a single session's error bars allow for seatings not yet measured, rather than tightening without limit as trials are added. The medians are judgment calls. On the real data, treble spread is clear for one ear and profile, suggestive for another, and absent for the other two. About three sessions of 110 trials per ear can detect a spread of 2 dB or more but can't resolve one under about 1 dB. The prior decides that range, and it matters little there: τ of 1 dB raised the median SD by 2 to 12% at these trial counts.
-- σ₀, d₀ and λ, and then τ, are set by maximising the Laplace-approximated marginal likelihood with L and the u\_g integrated out (empirical Bayes, Nelder–Mead started from both the prior means and the warm start). A joint MAP over the curve and the noise overfits: with a few trials per point, the curve separates the answers and σ₀ collapses. Below 200 trials per ear the noise stays at the prior, because the evidence underestimates σ₀ with fewer trials. The noise is fitted with τ at its prior, then τ once with the noise fixed. Searching both together, or repeating the pass, runs away at sessions of about 110 trials: τ grows to several times the truth while σ₀ collapses. One pass leaves some of a large spread in σ₀, so a true 3 dB reads low. The curves are then the MAP given these.
+- σ₀, d₀, r and λ, and then τ, are set by maximising the Laplace-approximated marginal likelihood with L and the u\_g integrated out (empirical Bayes, Nelder–Mead started from both the prior means and the warm start). A joint MAP over the curve and the noise overfits: with a few trials per point, the curve separates the answers and σ₀ collapses. Below 200 trials per ear the noise, r included, stays at the prior, because the evidence underestimates σ₀ with fewer trials. The noise is fitted with τ at its prior, then τ once with the noise fixed. Searching both together, or repeating the pass, runs away at sessions of about 110 trials: τ grows to several times the truth while σ₀ collapses. One pass leaves some of a large spread in σ₀, so a true 3 dB reads low. The curves are then the MAP given these.
 - The solve is Fisher scoring. Each u\_g is held in a whitened basis of the correlation's significant eigenvectors (about 85 unknowns), and sessions connect only through (L, b), so the matrix is block-arrow: eliminating each session in turn leaves a Schur complement on (L, b), and the work grows linearly with the number of sessions.
 - Error bars come from the Laplace approximation (inverse Fisher information), projected onto the gauge. L's SD includes τ² divided by the number of sessions, so it stops shrinking in proportion to trials once each seating is well known. Every displayed curve carries a ±1 SD band.
 - A session selected with `--sessions`, pooled in with `--pool`, or run by `verify` is simply one more group, and checkpoints work as usual. Perceptual fits carry a model version. Bumping it recomputes every fit from the stored trials on next use, so results can change with no new trials, features near the threshold most of all.
@@ -508,7 +510,7 @@ These come from scratch code, not in the repository, run on the `sundara` and `s
 
 ### Soft rejection
 
-These come from scratch code, not in the repository, on `ft1`, `hd560` and pooled `sundara`, comparing the fit with and without treble noise (r, built on a separate branch). The table gives the largest target difference between the two per ear, averaged over six ears on default settings, with "no gate" accepting every narrow lobe.
+These come from scratch code, not in the repository, on `ft1`, `hd560` and pooled `sundara`, comparing the fit with and without treble noise (r). The table gives the largest target difference between the two per ear, averaged over six ears on default settings, with "no gate" accepting every narrow lobe.
 
 | Width | 0 | 0.5 | 1 | No gate |
 | --- | --- | --- | --- | --- |
@@ -520,7 +522,7 @@ On known curves (40 simulations for each of six ears), two runs from the same cu
 
 ### Soft veto
 
-These come from scratch code, not in the repository, with `sundara`'s real settings (a consensus reference and a veto by `ft1` and `hd560`). The hard veto's target jumps between a fit without treble noise and one with it (r, built on a separate branch) came from four edges: near-ties in the median (1.24 and 1.09 dB), a voter lost from the overlap check after a peak jumped across a two-dip lobe (2.23 dB), and the 1/12-octave limit (0.52 dB).
+These come from scratch code, not in the repository, with `sundara`'s real settings (a consensus reference and a veto by `ft1` and `hd560`). The hard veto's target jumps between a fit without treble noise and one with it (r) came from four edges: near-ties in the median (1.24 and 1.09 dB), a voter lost from the overlap check after a peak jumped across a two-dip lobe (2.23 dB), and the 1/12-octave limit (0.52 dB).
 
 Soft rejection at width 0.5 is on in the soft rows. Interpolating the fit between the two models in 40 steps, largest values in dB, left and right:
 
@@ -575,6 +577,51 @@ The stop once also counted the fade above f\_hi. An error there can't close, so 
 
 With the budget tightened on the real fits, compensation is about as close to its goal at 6 bands as at 32 (mean RMS 0.12 dB), and only the narrow corrections suffer, with the largest error against the target rising to about 3 dB.
 
+### Treble noise
+
+r was checked on simulated answers from each real profile's own trials and fitted curve, 40 simulations for each of six ears, against the same fit with r held at 1.
+
+| True r | Fit | L RMS error (below 8 kHz, above) | 95% coverage | Median r read |
+| --- | --- | --- | --- | --- |
+| 1 | r = 1 | 1.47 dB (1.42, 1.54) | 96.6% | |
+| 1 | r fitted | 1.48 dB (1.41, 1.60) | 96.4% | 1.13 |
+| 2.4 | r = 1 | 1.83 dB (1.73, 2.00) | 96.4% | |
+| 2.4 | r fitted | 1.79 dB (1.55, 2.26) | 96.0% | 2.19 |
+
+Fitting r costs almost nothing when it isn't needed, but it doesn't help uniformly when it is: the curve below 8 kHz gains 10%, and the treble loses 13%. The likely reason, not verified, is that noisier treble answers leave more to the smoothness prior. r reads about 13% high when the truth is 1, so the values of 1.25 to 1.4 on the real data aren't evidence of a rise.
+
+### Noise variants not adopted
+
+These come from scratch code, not in the repository, run per ear on `ft1`, `hd560` and pooled `sundara`: six ears and 2,662 trials. ΔlogML is the summed change in evidence, and held-out is the summed change in log-likelihood over 5 folds repeated 4 times, using the posterior-averaged prediction. Treat the numbers as a record of why the model looks as it does: they were not re-run as the model changed.
+
+Against the model without r:
+
+| Variant | ΔlogML | Held-out | Outcome |
+| --- | --- | --- | --- |
+| Separate noise above 8 kHz | +13.8 | +15.3 ± 4.3 | Adopted as r. Almost all of it comes from `hd560` L and `sundara` L; bootstrap p about 0.05 after searching over cutoffs |
+| Noise linear in the gap, octaves | +1.0 | +0.1 ± 1.2 | No effect. Trial gaps cluster at 1/8 and about 0.9 octave, so the form is barely testable |
+| Noise linear in the gap, Hz | +9.3 | +4.9 ± 5.9 | Mostly mimics the treble effect and hurts right ears |
+| Separate time-order bias on replay trials | −0.5 | +3.0 ± 5.0 | b reads about 0.6 dB lower on replay trials, which looks real, but it doesn't help prediction |
+| Separate noise on replay trials | +30.8 | +16.3 ± 6.5 | Not adopted, see below |
+
+**Replay noise.** Noise on replay trials reads 1.5 to 2.6 times higher in all six ears, yet it isn't evidence that replaying adds noise. A replay is chosen after hearing the pair, so replayed trials are selected on the noisy percept. A simulated listener with fixed noise who replays near-zero percepts, with half the noise repeating, reproduces a ratio of about 2. Total time since first playback carries the same information as replay (adding replay to it gains 0.0 held out), and overall noise doesn't rise with a session's replay rate. A causal effect isn't excluded: only randomising whether replay is available on each trial could settle that. Either way, the term barely changes the curve on simulated data: L RMS error goes from 1.38 to 1.40 dB if the cause is selection, and from 1.83 to 1.75 dB if replay really adds noise, with coverage unchanged. It improves prediction of the answers, not the measurement.
+
+**Noise distribution.** The probit link was compared against other shapes, each scaled to the same interquartile range, on the model with r:
+
+| Link | ΔlogML | Held-out | Largest L change |
+| --- | --- | --- | --- |
+| Logistic | +0.7 | +2.9 ± 1.1 | 0.23 dB |
+| Student-t, ν = 5 | +0.6 | +3.3 ± 1.5 | 0.31 dB |
+| Student-t, ν = 3 | 0.0 | +3.0 ± 2.6 | 0.48 dB |
+| Mixture, 30% of trials 3× wider | −0.7 | +2.0 ± 3.2 | 0.74 dB |
+| Cauchy (ν = 1) | +2.3 | −31.3 ± 8.6 | |
+| Generalised normal, shape 3 (lighter tails) | −3.4 | −5.6 ± 1.5 | |
+| Generalised normal, shape 4 (lighter tails) | −6.5 | −10.2 ± 2.3 | |
+
+Those are 7 of the 14 alternatives tried. Much heavier and lighter tails both predict clearly worse. Moderately heavier tails gain about 3 nats held out, but simulated Gaussian listeners gain as much evidence about half the time (p about 0.55), and no held-out null was run, so that gain isn't calibrated. No tail absorbs the replay ratio, which grows slightly with heavier tails. The link stays Gaussian: at most 0.3 dB of curve change for logistic or ν = 5 doesn't justify the added complexity.
+
+**Hard against easy trials.** A Gaussian listener errs more on hard trials, but that's already in the distribution, so a width fitted separately to each should match. Difficulty was the margin predicted from the other trials, so it's defined by the stimulus rather than by the percept. The ratio of width on hard trials (|z| < 1) to easy ones has a geometric mean over ears of 1.11, against 1.17 (5th to 95th percentile 1.04 to 1.42) from simulated Gaussian listeners, and 1.25 (1.04 to 1.69) from simulated listeners who also replay near-zero percepts. The expected ratio is above 1 because the sorting uses an estimated margin. Pooled by margin, observed agreement tracks the prediction, with one exception out of six bins: at a margin of 0.5 to 1σ there are 16.5 fewer errors than predicted, outside the simulated 5th to 95th percentile range of −7.9 to +16.8.
+
 ### Unit and truth tests
 
 - The peaking biquad matches the RBJ cookbook.
@@ -585,6 +632,7 @@ With the budget tightened on the real fits, compensation is about as close to it
 
 ## Known limitations
 
+- The MAP isn't unique: the lapse term makes the posterior non-concave, so two nearby solutions can exist. On one simulated data set, moving σ₀ from 1.12 to 1.15 dB moved the curve by up to 1 dB, with nothing else changed. Which solution a fit lands on can depend on small changes to the noise parameters, which is one way a feature near the threshold can flip. Over 45 seeds this averages out (0.66 dB shape error, 1.12 worst).
 - Broad corrections (with `--broad`) are only as good as the reference. Individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
 - Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
 - The diffuse-field reference needs a user-supplied ISO 389-7 difference table.

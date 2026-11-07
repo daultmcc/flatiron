@@ -17,7 +17,7 @@ from flatiron import EARS
 from flatiron.audio.stimulus import POINT
 from flatiron.model.grid import MIN_STEP_OCT, log_grid, octaves
 from flatiron.model.hierarchical import TOL_REFIT, fit_hierarchical
-from flatiron.model.probit import Priors, ProbitFit, Trials
+from flatiron.model.probit import Priors, ProbitFit, Trials, noise_sd
 from flatiron.model.refine import curvature_z, refine_grid
 
 # Variance of a single probit answer at the 50% point, in units of sigma^2:
@@ -42,7 +42,7 @@ class SchedulerConfig:
     rove_db: float = 2.0
     block_size: int = 50  # per ear: full refit (incl. noise) and refinement
     refit_every: int = 1  # per ear: fast refit of L with noise held fixed
-    # Noise (sigma0, d0, lapse) stays at the prior until an ear has this many
+    # Noise (sigma0, d0, lapse, treble_noise) stays at the prior until an ear has this many
     # trials; with fewer, the evidence underestimates sigma0.
     min_trials_noise_fit: int = 200
     estimate_tau: bool = True  # with enough history, estimate the seating spread when it's loaded
@@ -188,8 +188,7 @@ class Scheduler:
             c, cx = fit.focus_cov, fit.focus_cross
             v = c[i, i] + c[j, j] - 2 * c[i, j]
             shared = cx[i, i] + cx[j, j] - cx[i, j] - cx[j, i]
-            d = octaves(g[i], g[j])
-            noise = PROBIT_VAR * (fit.sigma0**2) * (1 + (d / fit.d0) ** 2)
+            noise = PROBIT_VAR * noise_sd(g[i], g[j], fit.sigma0, fit.d0, fit.treble_noise) ** 2
             score = shared * shared / (v + noise)
             z = curvature_z(fit)
             score = score * (1 + cfg.bend_weight * np.minimum(np.maximum(z[i], z[j]), cfg.bend_cap))

@@ -578,7 +578,7 @@ def _print_fit(pf):
               "smooth is corrected; the features below are only what's significant.")
     for e, c in corr.ears.items():
         f = pf.fits[e]
-        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB, lapse {f.lapse:.1%}, "
+        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%}, "
               f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
         print(f"  seating spread {f.tau_lo:.1f} dB below 5 kHz, {f.tau_hi:.1f} dB above 8 kHz "
               f"({f'estimated from {f.n_groups} sessions' if f.tau_fitted else 'the prior: needs two sessions of 60+ trials'})")
@@ -918,6 +918,7 @@ def cmd_simulate(args):
         print(f"ear {ear}: {args.trials} trials ({n_catch} catch, {args.design}), "
               f"{fit.grid.size} grid points, converged={fit.converged}")
         print(f"  sigma0 {fit.sigma0:.2f} (true {args.sigma0}), d0 {fit.d0:.2f} (true 0.5), "
+              f"treble noise ×{fit.treble_noise:.2f} (true ×1), "
               f"lapse {fit.lapse:.3f} (true {args.lapse})")
         print(f"  RMS error {sc.rmse:.2f} dB, max {sc.max_err:.2f} dB on a 1/96-oct grid, "
               f"within 2 SD {sc.coverage:.0%}")
