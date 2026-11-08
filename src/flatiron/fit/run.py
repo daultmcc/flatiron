@@ -17,8 +17,8 @@ from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.consensus import KINDS_VOTING, MODEL_VERSION, EarConsensus, SoftMedian, Source, raw_consensus
 from flatiron.fit.pipeline import Correction, CorrectionSettings, correct, ear_reference
 from flatiron.model.grid import log_grid
-from flatiron.model.hierarchical import fit_hierarchical
-from flatiron.model.probit import Priors, ProbitFit, Trials
+from flatiron.model.hierarchical import fit_balanced, fit_hierarchical
+from flatiron.model.probit import BalancePrior, Priors, ProbitFit, Trials
 from flatiron.session.store import Profile, Session, now_iso
 
 # 2: time-order bias; 3: per-trial stimulus spectrum; 4: seatings as random effects; 5: treble noise
@@ -40,21 +40,18 @@ def _cache_path(profile: Profile, trials: Trials, grid: np.ndarray, priors: Prio
     return profile.dir / "cache" / f"probit-{fit_key(trials, grid, priors)}.npz"
 
 
-def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> ProbitFit:
-    """The perceptual fit depends only on the trials, so it's cached on disk.
-    The seating spread is estimated here, so it's estimated once per set of
-    trials: the first time a fit is wanted after a session."""
-    path = _cache_path(profile, trials, grid, priors)
-    if path.exists():
-        z = np.load(path)
-        return ProbitFit(z["grid"], z["L"], z["cov"], float(z["sigma0"]), float(z["d0"]), float(z["lapse"]),
-                         int(z["n_trials"]), float(z["nlp"]), bool(z["converged"]),
-                         bias_db=float(z["bias"]), bias_sd=float(z["bias_sd"]), treble_noise=float(z["treble_noise"]),
-                         tau_lo=float(z["tau_lo"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
-                         tau=z["tau"], u=z["u"], v=z["v"], group_trials=z["group_trials"],
-                         group_cov=z["group_cov"], group_u_cov=z["group_u_cov"],
-                         focus_cov=z["focus_cov"], focus_cross=z["focus_cross"])
-    fit = fit_hierarchical(trials, grid, priors)
+def _load_fit(path: Path) -> ProbitFit:
+    z = np.load(path)
+    return ProbitFit(z["grid"], z["L"], z["cov"], float(z["sigma0"]), float(z["d0"]), float(z["lapse"]),
+                     int(z["n_trials"]), float(z["nlp"]), bool(z["converged"]),
+                     bias_db=float(z["bias"]), bias_sd=float(z["bias_sd"]), treble_noise=float(z["treble_noise"]),
+                     tau_lo=float(z["tau_lo"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
+                     tau=z["tau"], u=z["u"], v=z["v"], group_trials=z["group_trials"],
+                     group_cov=z["group_cov"], group_u_cov=z["group_u_cov"],
+                     focus_cov=z["focus_cov"], focus_cross=z["focus_cross"])
+
+
+def _save_fit(path: Path, fit: ProbitFit) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.stem + ".tmp.npz")
     np.savez(tmp, grid=fit.grid, L=fit.L, cov=fit.cov, sigma0=fit.sigma0, d0=fit.d0, lapse=fit.lapse,
@@ -64,7 +61,55 @@ def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, priors: Prior
              group_cov=fit.group_cov, group_u_cov=fit.group_u_cov,
              focus_cov=fit.focus_cov, focus_cross=fit.focus_cross)
     tmp.replace(path)
+
+
+def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> ProbitFit:
+    """The perceptual fit depends only on the trials, so it's cached on disk.
+    The seating spread is estimated here, so it's estimated once per set of
+    trials: the first time a fit is wanted after a session. This is one ear
+    on its own: what the scheduler works from, and where each ear's noise and
+    seating spread come from."""
+    path = _cache_path(profile, trials, grid, priors)
+    if path.exists():
+        return _load_fit(path)
+    fit = fit_hierarchical(trials, grid, priors)
+    _save_fit(path, fit)
     return fit
+
+
+# The prior that the ears' curves are alike (DESIGN.md, "Channel balance") at
+# `config --balance 1`. None: each ear on its own, whatever the setting.
+BALANCE: BalancePrior | None = BalancePrior()
+
+
+def balance_prior(profile: Profile) -> BalancePrior | None:
+    """The profile's balance prior: the default's SDs times its setting (0: none)."""
+    scale = profile_settings(profile).balance
+    if BALANCE is None or scale == 0:
+        return None
+    return replace(BALANCE, lo_db=BALANCE.lo_db * scale, hi_db=BALANCE.hi_db * scale)
+
+
+def balanced_key(ear_keys: dict[str, str], balance: BalancePrior) -> str:
+    h = hashlib.sha256(f"{CACHE_VERSION}|balance|{balance!r}".encode())
+    for e in sorted(ear_keys):
+        h.update(f"|{e}={ear_keys[e]}".encode())
+    return h.hexdigest()[:20]
+
+
+def cached_balanced(profile: Profile, trials: dict[str, Trials], fits: dict[str, ProbitFit],
+                    ear_keys: dict[str, str], balance: BalancePrior) -> tuple[dict[str, ProbitFit], dict[str, str]]:
+    """Both ears' curves fitted together under the balance prior, from each
+    ear's own fit; cached like those, keyed on both of them."""
+    key = balanced_key(ear_keys, balance)
+    paths = {e: profile.dir / "cache" / f"balanced-{key}-{e}.npz" for e in fits}
+    keys = {e: f"{key}-{e}" for e in fits}
+    if all(p.exists() for p in paths.values()):
+        return {e: _load_fit(p) for e, p in paths.items()}, keys
+    out = fit_balanced(trials, fits, balance)
+    for e, p in paths.items():
+        _save_fit(p, out[e])
+    return out, keys
 
 
 @dataclass
@@ -153,7 +198,10 @@ def fit_sessions(profile: Profile) -> list[Session]:
 def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
                     on_fit: Callable[[], None] | None = None) -> tuple[dict[str, ProbitFit], dict[str, str], list[Session]]:
     """Per ear, the profile's cached perceptual fit and what it's keyed on. It
-    depends only on the trials (its sessions and pooling), not on the settings."""
+    depends only on the trials (its sessions and pooling), not on the settings.
+    With the balance prior on (the profile's `balance` setting), the two ears'
+    curves are fitted together, each with the noise and seating spread of its
+    own fit. A consensus or veto member uses its own setting."""
     sessions = fit_sessions(profile)
     if session_ids:
         missing = set(session_ids) - {s.id for s in sessions}
@@ -170,8 +218,12 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
             on_fit()
             on_fit = None
         fits[e] = cached_fit(profile, trials[e], grid)
-        fits[e].groups = [s.id for s in sessions if len(s.trials_for(e))]
         keys[e] = fit_key(trials[e], grid)
+    balance = balance_prior(profile)
+    if balance is not None:
+        fits, keys = cached_balanced(profile, trials, fits, keys, balance)
+    for e in EARS:
+        fits[e].groups = [s.id for s in sessions if len(s.trials_for(e))]
     return fits, keys, sessions
 
 

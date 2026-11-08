@@ -88,6 +88,17 @@ class Priors:
     ell_oct: float = 1 / 12  # correlation width of a seating's deviation
 
 
+@dataclass(frozen=True)
+class BalancePrior:
+    """The difference between the ears' curves (DESIGN.md, "Channel balance"):
+    SD below 5 kHz and above 8 kHz (log-interpolated between), and its
+    correlation width. Sized from the real profiles: a rough empirical-Bayes
+    estimate over them gave about 1 to 1.5 and 2 to 4 dB."""
+    lo_db: float = 1.5
+    hi_db: float = 3.0
+    ell_oct: float = 1 / 8
+
+
 @dataclass
 class ProbitFit:
     """L is the average over seatings (L_avg); each group's curve is L + u[g]."""
