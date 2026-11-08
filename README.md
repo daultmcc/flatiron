@@ -66,7 +66,10 @@ and the original broad shape is kept, leaving broad tonal changes to you),
 `--sessions id,id|all`, `--pool OTHER[,OTHER]|none` (include another profile's trials, e.g. the same
 headphones measured with tones), `--method smooth` with `--smooth-width OCT` (experimental: correct every
 residual against a smoothed curve, no feature detection; corrects some noise too), `--method match`
-(experimental: correct the whole curve toward the reference, tonality included);
+(experimental: correct the whole curve toward the reference, tonality included),
+`--baseline joint` (experimental: a baseline that moves smoothly with the data instead of jumping between two
+readings of a broad region well off the reference, shown with its uncertainty in the report; needs
+`--method features`);
 `--reset [name ...]` returns settings to the defaults.
 `-r consensus:A,B` uses the listed profiles' raw curves as the reference instead of a fixed one, smoothed over
 `--consensus-smooth OCT` (default 1/2 octave, 0: none). This profile is only in it if you list it, and with three

@@ -371,6 +371,11 @@ FIT_OPTIONS = [
                "smooth (experimental): the baseline is the curve smoothed over --smooth-width, and every "
                "residual is corrected, with no feature detection (more correction, noise included); "
                "match (experimental): correct the whole curve toward the reference, tonality included")),
+    (("--baseline",), "baseline",
+     dict(choices=("robust", "joint"),
+          help="robust (default): the robustly weighted spline; joint (experimental): the posterior mean of the "
+               "tonality under a model of tonality plus features, which moves smoothly with the data instead of "
+               "tipping between two readings (needs --method features)")),
     (("--smooth-width",), "smooth_oct",
      dict(type=float, help="smoothing width (FWHM) in octaves for --method smooth, 1/8 to 1")),
 ]
@@ -569,7 +574,7 @@ def cmd_config(args):
 
 
 def _print_fit(pf):
-    from flatiron.report.html import consensus_notes, veto_line
+    from flatiron.report.html import AMBIGUOUS_BASELINE_SD_DB, ambiguous_features, consensus_notes, veto_line
 
     corr = pf.correction
     if pf.pooled:
@@ -579,6 +584,9 @@ def _print_fit(pf):
     if corr.settings.method == "smooth":
         print(f"Method: smooth (experimental): every residual against a {corr.settings.smooth_oct:g}-octave "
               "smooth is corrected; the features below are only what's significant.")
+    if corr.settings.method == "features" and corr.settings.baseline == "joint":
+        print("Baseline: joint (experimental): the posterior mean of the tonality under a model of tonality "
+              "plus features.")
     for e, c in corr.ears.items():
         f = pf.fits[e]
         print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%}, "
@@ -610,6 +618,10 @@ def _print_fit(pf):
         for x in sorted((x for x in c.features if x.veto is not None), key=lambda x: x.fc):
             print(f"  veto {x.fc:.0f} Hz: {_correction_of(x):+.1f} dB ({veto_line(x)})"
                   + ("" if x.accepted else f": {x.reason}"))
+        unsure = ambiguous_features(c)
+        if unsure:
+            print(f"  baseline uncertain (SD over {AMBIGUOUS_BASELINE_SD_DB:g} dB) under: "
+                  + ", ".join(f"{x.fc:.0f} Hz" for x in unsure) + "; part may be tonality, or the other way round")
         for a, b, m in c.left_out:
             print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
     print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")

@@ -89,9 +89,12 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
     _style(ax, t, g[0], g[-1])
     ax.fill_between(g, D - c.L_sd, D + c.L_sd, color=t["s1"], alpha=0.18, linewidth=0)
     ax.plot(g, D, color=t["s1"], linewidth=2)
+    if c.baseline_sd is not None:
+        ax.fill_between(g, c.baseline - c.baseline_sd, c.baseline + c.baseline_sd, color=t["s2"], alpha=0.18,
+                        linewidth=0)
     ax.plot(g, c.baseline, color=t["s2"], linewidth=2)
     _label_end(ax, xr, D[-1], "measured − reference", t["s1"], t, dy=1.0 if D[-1] >= c.baseline[-1] else -1.0)
-    _label_end(ax, xr, c.baseline[-1], "baseline", t["s2"], t, dy=-1.0 if D[-1] >= c.baseline[-1] else 1.0)
+    _label_end(ax, xr, c.baseline[-1], "baseline" if c.baseline_sd is None else "baseline ±1 SD", t["s2"], t, dy=-1.0 if D[-1] >= c.baseline[-1] else 1.0)
     ax.set_title(f"{EAR_NAMES.get(c.ear, c.ear)} ear · measured level relative to the reference (±1 SD)",
                  color=t["ink"], fontsize=10, loc="left")
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)

@@ -31,6 +31,6 @@ packages = ["src/flatiron"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-n auto"  # pytest-xdist; -n0 to run in one process (e.g. with --pdb)
+addopts = "-n auto --dist worksteal"  # pytest-xdist; -n0 to run in one process (e.g. with --pdb). Work stealing keeps the longest tests off one worker
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

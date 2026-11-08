@@ -6,6 +6,8 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
 from flatiron.fit.features import BROAD, NARROW
 from flatiron.fit.run import ProfileFit
 from flatiron.report.plots import EAR_NAMES, ear_figure
@@ -107,6 +109,19 @@ def consensus_notes(pf: ProfileFit) -> list[str]:
     return out
 
 
+# A corrected feature under a joint baseline this uncertain (posterior SD, dB)
+# is flagged: the data can't settle how much of it is tonality.
+AMBIGUOUS_BASELINE_SD_DB = 1.0
+
+
+def ambiguous_features(c) -> list:
+    """Corrected features where the joint baseline's SD exceeds the threshold."""
+    if c.baseline_sd is None:
+        return []
+    return [x for x in c.features
+            if x.accepted and np.max(c.baseline_sd[x.lo:x.hi + 1]) > AMBIGUOUS_BASELINE_SD_DB]
+
+
 def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> Path:
     corr = pf.correction
     st = corr.settings
@@ -123,6 +138,10 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     if pf.pooled:
         notes.append(f"Pooled: includes the trials of {', '.join(pf.pooled)}.")
     notes += consensus_notes(pf)
+    if st.method == "features" and st.baseline == "joint":
+        notes.append("Experimental joint baseline: the baseline is the posterior mean of the tonality under a "
+                     "model of tonality plus features, drawn with its SD. Where that band is wide, the data "
+                     "can't tell tonality from feature, and the baseline sits between the two readings.")
     if st.method == "smooth":
         notes.append(f"Experimental smooth method: the baseline is the curve smoothed over {st.smooth_oct:g} "
                      "octave, and every residual is corrected. The features listed are only what's "
@@ -156,6 +175,12 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
             spans = ", ".join(f"{a:,.0f}–{b:,.0f} Hz (up to {m:.1f} dB)" for a, b, m in c.left_out)
             out.append(f'<p class="note">The band budget ({st.bands}) ran out. Left uncorrected: '
                        f"{html.escape(spans)}.</p>")
+        unsure = ambiguous_features(c)
+        if unsure:
+            where = ", ".join(f"{x.fc:,.0f} Hz" for x in unsure)
+            out.append(f'<p class="note">The baseline is uncertain (SD over {AMBIGUOUS_BASELINE_SD_DB:g} dB) under '
+                       f"the feature(s) at {html.escape(where)}: part of each may be tonality rather than a feature, "
+                       "or the other way round.</p>")
         out.append("<h3>Filters</h3>")
         if c.filters:
             comp = {id(x) for x in c.compensation}

@@ -10,6 +10,7 @@ import numpy as np
 
 from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.baseline import fit_baseline
+from flatiron.fit.decompose import fit_joint_baseline
 from flatiron.fit.consensus import EarConsensus, SoftMedian, Source, consensus_of
 from flatiron.fit.features import BROAD, NARROW, Feature, GroupCurve, find_features, seating_step
 from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
@@ -24,6 +25,7 @@ FINE_STEP_OCT = 1 / 96
 MAX_BANDS = 128  # per channel; each exporter refuses more than it can hold
 METHODS = ("features", "smooth", "match")
 VETO_MODES = ("feature", "pointwise")
+BASELINES = ("robust", "joint")
 # Broad lobes that aren't corrected as a whole are searched for narrow
 # features against a local smooth over this width (FWHM, octaves).
 INNER_SMOOTH_OCT = 0.5
@@ -35,6 +37,10 @@ class CorrectionSettings:
     reference: str = "iso226"  # iso226 | diffuse | none | path to a CSV | consensus:SLUG,SLUG
     phon: float = 60.0
     baseline_penalty: float = 0.1  # baseline stiffness (tuned in the simulator; 1e-3 absorbed clustered features)
+    # robust: the Tukey-weighted spline (pipeline step 2). joint: the posterior
+    # mean of the tonality under an explicit model of D (fit/decompose.py),
+    # which can't tip between two readings the way the robust fit can.
+    baseline: str = "robust"
     k: float = 2.0
     k_broad: float = 2.5
     # Soft rejection: features within this many SDs of k or k_broad are partly
@@ -119,6 +125,10 @@ class CorrectionSettings:
             raise ValueError("the filter fit's tolerance must be 0.1 to 6 dB")
         if not self.f_lo < self.f_hi:
             raise ValueError("f_lo must be below f_hi")
+        if self.baseline not in BASELINES:
+            raise ValueError(f"baseline must be one of {', '.join(BASELINES)}")
+        if self.baseline != "robust" and self.method != "features":
+            raise ValueError("--baseline joint needs --method features (the other methods have no such baseline)")
         if self.method not in METHODS:
             raise ValueError(f"method must be one of {', '.join(METHODS)}")
         if not 1 / 8 - 1e-9 <= self.smooth_oct <= 1 + 1e-9:
@@ -157,6 +167,7 @@ class EarCorrection:
     compensation: list[PeakingFilter] = field(default_factory=list)  # tonality-preserving filters (in fit.filters)
     fixed: list[PeakingFilter] = field(default_factory=list)  # filters kept from before (incremental refit)
     consensus: EarConsensus | None = None  # the reference, if it's a consensus
+    baseline_sd: np.ndarray | None = None  # the joint baseline's posterior SD (None for the others)
 
     @property
     def filters(self) -> list[PeakingFilter]:
@@ -271,13 +282,30 @@ def inner_features(g, R, cov_R, lo: int, hi: int, settings: CorrectionSettings,
     return found
 
 
-def _baseline(g, D, sd_D, settings: CorrectionSettings) -> np.ndarray:
-    """The smoother S that takes D to its baseline."""
+@dataclass
+class _Base:
+    values: np.ndarray  # the baseline of D
+    J: np.ndarray  # its Jacobian in D: the residual is (I − J) D to first order (exactly, if it's linear)
+    sd: np.ndarray | None = None  # posterior SD (joint only)
+
+    @property
+    def M(self) -> np.ndarray:
+        return np.eye(self.J.shape[0]) - self.J
+
+
+def _baseline(g, D, sd_D, settings: CorrectionSettings) -> _Base:
+    """D's baseline. The robust one and the smooth method's are linear smoothers
+    S (J = S), fixed at their final weights; the joint one is nonlinear in D."""
     if settings.method == "match":
-        return np.zeros((g.size, g.size))
+        return _Base(np.zeros(g.size), np.zeros((g.size, g.size)))
     if settings.method == "smooth":
-        return local_linear_smoother(g, settings.smooth_oct, np.gradient(np.log2(g)) / sd_D**2)
-    return fit_baseline(g, D, sd_D, settings.max_width_oct, settings.baseline_penalty).smoother
+        S = local_linear_smoother(g, settings.smooth_oct, np.gradient(np.log2(g)) / sd_D**2)
+        return _Base(S @ D, S)
+    if settings.baseline == "joint":
+        j = fit_joint_baseline(g, D, sd_D, settings.max_width_oct, settings.baseline_penalty)
+        return _Base(j.values, j.jacobian, j.sd)
+    S = fit_baseline(g, D, sd_D, settings.max_width_oct, settings.baseline_penalty).smoother
+    return _Base(S @ D, S)
 
 
 def _found(g, T, cov_T, groups, settings: CorrectionSettings, own_R=None) -> list[Feature]:
@@ -298,10 +326,12 @@ def _found(g, T, cov_T, groups, settings: CorrectionSettings, own_R=None) -> lis
     return feats
 
 
-def _group_curves(fit: ProbitFit, M, H_fixed, E, shift=0.0) -> list[GroupCurve]:
+def _group_curves(fit: ProbitFit, R, M, shift=0.0) -> list[GroupCurve]:
+    """Each group's residual against the same baseline, linearised: R + M u_k
+    (exact when the baseline is linear)."""
     if fit.group_trials is None:
         return []
-    return [GroupCurve(M @ (fit.L + fit.u[k] + H_fixed - E) - shift, M @ fit.group_cov[k] @ M.T,
+    return [GroupCurve(R + M @ fit.u[k] - shift, M @ fit.group_cov[k] @ M.T,
                        M @ fit.group_u_cov[k] @ M.T)
             for k in np.flatnonzero(fit.group_trials)]
 
@@ -316,9 +346,9 @@ def voter_candidates(label: str, fit: ProbitFit, settings: CorrectionSettings,
     E = consensus.on(g) if consensus is not None else reference(settings.reference, g, settings.phon)
     cov = fit.cov if consensus is None else consensus.other_cov(fit.cov, g)
     D = fit.L - E
-    M = np.eye(g.size) - _baseline(g, D, np.sqrt(np.clip(np.diag(cov), 1e-12, None)), settings)
-    R = M @ D
-    feats = _found(g, R, M @ cov @ M.T, _group_curves(fit, M, 0.0, E), settings)
+    base = _baseline(g, D, np.sqrt(np.clip(np.diag(cov), 1e-12, None)), settings)
+    M, R = base.M, D - base.values
+    feats = _found(g, R, M @ cov @ M.T, _group_curves(fit, R, M), settings)
     if settings.veto_softness > 0:
         # Each counts as far as it's significant or tall, so none appears or vanishes at an edge.
         def counted(f):
@@ -377,9 +407,8 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         inside = (g >= settings.f_lo) & (g <= settings.f_hi)
         E = E + weighted_median(D[inside], (np.gradient(np.log2(g)) / sd_D**2)[inside])
         D = fit.L + H_fixed - E
-    S = _baseline(g, D, sd_D, settings)
-    M = np.eye(g.size) - S
-    R = M @ D
+    base = _baseline(g, D, sd_D, settings)
+    M, R = base.M, D - base.values
     cov_R = M @ cov_D @ M.T
     R_sd = np.sqrt(np.clip(np.diag(cov_R), 1e-12, None))
 
@@ -389,18 +418,18 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         # Found on the excess over the median of the residuals. A checkpoint's
         # filters are part of R but not of the median: a peak they already took
         # out leaves nothing to correct.
-        sources = [Source(OWN_LABEL, g, M @ (fit.L - E), cov_R)]
+        sources = [Source(OWN_LABEL, g, R - M @ H_fixed, cov_R)]
         for label, v in voters:
             Ev = consensus.on(v.grid) if consensus is not None else reference(settings.reference, v.grid, settings.phon)
             cv = v.cov if consensus is None else consensus.other_cov(v.cov, v.grid)
-            Mv = np.eye(v.grid.size) - _baseline(v.grid, v.L - Ev, np.sqrt(np.clip(np.diag(cv), 1e-12, None)), settings)
-            sources.append(Source(label, v.grid, Mv @ (v.L - Ev), Mv @ cv @ Mv.T))
+            bv = _baseline(v.grid, v.L - Ev, np.sqrt(np.clip(np.diag(cv), 1e-12, None)), settings)
+            sources.append(Source(label, v.grid, v.L - Ev - bv.values, bv.M @ cv @ bv.M.T))
         sm = consensus_of(sources)
         A = interp_matrix(sm.grid, g)
         median_R = A @ sm.m
         cross = cov_R @ sm.G[0] @ A.T
         T, cov_T = R - median_R, cov_R + A @ sm.cov @ A.T - cross - cross.T
-    groups = _group_curves(fit, M, H_fixed, E, 0.0 if median_R is None else median_R)
+    groups = _group_curves(fit, R, M, 0.0 if median_R is None else median_R)
     session_R = [c.r if median_R is None else c.r + median_R for c in groups]
     checked = len(groups) if settings.consistency and len(groups) >= 2 else 0
     feats = _found(g, T, cov_T, groups, settings, R if pointwise else None)
@@ -467,10 +496,10 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
                 i = j + 1
             else:
                 i += 1
-    return EarCorrection(ear, g, fit.L, fit.sd, E, S @ D, R, R_sd, feats, C, freqs, target, sd, ff,
+    return EarCorrection(ear, g, fit.L, fit.sd, E, base.values, R, R_sd, feats, C, freqs, target, sd, ff,
                          left, checked, session_R,
                          [] if fit.group_trials is None else [int(n) for n in fit.group_trials if n],
-                         comp, fixed, consensus)
+                         comp, fixed, consensus, base.sd)
 
 
 def ear_reference(sm: SoftMedian, members: list[str], key: str, smooth_oct: float,

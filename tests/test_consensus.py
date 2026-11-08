@@ -629,6 +629,16 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["config", "-p", "One", "--veto-mode", "feature", "--veto-import", "3"]) == 0
     assert profile_settings(one).veto_import_db == 3.0
     assert main(["config", "-p", "One", "--reset", "veto-import"]) == 0
+    # The joint baseline, with a consensus reference and both vetoes (each voter's baseline is its own).
+    assert main(["config", "-p", "One", "--baseline", "joint"]) == 0
+    capsys.readouterr()
+    assert main(["report", "-p", "One", "-H"]) == 0
+    assert "Baseline: joint" in capsys.readouterr().out
+    assert current_fit(one).correction.ears["L"].baseline_sd is not None
+    assert main(["config", "-p", "One", "--veto-mode", "pointwise"]) == 0
+    current_fit(one)
+    assert main(["config", "-p", "One", "--method", "smooth"]) == 1  # the joint baseline needs features
+    assert main(["config", "-p", "One", "--reset", "baseline", "veto-mode"]) == 0
     assert main(["config", "-p", "One", "--veto", "One"]) == 1  # no one else to vote
     assert main(["config", "-p", "One", "--veto", "Nope"]) == 1
     assert main(["config", "-p", "One", "--veto", "none"]) == 0 and profile_settings(one).veto == ()
