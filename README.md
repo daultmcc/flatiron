@@ -92,8 +92,8 @@ significant, e.g. after `verify`. `--reset checkpoint` drops it. The design's
 default diffuse-field reference needs the ISO 389-7 table, which isn't sourced
 yet, so `iso226` (free field) is the default for now.
 
-`tone` keys: ←/→ frequency (a tap steps; holding glides, speeding up the longer
-it's held), ↑/↓ glide speed, G go to a frequency, E ear (left/right/both), S
+`tone` keys: ←/→ frequency (a tap steps; tapping faster glides faster, and a tap
+the other way stops), ↑/↓ tap size, G go to a frequency, E ear (left/right/both), S
 stimulus (pure tone, warble, 1/24, 1/12 and 1/3-octave noise), +/− level, Q
 correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space
 pause, Esc quit. Marks are saved in the profile; the next `run` session

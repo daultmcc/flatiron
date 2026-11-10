@@ -16,18 +16,17 @@ from flatiron.audio.synth import F_MAX, F_MIN, STIMULI, ToneSynth, stimulus_key
 
 EAR_CYCLE = ("L", "R", "LR")
 EAR_LABELS = {"L": "LEFT ear", "R": "RIGHT ear", "LR": "BOTH ears"}
-SPEEDS = ((1 / 48, "1/48"), (1 / 24, "1/24"), (1 / 12, "1/12"), (1 / 6, "1/6"), (1 / 3, "1/3"),
-          (2 / 3, "2/3"), (4 / 3, "4/3"))  # oct/s
-DEFAULT_SPEED = 3
+TAP_SIZES = ((1 / 96, "1/96"), (1 / 48, "1/48"), (1 / 24, "1/24"), (1 / 12, "1/12"), (1 / 6, "1/6"))  # oct
+DEFAULT_TAP = 2
 TICK_S = 1 / 60
-KEYS = ("←/→ frequency (hold to glide)   ↑/↓ glide speed   G go to   E ear   S stimulus   +/− level\n"
+KEYS = ("←/→ frequency (tap faster to glide faster)   ↑/↓ tap size   G go to   E ear   S stimulus   +/− level\n"
         "Q correction on/off   P/D mark a peak/dip   U undo mark   Space pause   Esc quit")
 
 CSS = """
 Screen { align: center middle; }
 Vertical { align-horizontal: center; height: auto; }
 #title { width: 100%; content-align: center middle; text-style: bold; padding: 1 0; }
-#freq { width: auto; }
+#freq { width: 100%; text-align: center; }
 #state { width: 100%; content-align: center middle; padding: 1 0 0 0; }
 #speed { width: 100%; content-align: center middle; color: $text-muted; }
 #marks { width: 100%; content-align: center middle; padding: 1 2; color: $text-muted; }
@@ -38,41 +37,58 @@ GotoScreen { align: center middle; background: $background 70%; }
 
 
 class Glide:
-    """Arrow-key motion. Terminals don't report key releases, only the key's
-    auto-repeat while it's held, so a key counts as held while repeats keep
-    coming. A single press steps by speed × TAP_S; holding glides at the
-    speed, speeding up gently the longer the key is held."""
+    """Arrow-key motion, built around tapping (terminals delay a held key's
+    auto-repeat, and report no releases). Each press adds a bump to the glide
+    speed: a Hann window over ±W seconds with an area of one tap size, so
+    tapping steadily at r per second glides at r tap sizes per second and the
+    speed follows the tap rate. A press from rest enters at the bump's peak,
+    so the tone moves at once (half a tap size in all); once the tone is up to
+    speed, a press enters at the bump's start, so the speed changes smoothly.
+    In between, the entry point blends linearly with the speed. A press
+    against the motion stops it dead and adds nothing; the next one moves. A
+    held key's auto-repeat counts as presses at most MAX_RATE per second."""
 
-    HOLD_GAP_S = 0.12  # auto-repeat runs at 25-40/s; a longer gap means the key was let go
-    RUN_GAP_S = 0.7  # longer than the usual delay before auto-repeat starts
-    TAP_S = 0.125
-    ACCEL_AFTER_S = 0.5
-    ACCEL_OVER_S = 2.0
-    ACCEL_MAX = 3.0
+    W = 0.5
+    MAX_RATE = 10.0  # about the fastest steady tapping by hand
 
     def __init__(self):
-        self.dir = 0
+        self.pending: list[list[float]] = []  # [time, octaves]: time counts down to -W
         self.last = -np.inf
-        self.run_start = 0.0
-        self.presses = 0
 
-    def press(self, direction: int, now: float, speed: float) -> float:
-        """Octaves to move right away."""
-        if direction == self.dir and now - self.last < self.RUN_GAP_S:
-            self.presses += 1
-            step = 0.0
-        else:
-            self.dir, self.run_start, self.presses = direction, now, 1
-            step = direction * speed * self.TAP_S
+    @classmethod
+    def bump(cls, t: float) -> float:
+        return (1 + np.cos(np.pi * t / cls.W)) / (2 * cls.W) if abs(t) < cls.W else 0.0
+
+    @classmethod
+    def area(cls, t: float) -> float:
+        """The bump's area left of t."""
+        u = float(np.clip(t / cls.W, -1, 1))
+        return 0.5 * (1 + u + np.sin(np.pi * u) / np.pi)
+
+    def speed(self) -> float:
+        """Octaves per second, signed."""
+        return sum(w * self.bump(t) for t, w in self.pending)
+
+    def press(self, direction: int, now: float, size: float):
+        """A press of direction ±1, with taps of size octaves."""
+        if any(w * direction < 0 for _, w in self.pending):
+            self.pending.clear()
+            self.last = -np.inf
+            return
+        weight = min(1.0, (now - self.last) * self.MAX_RATE)
         self.last = now
-        return step
+        # Up to speed means as fast as a lone tap's peak, size / W.
+        entry = self.W * min(1.0, abs(self.speed()) * self.W / size)
+        self.pending.append([entry, direction * size * weight])
 
-    def advance(self, now: float, dt: float, speed: float) -> float:
-        """Octaves to move over the last dt seconds."""
-        if self.presses < 2 or now - self.last > self.HOLD_GAP_S:
-            return 0.0
-        u = float(np.clip((now - self.run_start - self.ACCEL_AFTER_S) / self.ACCEL_OVER_S, 0, 1))
-        return self.dir * speed * (1 + (self.ACCEL_MAX - 1) * u * u * (3 - 2 * u)) * dt
+    def advance(self, dt: float) -> float:
+        """Octaves to move over the next dt seconds."""
+        step = 0.0
+        for p in self.pending:
+            step += p[1] * (self.area(p[0]) - self.area(p[0] - dt))
+            p[0] -= dt
+        self.pending = [p for p in self.pending if p[0] > -self.W]
+        return step
 
 
 def parse_freq(text: str) -> float:
@@ -110,8 +126,8 @@ class ToneApp(App):
     BINDINGS = [
         Binding("left", "move(-1)", "Lower", show=False),
         Binding("right", "move(1)", "Higher", show=False),
-        Binding("up", "speed(1)", "Faster", show=False),
-        Binding("down", "speed(-1)", "Slower", show=False),
+        Binding("up", "tap_size(1)", "Bigger taps", show=False),
+        Binding("down", "tap_size(-1)", "Smaller taps", show=False),
         Binding("e", "ear", "Ear", show=False),
         Binding("s", "stimulus", "Stimulus", show=False),
         Binding("plus,equals_sign", "level(1)", "Louder", show=False),
@@ -133,7 +149,7 @@ class ToneApp(App):
         self.device, self.dry_run = device, dry_run
         self.clock = clock
         self.glide = Glide()
-        self.speed = DEFAULT_SPEED
+        self.tap = DEFAULT_TAP
         self.marks: list[dict] = []  # made in this run
         self.note = ""
         self.player = None
@@ -171,9 +187,10 @@ class ToneApp(App):
         state = (f"{EAR_LABELS[s.ear]}  ·  {STIMULI[s.stimulus][1]}  ·  {s.level_db:+.0f} dBFS  ·  {eq}"
                  + ("  ·  PAUSED" if s.paused else ""))
         self.query_one("#state", Static).update(state)
-        speed, name = SPEEDS[self.speed]
-        cents = speed * Glide.TAP_S * 1200
-        self.query_one("#speed", Static).update(f"Hz   ·   speed {name} oct/s   ·   a tap moves {cents:.0f} cents")
+        size, name = TAP_SIZES[self.tap]
+        self.query_one("#speed", Static).update(
+            f"Hz   ·   tap size {name} oct   ·   one tap moves {size * 600:.0f} cents   ·   "
+            f"tapping 5/s glides {5 * size:.2g} oct/s")
         lines = [f"{'▲' if m['kind'] == 'peak' else '▼'} {m['freq']:,.0f} Hz {EAR_LABELS[m['ear']].split()[0].lower()}"
                  for m in self.marks[-6:]]
         marks = ("Marks: " + "   ".join(lines)) if lines else (
@@ -189,19 +206,16 @@ class ToneApp(App):
     def tick(self):
         now = self.clock()
         dt, self.last_tick = now - self.last_tick, now
-        step = self.glide.advance(now, dt, SPEEDS[self.speed][0])
+        step = self.glide.advance(dt)
         if step:
             self.set_freq(self.synth.freq * 2**step)
             self.show()
 
     def action_move(self, direction: int):
-        step = self.glide.press(direction, self.clock(), SPEEDS[self.speed][0])
-        if step:
-            self.set_freq(self.synth.freq * 2**step)
-            self.show()
+        self.glide.press(direction, self.clock(), TAP_SIZES[self.tap][0])
 
-    def action_speed(self, d: int):
-        self.speed = int(np.clip(self.speed + d, 0, len(SPEEDS) - 1))
+    def action_tap_size(self, d: int):
+        self.tap = int(np.clip(self.tap + d, 0, len(TAP_SIZES) - 1))
         self.show()
 
     def action_ear(self):

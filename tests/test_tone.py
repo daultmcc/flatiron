@@ -86,20 +86,49 @@ def test_stimulus_change_fades_out_and_in():
     assert rms_db(run(s, 0.5)[:, 0]) == pytest.approx(-20, abs=0.6)
 
 
-def test_glide_tap_hold_and_release():
+def drive(g, presses, until, size=1 / 24, dt=1 / 60):
+    """Tick g at dt to time until, pressing at each (time, direction) on the
+    way; return the speed and position at each tick."""
+    presses, t, pos, speeds, path = sorted(presses), 0.0, 0.0, [], []
+    while t < until:
+        while presses and presses[0][0] <= t:
+            g.press(presses.pop(0)[1], t, size)
+        speeds.append(g.speed())
+        pos += g.advance(dt)
+        path.append(pos)
+        t += dt
+    return np.array(speeds), np.array(path)
+
+
+def test_glide_tap_moves_at_once_by_half_a_tap():
+    v, x = drive(Glide(), [(0.0, 1)], 1.0)
+    assert v[0] == pytest.approx(1 / 24 / Glide.W)  # the speed jumps on the press
+    assert x[-1] == pytest.approx(1 / 48) and not v[-1]
+
+
+def test_glide_speed_follows_tap_rate_smoothly():
+    for rate in (3, 6, 9):
+        v, x = drive(Glide(), [(i / rate, 1) for i in range(int(4 * rate))], 5.0)
+        steady = v[90:210]  # 1.5 to 3.5 s
+        assert steady.mean() == pytest.approx(rate / 24, rel=0.05)
+        assert np.ptp(steady) < 0.2 * steady.mean()  # no jolt per tap
+        assert v[-1] == 0 and x[-1] == pytest.approx(4 * rate / 24, rel=0.1)  # stopped, a tap size per tap
+
+
+def test_glide_auto_repeat_is_capped():
+    # A held key: one press, the keyboard's delay, then repeats every 33 ms.
+    taps = [(0.0, 1)] + [(0.5 + i / 30, 1) for i in range(90)]
+    v, _ = drive(Glide(), taps, 3.5)
+    assert v[int(2.5 * 60)] == pytest.approx(Glide.MAX_RATE / 24, rel=0.05)
+
+
+def test_glide_opposite_press_freezes_then_moves():
     g = Glide()
-    speed = 1 / 6
-    assert g.press(1, 0.0, speed) == pytest.approx(speed / 8)  # a tap steps right away
-    assert g.advance(0.05, 0.05, speed) == 0  # one press isn't a hold
-    # Auto-repeat starts after the keyboard's delay, then comes every 33 ms.
-    t, moved = 0.4, 0.0
-    while t < 3.0:
-        assert g.press(1, t, speed) == 0
-        moved += g.advance(t, 1 / 30, speed)
-        t += 1 / 30
-    assert speed * 2.6 < moved < speed * 2.6 * 3  # glided, and sped up
-    assert g.advance(t + 0.2, 0.2, speed) == 0  # released
-    assert g.press(-1, t + 0.3, speed) == pytest.approx(-speed / 8)  # other way: a new tap
+    _, x = drive(g, [(i / 6, 1) for i in range(12)], 2.0)
+    g.press(-1, 2.0, 1 / 24)
+    assert g.speed() == 0 and g.advance(0.1) == 0 and not g.pending
+    g.press(-1, 2.1, 1 / 24)
+    assert g.speed() < 0
 
 
 def test_parse_freq():
@@ -114,8 +143,8 @@ async def test_tone_app_marks_go_to_the_profile(tmp_path):
     app = ToneApp(4000, "L", -30, eq=EQ, profile=prof, dry_run=True)
     async with app.run_test() as pilot:
         await pilot.press("right")
-        await pilot.pause()
-        assert app.synth.freq == pytest.approx(4000 * 2 ** (1 / 48))
+        await pilot.pause(0.6)
+        assert app.synth.freq == pytest.approx(4000 * 2 ** (1 / 48))  # half a 1/24-octave tap
         await pilot.press("e", "e", "p", "s", "d", "u", "d")  # both ears; peak; noise; dip, undone; dip
         await pilot.press("g")
         await pilot.pause()
