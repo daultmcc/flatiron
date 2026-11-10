@@ -134,7 +134,7 @@ class CorrectionSettings:
         if not 1 / 8 - 1e-9 <= self.smooth_oct <= 1 + 1e-9:
             raise ValueError("smoothing width must be 1/8 to 1 octave")
         if self.method == "smooth" and not self.preserve_tonality:
-            raise ValueError("the smooth method corrects narrow residuals only; it doesn't combine with --broad")
+            raise ValueError("the smooth method corrects narrow residuals only; it doesn't combine with --broad-strength above 0")
 
     @property
     def consensus(self) -> tuple[str, ...]:
@@ -475,7 +475,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         for f in feats:
             if f.accepted and f.kind == BROAD:
                 f.accepted = False
-                f.reason = "broad: kept as tonality (correct it with --broad)"
+                f.reason = "broad: kept as tonality (correct it with --broad-strength)"
         ff, comp = add_tonality_compensation(ff, freqs, settings, w_lo, w_hi, len(fixed))
     if fixed:
         contrib = dict(zip(map(id, ff.filters), ff.contributions))

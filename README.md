@@ -14,30 +14,35 @@ very narrow (Q 12-16) and near-edge (~11 kHz) features still come out shallow.
 uv sync
 uv run flatiron devices                          # list outputs, flag Bluetooth/mono/rate issues
 uv run flatiron profiles                         # list headphone profiles
-uv run flatiron run -p "HD 600" --sweep          # first session: coarse sweep, then trials
-uv run flatiron run                              # later sessions (-p can go when there's one profile)
+uv run flatiron run "HD 600" --new --sweep       # first session of a new profile: coarse sweep, then trials
+uv run flatiron run                              # later sessions (the profile can go when there's only one)
 uv run flatiron sessions                         # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --delete <id>           # e.g. a session left open by a crash
 uv run flatiron report -H                        # the current fit's filters; -H opens the HTML report
 uv run flatiron config                           # show the profile's fit settings
-uv run flatiron config --broad -s 50            # change them (every fit uses them from now on)
+uv run flatiron config --broad-strength 50       # change them (every fit uses them from now on)
 uv run flatiron audition                         # the fit on/off: pink noise, sweep, or --source song.wav
 uv run flatiron config --checkpoint              # fix the current filters; later fits only add to them
 uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
-uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; -m preset.txt
-uv run flatiron tone -p "HD 600"                 # tone generator: glide by hand, mark peaks and dips
-uv run flatiron report --compare A B C -H         # several profiles per ear: their curves, what the veto would correct
-uv run flatiron config -r consensus:B,C           # use B's and C's raw curves as the reference
-uv run flatiron config --veto B,C                 # correct features toward the median of this one's, B's and C's
-uv run flatiron report --csv curves.csv           # the level, reference, baseline and residual, per ear
-uv run flatiron profiles new "Etude" --kind iem   # or `profiles set NAME --kind ... --label ...`
+uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; --merge preset.txt
+uv run flatiron tone "HD 600"                    # tone generator: glide by hand, mark peaks and dips
+uv run flatiron compare A B C -H                 # several profiles per ear: their curves, what the veto would correct
+uv run flatiron config A -r consensus:B,C        # use B's and C's raw curves as A's reference
+uv run flatiron config A --veto B,C              # correct A's features toward the median of A's, B's and C's
+uv run flatiron report --csv curves.csv          # the level, reference, baseline and residual, per ear
+uv run flatiron profiles new "Etude" --kind iem  # or `profiles set NAME --kind ... --label ...`
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
-uv run flatiron simulate --scenario seating       # or consensus: the multi-session and multi-headphone checks
+uv run flatiron simulate --scenario seating      # or consensus: the multi-session and multi-headphone checks
 uv run pytest                                    # in parallel (pytest-xdist); -n0 for one process
 ```
 
-`run` options: `--device N`, `--minutes` (at most 15), `--stimulus noise|warble|tone`,
-`--bands-per-octave 12|24`, `--active-eq preset.txt` (system EQ in effect while
+Commands that work on one profile take its name as the first argument, and it
+can be left out when there's only one profile.
+
+`run` options: `--new` (start a new profile with this name), `--device N` (an
+index from `devices`, or part of the device's name), `--minutes` (at most 15),
+`--stimulus noise:N|warble:N|tone` (`noise:12`, a 1/12-octave band, by default;
+`warble:N` swings over 1/N octave), `--active-eq preset.txt` (system EQ in effect while
 measuring, as Equalizer APO / AutoEQ text), `--dry-run` (no audio), `--sweep`
 (tap at peaks and dips in a slow sweep first; once there's a fit, the sweep
 plays through it, Q toggling it, so you hear what it hasn't fixed),
@@ -58,49 +63,51 @@ There's no separate fit step: `report`, `export`, `audition`, `verify` and the
 sweep compute the fit when they need it, from all the profile's trials and its
 settings (the perceptual fit is cached, so this takes a few seconds only after
 new trials). `config` settings: `--width` (max feature width W, octaves),
-`--reference iso226|diffuse|none|file.csv|consensus:A,B`, `--broad` (also correct broad
-features toward the fixed target; by default only narrow features are corrected
-and the original broad shape is kept, leaving broad tonal changes to you),
-`-s/--broad-strength` (how much of each broad feature, %; needs `--broad`), `--k`, `--k-broad`, `--bands`, `--boost-narrow`,
-`--boost-broad`, `--max-cut`, `--f-lo`, `--f-hi`, `--no-consistency`,
-`--sessions id,id|all`, `--pool OTHER[,OTHER]|none` (include another profile's trials, e.g. the same
+`--reference iso226|diffuse|none|file.csv|consensus:A,B`, `--broad-strength` (how much
+of each broad feature to correct toward the fixed target, %; 0, the default, corrects
+only narrow features and keeps the original broad shape, leaving broad tonal changes to you),
+`--k-narrow`, `--k-broad`, `--soft-margin`, `--bands`, `--max-boost-narrow`,
+`--max-boost-broad`, `--max-cut`, `--f-lo`, `--f-hi` (Hz, or `13k`), `--no-seating`,
+`--sessions id,PROFILE,...` (session ids and profile names, a name standing for all
+that profile's sessions; another profile's name pools its trials in, e.g. the same
 headphones measured with tones), `--method smooth` with `--smooth-width OCT` (experimental: correct every
 residual against a smoothed curve, no feature detection; corrects some noise too), `--method match`
 (experimental: correct the whole curve toward the reference, tonality included),
 `--baseline joint` (experimental: a baseline that moves smoothly with the data instead of jumping between two
 readings of a broad region well off the reference, shown with its uncertainty in the report; needs
-`--method features`);
-`--reset [name ...]` returns settings to the defaults.
+`--method features`).
+`--reset name,name` returns settings to the defaults (also `sessions`, `checkpoint`, or `all`
+for every setting and the sessions); it can't be combined with other changes.
 `-r consensus:A,B` uses the listed profiles' raw curves as the reference instead of a fixed one, smoothed over
-`--consensus-smooth OCT` (default 1/2 octave, 0: none). This profile is only in it if you list it, and with three
+`--consensus-width OCT` (default 1/2 octave, 0: none). This profile is only in it if you list it, and with three
 headphones you probably want to: two others alone give their mean, not a median. `--veto A,B|none` corrects each
 feature toward the median feature of this profile and those, among features that overlap it, and `--veto-import DB`
 (default 1.5, 0: none) limits what it may add where that median feature is at another frequency.
 `--veto-mode pointwise` instead corrects frequency by frequency, by what exceeds the median of the residuals, and
-adds nothing. The reference and veto can be used together, and with or without `--broad`; `--veto` needs
+adds nothing. The reference and veto can be used together, with or without broad correction; `--veto` needs
 `--method features`.
 `--checkpoint` fixes the current filters: later fits keep them, whatever the
 settings, and only add filters (within `--bands`) for what's still
-significant, e.g. after `verify`. `--reset-checkpoint` drops it. The design's
+significant, e.g. after `verify`. `--reset checkpoint` drops it. The design's
 default diffuse-field reference needs the ISO 389-7 table, which isn't sourced
 yet, so `iso226` (free field) is the default for now.
 
 `tone` keys: ←/→ frequency (a tap steps; holding glides, speeding up the longer
 it's held), ↑/↓ glide speed, G go to a frequency, E ear (left/right/both), S
 stimulus (pure tone, warble, 1/24, 1/12 and 1/3-octave noise), +/− level, Q
-correction on/off (with `-p`), P/D mark a peak/dip, U undo the last mark, Space
+correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space
 pause, Esc quit. Marks are saved in the profile; the next `run` session
 refines its frequency grid around them.
 
 LSP exports use filter mode
 "APO (DR)", which matches Flatiron's filters exactly; when LSP's LADSPA build is
 installed, every LSP export is checked against the real plugin before it's
-written. `--merge` puts an Equalizer APO / AutoEQ preset (your preference EQ)
-in front of the correction in the same file, with the preamp computed over both.
+written. `--merge FILE` (or `--merge L=FILE --merge R=FILE`) puts an Equalizer APO / AutoEQ
+preset (your preference EQ) in front of the correction in the same file, with the preamp computed over both.
 The preamp defaults to enough headroom that no boost can clip; `--preamp 0`
-keeps the uncorrected level, which is easier to A/B against. `-t pipewire
---check` measures the filters through a private filter-chain on the running
-PipeWire (virtual sink and source; nothing plays on your devices).
+keeps the uncorrected level, which is easier to A/B against. `-t pipewire`
+measures the filters through a private filter-chain first when PipeWire is
+running (virtual sink and source; nothing plays on your devices).
 `-t tincan` saves a TinCan preset named "<profile> Flatiron <fit>" straight
 into TinCan's presets (or to `-o FILE`, for TinCan's import). TinCan presets
 carry no preamp, since TinCan sets one for everything loaded, so `--preamp`

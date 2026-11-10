@@ -1,4 +1,4 @@
-"""Consensus across profiles (DESIGN.md, "Comparing profiles" and "Consensus reference"): the soft median,
+"""Consensus across profiles (DESIGN.md, "The soft median" and "Consensus reference"): the soft median,
 how much profiles disagree, and the consensus of raw curves.
 
 Statistics stay on each profile's own grid, because interpolating a fit onto a

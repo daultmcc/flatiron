@@ -149,7 +149,8 @@ def set_profile_settings(profile: Profile, settings: CorrectionSettings) -> None
 
 
 def profile_session_ids(profile: Profile) -> list[str] | None:
-    """Sessions the fit uses (None: all)."""
+    """What the fit uses (None: all its sessions and its pooled profiles'): session ids, and
+    profile slugs, each standing for all of that profile's sessions (new ones included)."""
     return profile.read().get("sessions_used")
 
 
@@ -174,7 +175,7 @@ class NotEnoughTrials(ValueError):
     pass
 
 
-# -- pooling (`flatiron config --pool`) ---------------------------------------
+# -- pooling (`flatiron config --sessions OTHER`) ------------------------------
 
 def pooled_profiles(profile: Profile) -> list[Profile]:
     """Other profiles (the same headphones) whose trials the fit includes."""
@@ -183,7 +184,7 @@ def pooled_profiles(profile: Profile) -> list[Profile]:
         p = Profile(slug, profile.dir.parent.parent)
         if not p.path.exists():
             raise ValueError(f"Profile {slug!r} is pooled into {profile.read()['label']!r} but doesn't exist "
-                             "any more: flatiron config --pool none")
+                             f"any more: flatiron config {profile.slug} --reset sessions")
         out.append(p)
     return out
 
@@ -191,8 +192,27 @@ def pooled_profiles(profile: Profile) -> list[Profile]:
 def fit_sessions(profile: Profile) -> list[Session]:
     """The profile's sessions and those of the profiles pooled into it, oldest
     first (the newest session's grid is the one the fit uses)."""
-    sessions = profile.sessions() + [s for p in pooled_profiles(profile) for s in p.sessions()]
-    return sorted(sessions, key=lambda s: datetime.fromisoformat(s.started))
+    return [s for _, s in owned_fit_sessions(profile)]
+
+
+def owned_fit_sessions(profile: Profile) -> list[tuple[str, Session]]:
+    """fit_sessions, each with the slug of the profile it belongs to."""
+    pairs = [(profile.slug, s) for s in profile.sessions()]
+    pairs += [(p.slug, s) for p in pooled_profiles(profile) for s in p.sessions()]
+    return sorted(pairs, key=lambda x: datetime.fromisoformat(x[1].started))
+
+
+def select_sessions(profile: Profile, selection: list[str] | None) -> list[Session]:
+    """The sessions a selection (profile_session_ids) picks from fit_sessions."""
+    pairs = owned_fit_sessions(profile)
+    if not selection:
+        return [s for _, s in pairs]
+    known = {s.id for _, s in pairs} | {slug for slug, _ in pairs} | {profile.slug}
+    missing = set(selection) - known
+    if missing:
+        raise ValueError(f"no such session(s): {', '.join(sorted(missing))}")
+    chosen = set(selection)
+    return [s for slug, s in pairs if s.id in chosen or slug in chosen]
 
 
 def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
@@ -202,12 +222,7 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
     With the balance prior on (the profile's `balance` setting), the two ears'
     curves are fitted together, each with the noise and seating spread of its
     own fit. A consensus or veto member uses its own setting."""
-    sessions = fit_sessions(profile)
-    if session_ids:
-        missing = set(session_ids) - {s.id for s in sessions}
-        if missing:
-            raise ValueError(f"no such session(s): {', '.join(sorted(missing))}")
-        sessions = [s for s in sessions if s.id in session_ids]
+    sessions = select_sessions(profile, session_ids)
     trials, grids = profile.history(sessions)
     fits, keys = {}, {}
     for e in EARS:

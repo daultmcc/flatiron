@@ -128,7 +128,7 @@ class Profile:
         """Open a profile by label or slug, creating it if needed."""
         p = cls(slugify(label), root)
         if p.slug in RESERVED and not p.path.exists():
-            raise ValueError(f"{label!r} can't be a profile name: `config --pool none` uses it")
+            raise ValueError(f"{label!r} can't be a profile name: `config --veto none` uses it")
         if not p.path.exists():
             write_json(p.path, {"label": label, "slug": p.slug, "created": now_iso(),
                                 "version": FORMAT_VERSION})

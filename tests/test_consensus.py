@@ -562,28 +562,28 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
 
     one, two, three = three_profiles
     monkeypatch.setattr("webbrowser.open", lambda *_: None)
-    assert main(["report", "--compare", "One"]) == 1
-    assert main(["report", "--compare", "One", "Nope"]) == 1
+    assert main(["compare", "One"]) == 1
+    assert main(["compare", "One", "Nope"]) == 1
     capsys.readouterr()
-    assert main(["report", "--compare", "One", "Two", "Three", "-H", "--ear", "L", "-w", "0.5"]) == 0
+    assert main(["compare", "One", "Two", "Three", "-H", "--ear", "L", "-w", "0.5"]) == 0
     out = capsys.readouterr().out
     assert "soft median of 3 profiles" in out and "Right ear" not in out
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
     assert page.count("<picture>") == 1 and "Left ear" in page and "All features" in page
-    assert main(["report", "--compare", "One", "Two"]) == 0
+    assert main(["compare", "One", "Two"]) == 0
     assert "differences, not outliers" in capsys.readouterr().out
 
     csv = tmp_path / "out.csv"
-    assert main(["report", "-p", "One", "--csv", str(csv)]) == 0
+    assert main(["report", "One", "--csv", str(csv)]) == 0
     lines = csv.read_text().splitlines()
     assert lines[0].startswith("ear,freq_hz,level_db,level_sd") and lines[1].startswith("L,") and lines[-1].startswith("R,")
 
     capsys.readouterr()
-    assert main(["config", "-p", "One", "-r", "consensus:Two,Nope"]) == 1 and "settings" not in one.read()
-    assert main(["config", "-p", "One", "-r", "consensus:Two,Three"]) == 0
+    assert main(["config", "One", "-r", "consensus:Two,Nope"]) == 1 and "settings" not in one.read()
+    assert main(["config", "One", "-r", "consensus:Two,Three"]) == 0
     assert one.read()["settings"]["reference"] == "consensus:two,three"
     assert profile_settings(one).consensus == ("two", "three")
-    assert main(["report", "-p", "One", "-H"]) == 0
+    assert main(["report", "One", "-H"]) == 0
     out = capsys.readouterr().out
     assert "raw curves of Three, Two, smoothed over 0.5 octave" in out
     assert "weighted mean" in out
@@ -592,77 +592,77 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert len(entries) == 2  # one per ear
 
     # The same list from another profile shares the entries; another list doesn't.
-    assert main(["config", "-p", "Three", "-r", "consensus:Three,Two"]) == 0
+    assert main(["config", "Three", "-r", "consensus:Three,Two"]) == 0
     assert current_fit(three).correction.ears["L"].consensus.G is not None  # listed, so it's a member
     assert len(list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))) == 2
-    assert main(["config", "-p", "Three", "-r", "consensus:Two"]) == 0
+    assert main(["config", "Three", "-r", "consensus:Two"]) == 0
     assert "single headphone" in capsys.readouterr().out
     current_fit(three)
     assert len(list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))) == 4
 
     # Neither the width nor the smoothing is part of the raw entry.
-    assert main(["config", "-p", "One", "-w", "0.5", "--consensus-smooth", "0.25"]) == 0
+    assert main(["config", "One", "-w", "0.5", "--consensus-width", "0.25"]) == 0
     assert current_fit(one).correction.ears["L"].consensus.smooth_oct == 0.25
     assert len(list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))) == 4
-    assert main(["config", "-p", "One", "--reset", "width", "consensus-smooth"]) == 0
+    assert main(["config", "One", "--reset", "width,consensus-width"]) == 0
 
     # The combinations that used to be refused aren't any more.
-    assert main(["config", "-p", "One", "--broad"]) == 0
+    assert main(["config", "One", "--broad-strength", "100"]) == 0
     current_fit(one)
-    assert main(["config", "-p", "One", "--no-broad", "--method", "smooth"]) == 0
+    assert main(["config", "One", "--broad-strength", "0", "--method", "smooth"]) == 0
     current_fit(one)
-    assert main(["config", "-p", "One", "--method", "match"]) == 0
+    assert main(["config", "One", "--method", "match"]) == 0
     current_fit(one)
-    assert main(["config", "-p", "One", "--veto", "Two"]) == 1  # veto judges features
-    assert main(["config", "-p", "One", "--method", "features", "--veto", "Two,Three,One"]) == 0
+    assert main(["config", "One", "--veto", "Two"]) == 1  # veto judges features
+    assert main(["config", "One", "--method", "features", "--veto", "Two,Three,One"]) == 0
     st = profile_settings(one)
     assert st.veto == ("two", "three", "one") and st.consensus == ("two", "three")
     capsys.readouterr()
-    assert main(["report", "-p", "One", "-H"]) == 0
+    assert main(["report", "One", "-H"]) == 0
     out = capsys.readouterr().out
     assert "Veto: each feature" in out and "adding at most 1.5 dB" in out
-    assert main(["config", "-p", "One", "--veto-mode", "pointwise"]) == 0
-    assert main(["config", "-p", "One", "--veto-import", "3"]) == 1  # only for the feature mode
+    assert main(["config", "One", "--veto-mode", "pointwise"]) == 0
+    assert main(["config", "One", "--veto-import", "3"]) == 1  # only for the feature mode
     capsys.readouterr()
-    assert main(["report", "-p", "One", "-H"]) == 0
+    assert main(["report", "One", "-H"]) == 0
     assert "frequency by frequency" in capsys.readouterr().out
-    assert main(["config", "-p", "One", "--veto-mode", "feature", "--veto-import", "3"]) == 0
+    assert main(["config", "One", "--veto-mode", "feature", "--veto-import", "3"]) == 0
     assert profile_settings(one).veto_import_db == 3.0
-    assert main(["config", "-p", "One", "--reset", "veto-import"]) == 0
+    assert main(["config", "One", "--reset", "veto-import"]) == 0
     # The joint baseline, with a consensus reference and both vetoes (each voter's baseline is its own).
-    assert main(["config", "-p", "One", "--baseline", "joint"]) == 0
+    assert main(["config", "One", "--baseline", "joint"]) == 0
     capsys.readouterr()
-    assert main(["report", "-p", "One", "-H"]) == 0
+    assert main(["report", "One", "-H"]) == 0
     assert "Baseline: joint" in capsys.readouterr().out
     assert current_fit(one).correction.ears["L"].baseline_sd is not None
-    assert main(["config", "-p", "One", "--veto-mode", "pointwise"]) == 0
+    assert main(["config", "One", "--veto-mode", "pointwise"]) == 0
     current_fit(one)
-    assert main(["config", "-p", "One", "--method", "smooth"]) == 1  # the joint baseline needs features
-    assert main(["config", "-p", "One", "--reset", "baseline", "veto-mode"]) == 0
-    assert main(["config", "-p", "One", "--veto", "One"]) == 1  # no one else to vote
-    assert main(["config", "-p", "One", "--veto", "Nope"]) == 1
-    assert main(["config", "-p", "One", "--veto", "none"]) == 0 and profile_settings(one).veto == ()
+    assert main(["config", "One", "--method", "smooth"]) == 1  # the joint baseline needs features
+    assert main(["config", "One", "--reset", "baseline,veto-mode"]) == 0
+    assert main(["config", "One", "--veto", "One"]) == 1  # no one else to vote
+    assert main(["config", "One", "--veto", "Nope"]) == 1
+    assert main(["config", "One", "--veto", "none"]) == 0 and profile_settings(one).veto == ()
 
-    assert main(["config", "-p", "Two", "--veto-mode", "pointwise"]) == 1  # needs --veto
-    # --consensus-smooth only means something with a consensus.
-    assert main(["config", "-p", "Two", "--consensus-smooth", "0.25"]) == 1
+    assert main(["config", "Two", "--veto-mode", "pointwise"]) == 1  # needs --veto
+    # --consensus-width only means something with a consensus.
+    assert main(["config", "Two", "--consensus-width", "0.25"]) == 1
 
     # Pooling and a consensus or a veto don't mix.
     capsys.readouterr()
-    assert main(["config", "-p", "Three", "--pool", "Two"]) == 0
-    assert main(["config", "-p", "Three", "-r", "consensus:Two"]) == 1
+    assert main(["config", "Three", "--sessions", "Three,Two"]) == 0
+    assert main(["config", "Three", "-r", "consensus:Two"]) == 1
     assert "share trials" in capsys.readouterr().out
-    assert main(["config", "-p", "Three", "-r", "none", "--veto", "Two"]) == 1
-    assert main(["config", "-p", "One", "-r", "consensus:Two,Three"]) == 1  # Three pools Two
-    assert main(["config", "-p", "Three", "--pool", "none"]) == 0
+    assert main(["config", "Three", "-r", "none", "--veto", "Two"]) == 1
+    assert main(["config", "One", "-r", "consensus:Two,Three"]) == 1  # Three pools Two
+    assert main(["config", "Three", "--reset", "sessions"]) == 0
     # A fixed reference ends it, and a comparison works with a consensus configured.
-    assert main(["config", "-p", "One", "-r", "consensus:Two,Three"]) == 0
+    assert main(["config", "One", "-r", "consensus:Two,Three"]) == 0
     capsys.readouterr()
-    assert main(["report", "--compare", "One", "Two"]) == 0
+    assert main(["compare", "One", "Two"]) == 0
     assert "isn't used for comparisons" in capsys.readouterr().out
-    assert main(["config", "-p", "One", "-r", "none"]) == 0
+    assert main(["config", "One", "-r", "none"]) == 0
     assert profile_settings(one).consensus == () and profile_settings(one).reference == "none"
-    assert main(["config", "-p", "Three", "--reset", "reference"]) == 0
+    assert main(["config", "Three", "--reset", "reference"]) == 0
     assert profile_settings(Profile("three")).consensus == ()
 
 

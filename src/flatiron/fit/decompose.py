@@ -1,4 +1,4 @@
-"""The joint baseline (DESIGN.md, "Joint baseline"): the posterior mean of the
+"""The joint baseline (DESIGN.md, "The joint baseline"): the posterior mean of the
 tonality curve under an explicit model of D, in place of the robust fit's mode.
 
     D_i = s(x_i) + e_i,   s = B c   (today's spline, knots every 2W)

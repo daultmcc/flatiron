@@ -94,7 +94,7 @@ def test_export_cli(tmp_path, monkeypatch, capsys):
     assert "the folder out doesn't exist" in capsys.readouterr().out and not (tmp_path / "out").exists()
     (tmp_path / "out").mkdir()
     assert main(["export", "-t", "lsp", "-o", "out/hd600.cfg"]) == 0
-    assert main(["export", "-p", "HD 600", "-t", "apo", "-o", "out/hd600"]) == 0
+    assert main(["export", "HD 600", "-t", "apo", "-o", "out/hd600"]) == 0
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["hd600.cfg", "hd600_L.txt", "hd600_R.txt"]
     # Default: a descriptive name in the current directory, not a hidden data folder.
     assert main(["export", "-t", "lsp"]) == 0
@@ -103,7 +103,7 @@ def test_export_cli(tmp_path, monkeypatch, capsys):
     pref = tmp_path / "pref.txt"
     pref.write_text("Preamp: -6 dB\nFilter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.7\n")
     capsys.readouterr()
-    assert main(["export", "-t", "lsp", "-m", str(pref), "-o", "merged.cfg"]) == 0
+    assert main(["export", "-t", "lsp", "--merge", str(pref), "-o", "merged.cfg"]) == 0
     assert "Merged export, bands L 2 / R 2" in capsys.readouterr().out
 
 
