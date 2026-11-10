@@ -4,13 +4,15 @@ Every setting here is downstream of the cached perceptual fit, so it can be
 changed without new trials.
 """
 
+import hashlib
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 
 from flatiron.audio.biquad import PeakingFilter
-from flatiron.fit.baseline import fit_baseline
-from flatiron.fit.decompose import fit_joint_baseline
+from flatiron.fit.baseline import fit_baseline, fit_shared_baseline, split
+from flatiron.fit.decompose import fit_joint_baseline, fit_shared_joint_baseline
 from flatiron.fit.consensus import EarConsensus, SoftMedian, Source, consensus_of
 from flatiron.fit.features import BROAD, NARROW, Feature, GroupCurve, find_features, seating_step
 from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
@@ -41,6 +43,11 @@ class CorrectionSettings:
     # mean of the tonality under an explicit model of D (fit/decompose.py),
     # which can't tip between two readings the way the robust fit can.
     baseline: str = "robust"
+    # One baseline for both ears (DESIGN.md, "Shared baseline"): their broad
+    # shape is taken to be the same, each with its own level. False: each ear
+    # its own, which also takes up broad differences between the ears. Only
+    # the features method has such a baseline.
+    shared_baseline: bool = True
     k: float = 2.0
     k_broad: float = 2.5
     # Soft rejection: features within this many SDs of k or k_broad are partly
@@ -287,10 +294,20 @@ class _Base:
     values: np.ndarray  # the baseline of D
     J: np.ndarray  # its Jacobian in D: the residual is (I − J) D to first order (exactly, if it's linear)
     sd: np.ndarray | None = None  # posterior SD (joint only)
+    # Shared with the other ear: its part of the residual's covariance, J_o Σ_o J_oᵀ
+    # (the ears' errors taken as independent), and of each session's curve, by
+    # session id: (shift of the residual, its covariance, its deviation's covariance).
+    other_cov: np.ndarray | None = None
+    other_groups: dict = field(default_factory=dict)
 
     @property
     def M(self) -> np.ndarray:
         return np.eye(self.J.shape[0]) - self.J
+
+    def cov(self, cov_D: np.ndarray) -> np.ndarray:
+        """The residual's covariance."""
+        own = self.M @ cov_D @ self.M.T
+        return own if self.other_cov is None else own + self.other_cov
 
 
 def _baseline(g, D, sd_D, settings: CorrectionSettings) -> _Base:
@@ -306,6 +323,106 @@ def _baseline(g, D, sd_D, settings: CorrectionSettings) -> _Base:
         return _Base(j.values, j.jacobian, j.sd)
     S = fit_baseline(g, D, sd_D, settings.max_width_oct, settings.baseline_penalty).smoother
     return _Base(S @ D, S)
+
+
+_SHARED_CACHE: OrderedDict = OrderedDict()
+SHARED_CACHE_SIZE = 32  # a comparison asks for each profile's pair once per ear
+
+
+@dataclass
+class EarInput:
+    """What an ear's baseline is fitted to."""
+    fit: ProbitFit
+    D: np.ndarray
+    cov_D: np.ndarray
+
+    @property
+    def sd(self) -> np.ndarray:
+        return np.sqrt(np.clip(np.diag(self.cov_D), 1e-12, None))
+
+
+def ear_input(fit: ProbitFit, settings: CorrectionSettings, consensus: EarConsensus | None = None,
+              fixed: list[PeakingFilter] | None = None, own: bool = True) -> EarInput:
+    """D and its covariance for an ear (pipeline step 1). own: False for a voter,
+    whose covariance with a consensus it's in is treated as the reference's."""
+    g = fit.grid
+    E = consensus.on(g) if consensus is not None else reference(settings.reference, g, settings.phon)
+    cov = fit.cov if consensus is None else (consensus.difference_cov if own else consensus.other_cov)(fit.cov, g)
+    return EarInput(fit, fit.L + response(list(fixed or []), g) - E, cov)
+
+
+def shared_bases(inputs: dict[str, EarInput], settings: CorrectionSettings) -> dict[str, _Base]:
+    """One baseline for the ears (DESIGN.md, "Shared baseline"), split into each
+    ear's part. Each ear's residual also moves with the other ear's data, through
+    the baseline; that's carried as the other ear's covariance and, session by
+    session, its deviation. Cached on the inputs: a comparison asks for the
+    same pair once per ear."""
+    ears = list(inputs)
+    grids = [inputs[e].fit.grid for e in ears]
+    data, sds = [inputs[e].D for e in ears], [inputs[e].sd for e in ears]
+    h = hashlib.sha1(repr((settings.baseline, settings.max_width_oct, settings.baseline_penalty)).encode())
+    for a in grids + data + sds:
+        h.update(np.ascontiguousarray(a).tobytes())
+    key = h.hexdigest()
+    if key in _SHARED_CACHE:
+        _SHARED_CACHE.move_to_end(key)
+        values, J, sd = _SHARED_CACHE[key]
+    else:
+        if settings.baseline == "joint":
+            j = fit_shared_joint_baseline(grids, data, sds, settings.max_width_oct, settings.baseline_penalty)
+            values, J, sd = j.values, j.jacobian, j.sd
+        else:
+            b = fit_shared_baseline(grids, data, sds, settings.max_width_oct, settings.baseline_penalty)
+            values, J, sd = b.values, b.smoother, None
+        _SHARED_CACHE[key] = values, J, sd
+        while len(_SHARED_CACHE) > SHARED_CACHE_SIZE:
+            _SHARED_CACHE.popitem(last=False)
+    sl = dict(zip(ears, split(grids)))
+    out = {}
+    for e in ears:
+        base = _Base(values[sl[e]], J[sl[e], sl[e]], None if sd is None else sd[sl[e]],
+                     other_cov=np.zeros((grids[ears.index(e)].size,) * 2))
+        for o in ears:
+            if o == e:
+                continue
+            Jo, fo = J[sl[e], sl[o]], inputs[o].fit
+            base.other_cov += Jo @ inputs[o].cov_D @ Jo.T
+            if fo.group_trials is not None:
+                for sid, k in zip(_group_ids(fo), np.flatnonzero(fo.group_trials)):
+                    if sid is not None:
+                        base.other_groups[sid] = (-Jo @ fo.u[k], Jo @ fo.group_cov[k] @ Jo.T,
+                                                  Jo @ fo.group_u_cov[k] @ Jo.T)
+        out[e] = base
+    return out
+
+
+def ear_bases(fits: dict[str, ProbitFit], settings: CorrectionSettings,
+              consensus: dict[str, EarConsensus] | None = None,
+              fixed: dict[str, list[PeakingFilter]] | None = None, own: bool = True) -> dict[str, _Base] | None:
+    """The shared baselines of a profile's ears, or None if they aren't shared
+    (the setting is off, the method has no such baseline, or there's one ear)."""
+    if not settings.shared_baseline or settings.method != "features" or len(fits) < 2:
+        return None
+    return shared_bases({e: ear_input(f, settings, (consensus or {}).get(e), (fixed or {}).get(e), own)
+                         for e, f in fits.items()}, settings)
+
+
+def voter_bases(voters: dict[str, list[tuple[str, ProbitFit]]] | None, settings: CorrectionSettings,
+                consensus: dict[str, EarConsensus] | None = None) -> dict[str, dict[str, _Base]]:
+    """Per ear, each voter's shared baseline (by label), for those with every ear."""
+    if not voters:
+        return {}
+    ears = list(voters)
+    out = {e: {} for e in ears}
+    for label in {l for e in ears for l, _ in voters[e]}:
+        fits = {e: dict(voters[e]).get(label) for e in ears}
+        if any(f is None for f in fits.values()):
+            continue
+        bases = ear_bases(fits, settings, consensus, own=False)
+        if bases is not None:
+            for e in ears:
+                out[e][label] = bases[e]
+    return out
 
 
 def _found(g, T, cov_T, groups, settings: CorrectionSettings, own_R=None) -> list[Feature]:
@@ -326,29 +443,49 @@ def _found(g, T, cov_T, groups, settings: CorrectionSettings, own_R=None) -> lis
     return feats
 
 
-def _group_curves(fit: ProbitFit, R, M, shift=0.0) -> list[GroupCurve]:
+def _group_ids(fit: ProbitFit) -> list:
+    """The session id behind each group with trials, where it's known (None where not)."""
+    ks = np.flatnonzero(fit.group_trials)
+    if len(fit.groups) == len(fit.group_trials):
+        return [fit.groups[k] for k in ks]
+    if len(fit.groups) == len(ks):
+        return list(fit.groups)
+    return [None] * len(ks)
+
+
+def _group_curves(fit: ProbitFit, R, base: _Base, shift=0.0) -> list[GroupCurve]:
     """Each group's residual against the same baseline, linearised: R + M u_k
-    (exact when the baseline is linear)."""
+    (exact when the baseline is linear). With a shared baseline, the other
+    ear's deviation in the same session moves it too; for a session the other
+    ear doesn't have (or can't be matched), the other ear's average stands in."""
     if fit.group_trials is None:
         return []
-    return [GroupCurve(R + M @ fit.u[k] - shift, M @ fit.group_cov[k] @ M.T,
-                       M @ fit.group_u_cov[k] @ M.T)
-            for k in np.flatnonzero(fit.group_trials)]
+    M = base.M
+    out = []
+    for sid, k in zip(_group_ids(fit), np.flatnonzero(fit.group_trials)):
+        r, cov, u_cov = R + M @ fit.u[k] - shift, M @ fit.group_cov[k] @ M.T, M @ fit.group_u_cov[k] @ M.T
+        if base.other_cov is not None:
+            other = base.other_groups.get(sid)
+            if other is None:
+                cov = cov + base.other_cov
+            else:
+                r, cov, u_cov = r + other[0], cov + other[1], u_cov + other[2]
+        out.append(GroupCurve(r, cov, u_cov))
+    return out
 
 
 def voter_candidates(label: str, fit: ProbitFit, settings: CorrectionSettings,
-                     consensus: EarConsensus | None) -> list[Candidate]:
+                     consensus: EarConsensus | None, base: _Base | None = None) -> list[Candidate]:
     """What a voter has against this profile's reference: what it would correct,
     and any other narrow lobe tall enough to count. An undetected lobe isn't the
     same as nothing being there. Its correlation with a consensus it's in is
-    ignored: this only affects which of its lobes pass as significant."""
+    ignored: this only affects which of its lobes pass as significant.
+    base: its shared baseline, if it has one."""
     g = fit.grid
-    E = consensus.on(g) if consensus is not None else reference(settings.reference, g, settings.phon)
-    cov = fit.cov if consensus is None else consensus.other_cov(fit.cov, g)
-    D = fit.L - E
-    base = _baseline(g, D, np.sqrt(np.clip(np.diag(cov), 1e-12, None)), settings)
-    M, R = base.M, D - base.values
-    feats = _found(g, R, M @ cov @ M.T, _group_curves(fit, R, M), settings)
+    x = ear_input(fit, settings, consensus, own=False)
+    base = base or _baseline(g, x.D, x.sd, settings)
+    R = x.D - base.values
+    feats = _found(g, R, base.cov(x.cov_D), _group_curves(fit, R, base), settings)
     if settings.veto_softness > 0:
         # Each counts as far as it's significant or tall, so none appears or vanishes at an edge.
         def counted(f):
@@ -382,13 +519,16 @@ def apply_veto(feats: list[Feature], voters: dict[str, list[Candidate]], setting
 
 def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = CorrectionSettings(),
                 fixed: list[PeakingFilter] | None = None, consensus: EarConsensus | None = None,
-                voters: list[tuple[str, ProbitFit]] | None = None, own_votes: bool = True) -> EarCorrection:
+                voters: list[tuple[str, ProbitFit]] | None = None, own_votes: bool = True,
+                base: _Base | None = None, voter_base: dict[str, _Base] | None = None) -> EarCorrection:
     """fixed: filters already in use (an incremental refit). The pipeline then
     runs on the corrected curve, L + fixed, and only adds filters for what's
     still significant, within the bands left over.
     consensus: the reference, in place of a fixed one (settings.reference names it).
     voters: the other profiles voting on each feature (settings.veto names them).
-    own_votes: False for a comparison's non-voting profile."""
+    own_votes: False for a comparison's non-voting profile.
+    base: this ear's shared baseline (from ear_bases); voter_base: the voters'
+    (from voter_bases). Without them each ear has its own."""
     g = fit.grid
     fixed = list(fixed or [])
     if settings.consensus and consensus is None:
@@ -407,9 +547,10 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         inside = (g >= settings.f_lo) & (g <= settings.f_hi)
         E = E + weighted_median(D[inside], (np.gradient(np.log2(g)) / sd_D**2)[inside])
         D = fit.L + H_fixed - E
-    base = _baseline(g, D, sd_D, settings)
+    if base is None or settings.method != "features":
+        base = _baseline(g, D, sd_D, settings)
     M, R = base.M, D - base.values
-    cov_R = M @ cov_D @ M.T
+    cov_R = base.cov(cov_D)
     R_sd = np.sqrt(np.clip(np.diag(cov_R), 1e-12, None))
 
     pointwise = bool(settings.veto) and settings.veto_mode == "pointwise"
@@ -420,16 +561,15 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         # out leaves nothing to correct.
         sources = [Source(OWN_LABEL, g, R - M @ H_fixed, cov_R)]
         for label, v in voters:
-            Ev = consensus.on(v.grid) if consensus is not None else reference(settings.reference, v.grid, settings.phon)
-            cv = v.cov if consensus is None else consensus.other_cov(v.cov, v.grid)
-            bv = _baseline(v.grid, v.L - Ev, np.sqrt(np.clip(np.diag(cv), 1e-12, None)), settings)
-            sources.append(Source(label, v.grid, v.L - Ev - bv.values, bv.M @ cv @ bv.M.T))
+            xv = ear_input(v, settings, consensus, own=False)
+            bv = (voter_base or {}).get(label) or _baseline(v.grid, xv.D, xv.sd, settings)
+            sources.append(Source(label, v.grid, xv.D - bv.values, bv.cov(xv.cov_D)))
         sm = consensus_of(sources)
         A = interp_matrix(sm.grid, g)
         median_R = A @ sm.m
         cross = cov_R @ sm.G[0] @ A.T
         T, cov_T = R - median_R, cov_R + A @ sm.cov @ A.T - cross - cross.T
-    groups = _group_curves(fit, R, M, 0.0 if median_R is None else median_R)
+    groups = _group_curves(fit, R, base, 0.0 if median_R is None else median_R)
     session_R = [c.r if median_R is None else c.r + median_R for c in groups]
     checked = len(groups) if settings.consistency and len(groups) >= 2 else 0
     feats = _found(g, T, cov_T, groups, settings, R if pointwise else None)
@@ -439,8 +579,8 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
             f.accepted = False
             f.reason = "outside the correction range"
     if settings.veto and not pointwise:
-        apply_veto(feats, {label: voter_candidates(label, v, settings, consensus) for label, v in voters}, settings,
-                   own_votes)
+        apply_veto(feats, {label: voter_candidates(label, v, settings, consensus, (voter_base or {}).get(label))
+                           for label, v in voters}, settings, own_votes)
     if smooth:
         C = np.clip(-R, -settings.max_cut_db, settings.max_boost_narrow_db)
     elif match:
@@ -606,7 +746,10 @@ def correct(fits: dict[str, ProbitFit], settings: CorrectionSettings = Correctio
             fixed: dict[str, list[PeakingFilter]] | None = None,
             consensus: dict[str, EarConsensus] | None = None,
             voters: dict[str, list[tuple[str, ProbitFit]]] | None = None) -> Correction:
-    ears = {e: correct_ear(e, fits[e], settings, (fixed or {}).get(e), (consensus or {}).get(e), (voters or {}).get(e))
+    bases = ear_bases(fits, settings, consensus, fixed) or {}
+    vb = voter_bases(voters, settings, consensus)
+    ears = {e: correct_ear(e, fits[e], settings, (fixed or {}).get(e), (consensus or {}).get(e), (voters or {}).get(e),
+                           base=bases.get(e), voter_base=vb.get(e))
             for e in fits}
     pre = min(preamp_db(c.filters) for c in ears.values())
     return Correction(settings, ears, pre)

@@ -15,6 +15,7 @@ This document describes how Flatiron works as built, the evidence behind its des
 | --- | --- | --- |
 | Seating as a hierarchical model | Built | "Perceptual model"; pipeline step 5 |
 | Channel-balance prior | Built | "Channel balance" |
+| One baseline for both ears | Built | "Shared baseline" |
 | Profile comparison | Built | "Comparing profiles" |
 | Consensus reference, veto | Built | "Consensus reference"; "Veto against other profiles" |
 | Smooth and match methods, joint baseline | Built, experimental | "Experimental methods" |
@@ -43,7 +44,7 @@ Flatiron doesn't:
 
 1. **Measure.** In short sessions, the listener hears pairs of narrowband noise bursts in one ear and says which was louder. An adaptive scheduler picks pairs of nearby frequencies, plus occasional long jumps, where an answer would be most informative. The headphone is reseated between sessions.
 2. **Model.** Every answer for an ear goes into one probabilistic model: a smooth perceived-level curve $L(f)$, a deviation from it for each seating, and a judgment-noise model. Its fit gives $\hat L$ with full error bars, and how much seatings differ.
-3. **Isolate features.** A reference equal-loudness contour is subtracted, and a stiff, outlier-resistant baseline removes everything broader than $W$. What's left, the residual, is split into lobes, and each lobe is tested for significance.
+3. **Isolate features.** A reference equal-loudness contour is subtracted, and a stiff, outlier-resistant baseline, one shape for both ears, removes everything broader than $W$. What's left, the residual, is split into lobes, and each lobe is tested for significance.
 4. **Decide the target.** Significant features are corrected toward zero, scaled by how consistently they appear across seatings and capped. By default, broad compensation filters restore the headphone's original broad tonal balance. Optionally, other headphones' curves serve as the reference, or vote on which features are this headphone's own.
 5. **Fit filters and export.** Peaking filters are fitted to the target and written for the chosen EQ host, checked against the real implementation where possible.
 
@@ -276,7 +277,7 @@ The steps run per ear. Code comments cite them by number.
     - `none`.
     - A CSV of perceived-level shape (`freq_hz,db` rows).
     - A consensus of other profiles' raw curves (see "Consensus reference").
-2. **Baseline.** A penalised cubic B-spline in $\log_2 f$ with knots every $2W$. The curvature penalty sets its stiffness; it scales as $W^4$ (0.1 relative to the data weight at $W = 1$ octave), since a smoothing spline's length scale goes as the penalty's fourth root. It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly. `--baseline joint` (experimental) replaces it with the posterior mean of the tonality, which can't tip (see "The joint baseline").
+2. **Baseline.** A penalised cubic B-spline in $\log_2 f$ with knots every $2W$. The curvature penalty sets its stiffness; it scales as $W^4$ (0.1 relative to the data weight at $W = 1$ octave), since a smoothing spline's length scale goes as the penalty's fourth root. It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly. `--baseline joint` (experimental) replaces it with the posterior mean of the tonality, which can't tip (see "The joint baseline"). By default the two ears share one baseline, each with its own level (see "Shared baseline").
 3. **Residual.** $R = D - b$, with its full covariance $\Sigma_R$.
 4. **Features.** $R$ is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. Then:
     - A lobe narrower than 1/2 octave at half height is *narrow*. It's kept if at least two adjacent points exceed $k$ SD ($k = 2$).
@@ -305,6 +306,18 @@ The steps run per ear. Code comments cite them by number.
 9. **Tonality compensation** (the default). Broad peaking filters (Q at most 1.5, at most 4 of them, from the bands held back in step 8) are fitted to the negative of the narrow filters' own response, smoothed over $W$. The corrected response then keeps the original broad shape to within about 0.5 dB. Filters at nearly the same frequency and Q are merged.
 10. **Preamp.** $-\max(0, \text{peak}) - 0.5$ dB, where the peak is the highest point of the combined response from 20 Hz to 20 kHz. It's one value for both channels, which keeps the L/R balance.
 
+## Shared baseline
+
+**In brief.** The baseline is meant to capture the headphone's broad tonality, and that shouldn't differ between the ears. Fitted per ear, it could read the same region differently in each: on Sundara, the right ear's broad excess at 10 to 14 kHz went into its baseline, while the left ear's narrower 11.6 kHz resonance stood out of its own. The two corrections then looked quite different. So by default (`config --shared-baseline`) both ears are fitted with one baseline shape, and each ear has a level of its own. The reading of a region can still be wrong, but both ears now get the same one.
+
+**Model.** The two ears' $D$ are stacked, and one spline (step 2's basis, over the union of the two grids) is fitted to all their points at once, with a free level for the right ear, since each ear's level is a gauge. The robust fit is unchanged otherwise: the same weights per point, the same Huber and Tukey passes, with the stiffness relative to all the data, so two identical ears give each ear's own baseline. The joint baseline is likewise the posterior mean over the shared coefficients and the level, with a flat prior on the level. The baseline itself doesn't change shape between the ears; there's no per-ear tilt either (see "Shared baseline" under "Findings").
+
+**Residual covariance.** Each ear's residual now moves with the other ear's data too: $R_e = D_e - b_e(D_e, D_o)$, so to first order $\mathrm{d}R_e = (I - J_{ee})\,\mathrm{d}D_e - J_{eo}\,\mathrm{d}D_o$, with $J$ the stacked smoother (robust) or the stacked exact Jacobian (joint). The residual's covariance is $(I - J_{ee})\,\Sigma_e\,(I - J_{ee})^{\mathsf T} + J_{eo}\,\Sigma_o\,J_{eo}^{\mathsf T}$, which takes the ears' errors as independent. The fits don't keep the covariance between the ears that the balance prior gives them. Each session's curve adds the other ear's deviation in the same session, $-J_{eo}\,u_{o,g}$, and its covariance. For a session the other ear doesn't have, the other ear's average stands in, with its covariance.
+
+**Where it applies.** Everywhere a profile's baseline is fitted with the features method: its own ears, each veto voter (with that voter's two ears), the pointwise veto's residuals, and the comparison report. The smooth and match methods have no such baseline and are unchanged. A single ear on its own (as in the one-ear simulations) has its own baseline. `--no-shared-baseline` gives each ear its own, which also takes up broad differences between the ears. That may be useful with a fixed reference, where an ear's broad offset could come from the listener's own HRTF and shouldn't be corrected.
+
+**What it decides.** The shared shape follows the ear with the smaller error bars where they differ. On Sundara that's the right ear in the treble (SD 0.6 to 0.9 dB against 1.7 to 1.9), so both ears now take about 3 dB at 11 to 12 kHz as tonality: the left ear's cut there shrinks, and the right ear's excess is still kept. Whether that region is tonality or a feature is a separate question from whether the ears agree.
+
 ## Settings
 
 Every setting but the channel balance is downstream of the cached perceptual fit, so changing it needs no new trials. The balance changes the joint fit of the two ears, which is quick and cached separately. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
@@ -328,6 +341,7 @@ Every setting but the channel balance is downstream of the cached perceptual fit
 | Sessions and pooled profiles | all of this profile's | `--sessions ID,PROFILE,…` |
 | Method | `features` | `--method features`, `smooth` or `match`; `--smooth-width` |
 | Baseline | `robust` | `--baseline robust` or `joint` |
+| One baseline for both ears | on | `--shared-baseline` / `--no-shared-baseline` |
 
 `config` with no options lists every setting, starred where changed. `--reset NAME,NAME` returns the named settings to their defaults; it also takes `sessions`, `checkpoint`, and `all` (every setting and the session selection, but not the checkpoint, which has to be named). `--reset` can't be combined with any other change, which catches a reset and a change meant for different profiles or settings; `--veto none` can.
 
@@ -336,6 +350,8 @@ Some combinations are refused:
 - `--veto` and `--baseline joint` need `--method features`.
 - `--method smooth` needs `--broad-strength` 0.
 - `--smooth-width`, `--veto-mode`, `--veto-import` and `--consensus-width` need the setting they modify.
+
+`--shared-baseline` is on by default, so it isn't refused with the smooth or match method; it just has no effect there.
 
 Limits: $W$ 1/3 to 2 octaves, `--balance` 0 to 10, `--soft-margin` 0 to 2 SD, `--veto-softness` 0 to 1, `--consensus-width` 0 to 2 octaves, `--smooth-width` 1/8 to 1 octave, `--fit-tolerance` 0.1 to 6 dB, `--broad-strength` 0 to 100%, 1 to 128 bands, and $f_\text{lo}$ below $f_\text{hi}$.
 
@@ -503,7 +519,7 @@ These are settings, off by default, that change how the pipeline treats the resi
 
 **In brief.** The robust baseline makes a hard choice for a broad region far off the reference: follow it as tonality, or reject it as a feature. Near the edge between the two, small changes in the data or the error bars can tip it from one to the other (see "Known limitations"). `config --baseline joint` replaces the choice with an average: the posterior mean of the tonality under a model in which each point is tonality plus either noise or a feature. The baseline then moves continuously with the data and the error bars. Everything downstream is unchanged, except that the baseline is nonlinear in $D$. `robust` stays the default until this has earned the switch.
 
-**Model.** Per ear, on the fit's grid, $D_i = b(x_i) + e_i$, with $b = Bc$ the robust baseline's spline (knots every $2W$). Each point is tonality plus the fit's error, or that plus a feature:
+**Model.** On the fit's grid (both ears' points stacked, with the baseline shared; see "Shared baseline"), $D_i = b(x_i) + e_i$, with $b = Bc$ the robust baseline's spline (knots every $2W$). Each point is tonality plus the fit's error, or that plus a feature:
 
 $$
 e_i \sim (1 - \pi)\,\mathcal N\!\left(0,\; \mathrm{SD}_i^2 + \sigma_\text{floor}^2\right) + \pi\,\mathcal N\!\left(0,\; \mathrm{SD}_i^2 + \sigma_\text{floor}^2 + \sigma_\text{spread}^2\right)
@@ -904,6 +920,25 @@ The aims weren't all met: the largest step is still above 0.2 dB on some ears an
 
 **Tried first: a dictionary of bumps.** The design proposed a smooth tonality plus a regularised horseshoe over a dictionary of about 490 RBJ-shaped bumps no wider than $W$, sampled by Gibbs. Its prototype failed on two counts. The sampler didn't mix: chains started with every bump off and with every bump on disagreed by 2 to 6 dB on the real ears (9 dB with a sparser prior), against an aim of 0.1 dB. And bumps tile: two or three adjacent bumps no wider than $W$ sum to anything broad, so the baseline sank to the bottom of the curve (`sundaratone` L flat at about −3 dB, `hd560` L flat at −6), and moved by several dB with the priors and with whether $\Sigma_D$'s correlations were used. A single moment-matched importance sampler also collapsed (effective sample size 1 to 10) on a third of the contour listeners, which the tempering, the mode proposals and the multiple importance sampling fix.
 
+## Shared baseline
+
+Measured on the real profiles (each with its own settings) and on 80 simulated two-ear listeners in each of three scenarios. Every listener has its own tilt and a contour off ISO 226 in both ears (−6 to 0 dB near 2 to 3.5 kHz, +5 to +13 dB near 7 to 11 kHz), and 3 to 6 random features per ear, independent between the ears (3 to 9 dB, Q 2 to 10), with three sessions of 200 trials per ear. *Same*: the ears' broad shape is identical. *Shelf*: one ear has an extra ±2 to 4 dB, 1 to 1.5-octave bump at 8 to 12 kHz, about the real L−R differences above 8 kHz. *Tilt*: the ears' tilts differ by 0.3 to 0.6 dB per octave. The truth is each ear's features alone, since broad shape is kept.
+
+| Scenario | Baseline | Target RMS error, separate | Shared − separate (± SE) | 5th, 95th percentile per ear | False corrections per ear |
+| --- | --- | --- | --- | --- | --- |
+| Same | robust | 2.380 dB | +0.018 ± 0.029 | −0.42, +0.66 | 0.56 → 0.49 |
+| Same | joint | 2.431 dB | −0.041 ± 0.033 | −0.66, +0.53 | 0.49 → 0.47 |
+| Shelf | robust | 2.355 dB | +0.009 ± 0.033 | −0.56, +0.77 | 0.53 → 0.51 |
+| Shelf | joint | 2.417 dB | −0.028 ± 0.032 | −0.71, +0.52 | 0.48 → 0.44 |
+| Tilt | robust | 2.412 dB | −0.030 ± 0.037 | −0.68, +0.60 | 0.61 → 0.56 |
+| Tilt | joint | 2.409 dB | −0.030 ± 0.041 | −0.63, +0.81 | 0.54 → 0.45 |
+
+On average it's neutral, with slightly fewer false corrections, and the broad differences between the ears cost nothing measurable: they're broad, so they're kept either way. Single ears move by up to about 2 dB either way.
+
+On the real profiles the targets move 0.3 to 0.7 dB RMS per ear (`sundaratone` R 1.4). The L−R difference between the targets falls on Sundara (1.92 to 1.54 dB RMS), SundaraTone (2.11 to 0.75) and HD560 (1.26 to 1.14), and is unchanged on FT1 (1.53 to 1.55). On `sundara` the left ear's 11.6 kHz cut shrinks from 6.2 to 4.0 dB, and the right ear's excess there stays tonality. On `sundaratone` (robust, ISO 226) the left ear had tipped, correcting 6 to 13 kHz as one 12.5 dB broad feature; with the baseline shared, both ears have their 7 and 11 kHz peaks corrected as features of their own. On the SD-scale path (0.8 to 1.2 in 2.5% steps, ISO 226), the largest baseline step is about the same as for separate baselines on the joint baseline (at most 0.18 dB) and on robust `hd560` and `ft1`. On robust `sundara` it's up to 0.41 dB (from 0.15), and on robust `sundaratone` 1.2 dB in both ears (from 1.9 and 0.6).
+
+**A per-ear tilt as well** was tried in the prototype: each ear gets a level and a slope. In simulation it had the narrowest spread (95th percentile at most +0.3 dB per ear), but on Sundara it gave back most of the difference (the left cut at 12 kHz −5.4 dB against −4.4 with level only): a slope between the ears can absorb a broad treble difference. Not adopted, since the point is one broad shape.
+
 ## Robust baseline alternatives
 
 Two other ways to stop the robust baseline tipping were tried and rejected:
@@ -920,6 +955,8 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
     - Against the consensus reference the block is mostly in the reference, and the baseline is stable (0.4 dB at most per 2.5%).
     - The simulated listeners hardly ever tip (0.5% of them by over 1 dB per 2.5% of SD): they follow ISO 226 closely. The multi-headphone simulator's "contour" scenario has the real condition.
     - `--baseline joint` (experimental) reduces the largest step to 0.25 dB on the real ears. Two other fixes were rejected (see "Robust baseline alternatives" under "Findings").
+    - A shared baseline doesn't stop it tipping, but both ears now tip together. On `sundaratone` against ISO 226 the shared robust baseline still steps by up to 1.2 dB per 2.5% of SD, in both ears (1.9 and 0.6 dB apart).
+- **The shared baseline takes the ears' errors as independent.** The balance prior correlates the two ears' curves, but the fits don't keep that covariance, so the other ear's share of a residual's error bars is approximate.
 - **Broad corrections are only as good as the reference.** With `--broad-strength` above 0, individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
 - **The treble is noisy.** Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
 - **The diffuse-field reference needs a user-supplied ISO 389-7 difference table.**

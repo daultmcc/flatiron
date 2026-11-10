@@ -433,6 +433,11 @@ FIT_OPTIONS = [
           help="robust (default): the robustly weighted spline; joint (experimental): the posterior mean of the "
                "tonality under a model of tonality plus features, which moves smoothly with the data instead of "
                "tipping between two readings (needs --method features)")),
+    (("--shared-baseline",), "shared_baseline",
+     dict(action=argparse.BooleanOptionalAction,
+          help="one baseline for both ears, each with its own level (default): their broad shape is taken to be the "
+               "same. --no-shared-baseline: each ear its own, which also takes up broad differences between the "
+               "ears (with --method features)")),
     (("--smooth-width",), "smooth_oct",
      dict(type=float, help="smoothing width (FWHM) in octaves for --method smooth, 1/8 to 1")),
 ]
@@ -707,6 +712,8 @@ def _print_fit(pf):
     if corr.settings.method == "features" and corr.settings.baseline == "joint":
         print("Baseline: joint (experimental): the posterior mean of the tonality under a model of tonality "
               "plus features.")
+    if corr.settings.method == "features" and not corr.settings.shared_baseline:
+        print("Baseline: one per ear (--no-shared-baseline).")
     for e, c in corr.ears.items():
         f = pf.fits[e]
         print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%}, "
