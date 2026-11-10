@@ -12,7 +12,7 @@ import numpy as np
 
 from flatiron.fit.consensus import KINDS_VOTING, SoftMedian, Source, heterogeneity, raw_consensus
 from flatiron.fit.features import weighted_median
-from flatiron.fit.pipeline import CorrectionSettings, correct_ear
+from flatiron.fit.pipeline import CorrectionSettings, correct_ear, ear_bases, voter_bases
 from flatiron.fit.veto import VetoResult, overlaps
 from flatiron.model.grid import common_grid, interp_matrix
 from flatiron.model.probit import ProbitFit
@@ -114,7 +114,10 @@ def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
         offsets.setdefault(m.label, _level_against(sm, m.fits[ear]))
         others = [(o.label, o.fits[ear]) for o in voters if o is not m]
         st = replace(settings, veto=tuple(label for label, _ in others), veto_mode="feature")
-        c = correct_ear(ear, m.fits[ear], st, voters=others, own_votes=voting)
+        # Shared baselines need both ears; they're cached, so the other ear's pass reuses them.
+        base = (ear_bases(m.fits, st) or {}).get(ear)
+        vb = voter_bases({e: [(o.label, o.fits[e]) for o in voters if o is not m and e in o.fits] for e in m.fits}, st)
+        c = correct_ear(ear, m.fits[ear], st, voters=others, own_votes=voting, base=base, voter_base=vb.get(ear))
         for f in c.features:
             if f.veto is not None:
                 seen.append(Seen(m.label, voting, f.fc, f.width_oct, f.peak_db,

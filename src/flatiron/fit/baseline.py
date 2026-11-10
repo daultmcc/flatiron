@@ -9,6 +9,10 @@ and starting it from the Huber fit avoids its bad local solutions.
 
 The final fit is linear in the data (B (BᵀWB + λP)⁻¹ BᵀW with the last
 weights), so the residual's covariance follows exactly.
+
+Several ears can share one baseline (DESIGN.md, "Shared baseline"): one spline
+for all of them, each ear but the first with a free level of its own (each
+ear's level is arbitrary), fitted to all their points at once.
 """
 
 from dataclasses import dataclass
@@ -38,25 +42,56 @@ def curvature_penalty(t: np.ndarray, x0: float, x1: float) -> np.ndarray:
     return d2.T @ d2 * (xs[1] - xs[0])
 
 
+def shared_design(grids: list[np.ndarray], max_width_oct: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The spline's design matrix over every ear's points stacked (knots every
+    2W over the union of their ranges), with a level column for each ear after
+    the first; the curvature penalty, padded with zeros for the levels; and
+    each point's log2 f."""
+    xs = [np.log2(g) for g in grids]
+    x0, x1 = min(x[0] for x in xs), max(x[-1] for x in xs)
+    t = basis(xs[0], x0, x1, 2 * max_width_oct)[1]
+    m, extra = len(t) - 4, len(grids) - 1
+    rows = []
+    for k, x in enumerate(xs):
+        lv = np.zeros((x.size, extra))
+        if k:
+            lv[:, k - 1] = 1.0
+        rows.append(np.hstack([basis(x, x0, x1, 2 * max_width_oct)[0], lv]))
+    P = np.zeros((m + extra, m + extra))
+    P[:m, :m] = curvature_penalty(t, x0, x1)
+    return np.vstack(rows), P, np.concatenate(xs)
+
+
+def split(grids: list[np.ndarray]) -> list[slice]:
+    """Each ear's slice of the stacked points."""
+    ends = np.cumsum([g.size for g in grids])
+    return [slice(int(a), int(b)) for a, b in zip(np.concatenate([[0], ends[:-1]]), ends)]
+
+
 @dataclass
 class Baseline:
-    values: np.ndarray  # baseline at the grid points
+    values: np.ndarray  # baseline at the grid points (stacked, if fitted to several ears)
     smoother: np.ndarray  # S: values = S @ data
     weights: np.ndarray  # final Huber weights (1 = full weight)
 
 
 def fit_baseline(grid: np.ndarray, data: np.ndarray, sd: np.ndarray, max_width_oct: float,
                  penalty: float = PENALTY) -> Baseline:
-    x = np.log2(grid)
-    x0, x1 = x[0], x[-1]
-    B, t = basis(x, x0, x1, 2 * max_width_oct)
-    P = curvature_penalty(t, x0, x1)
+    return fit_shared_baseline([grid], [data], [sd], max_width_oct, penalty)
+
+
+def fit_shared_baseline(grids: list[np.ndarray], data: list[np.ndarray], sd: list[np.ndarray],
+                        max_width_oct: float, penalty: float = PENALTY) -> Baseline:
+    """One baseline for several ears, on their points stacked in order."""
+    B, P, _ = shared_design(grids, max_width_oct)
+    data, sd = np.concatenate(data), np.concatenate(sd)
     # Weight by interval width too, so refined (denser) regions don't dominate.
-    dens = np.gradient(x)
+    dens = np.concatenate([np.gradient(np.log2(g)) for g in grids])
     w0 = dens / sd**2
     # The curvature penalty, not the knots, sets the stiffness, so it scales
     # with W: a smoothing spline's scale goes as the fourth root of the
-    # penalty. (Unscaled, W moved the baseline by under 0.4 dB.)
+    # penalty. (Unscaled, W moved the baseline by under 0.4 dB.) Relative to
+    # all the data: two identical ears give the same baseline as one.
     lam = penalty * w0.sum() * max_width_oct**4
     def huber(r):
         return np.minimum(1.0, HUBER_C / np.maximum(np.abs(r), 1e-12))

@@ -37,6 +37,10 @@ changes only the proposal: the estimate moves by its Monte Carlo error
 
 The residual's covariance needs the estimate's Jacobian. For a posterior mean
 it's exact: J = Cov(s, ∂ log p(D | c)/∂D | D), from the same weighted draws.
+
+Several ears can share the tonality (DESIGN.md, "Shared baseline"): one spline
+for all their points stacked, each ear but the first with a free level of its
+own (flat prior). J is then over all the points, across the ears too.
 """
 
 from dataclasses import dataclass
@@ -46,7 +50,7 @@ import numpy as np
 from scipy.linalg import solve_triangular
 from scipy.special import expit, logsumexp
 
-from flatiron.fit.baseline import HUBER_C, basis, curvature_penalty, fit_baseline
+from flatiron.fit.baseline import HUBER_C, fit_shared_baseline, shared_design
 from flatiron.model.grid import INITIAL_STEP_OCT
 
 # The curvature prior is today's stiffness at this SD, fixed in dB: about the
@@ -71,7 +75,7 @@ HUBER_ITERS = 100
 
 @dataclass
 class JointBaseline:
-    values: np.ndarray  # posterior mean of the tonality at the grid points
+    values: np.ndarray  # posterior mean of the tonality at the grid points (stacked, for several ears)
     jacobian: np.ndarray  # J = ∂values/∂data; the residual is (I − J) to first order
     sd: np.ndarray  # posterior SD of the tonality at the grid points
     ess: float  # effective number of draws behind the mean
@@ -103,17 +107,23 @@ def _log_t(C: np.ndarray, mu: np.ndarray, L: np.ndarray) -> np.ndarray:
 
 
 def fit_joint_baseline(grid: np.ndarray, data: np.ndarray, sd: np.ndarray, max_width_oct: float,
-                       penalty: float = 0.1, share: float = FEATURE_SHARE, spread_db: float = FEATURE_SPREAD_DB,
-                       floor_db: float = TONALITY_FLOOR_DB, sd_ref_db: float = SD_REF_DB,
-                       draws: int = DRAWS) -> JointBaseline:
+                       penalty: float = 0.1, **kw) -> JointBaseline:
     """penalty: the robust baseline's stiffness setting, at sd_ref_db."""
-    x = np.log2(grid)
-    B, t = basis(x, x[0], x[-1], 2 * max_width_oct)
-    P = curvature_penalty(t, x[0], x[-1])
+    return fit_shared_joint_baseline([grid], [data], [sd], max_width_oct, penalty, **kw)
+
+
+def fit_shared_joint_baseline(grids: list[np.ndarray], data: list[np.ndarray], sd: list[np.ndarray],
+                              max_width_oct: float, penalty: float = 0.1, share: float = FEATURE_SHARE,
+                              spread_db: float = FEATURE_SPREAD_DB, floor_db: float = TONALITY_FLOOR_DB,
+                              sd_ref_db: float = SD_REF_DB, draws: int = DRAWS) -> JointBaseline:
+    """One tonality for several ears, on their points stacked in order."""
+    B, P, _ = shared_design(grids, max_width_oct)
+    ears_data, ears_sd = data, sd
+    data, sd = np.concatenate(data), np.concatenate(sd)
     m = B.shape[1]
     # Each point counts for the width it stands for, in units of the initial
     # grid step, so refined (denser) regions don't dominate: as in the robust fit.
-    w = np.gradient(x) / INITIAL_STEP_OCT
+    w = np.concatenate([np.gradient(np.log2(g)) for g in grids]) / INITIAL_STEP_OCT
     # The robust fit's penalty is relative to its total data weight, Σ w/sd²;
     # here that's taken at sd_ref_db everywhere, so it's fixed in dB.
     Q = penalty * max_width_oct**4 * w.sum() / sd_ref_db**2 * P
@@ -168,7 +178,9 @@ def fit_joint_baseline(grid: np.ndarray, data: np.ndarray, sd: np.ndarray, max_w
     # the broadest proposal's metric so that every reading gets a start.
     lpost = ll - 0.5 * np.einsum("ij,jk,ik->i", C, Q, C)
     cand = C[np.argsort(-lpost, kind="stable")[:CANDIDATES]]
-    robust = np.linalg.lstsq(B, fit_baseline(grid, data, np.sqrt(s1), max_width_oct, penalty).values, rcond=None)[0]
+    floored = [np.sqrt(x**2 + floor_db**2) for x in ears_sd]
+    robust = np.linalg.lstsq(B, fit_shared_baseline(grids, ears_data, floored, max_width_oct, penalty).values,
+                             rcond=None)[0]
     starts = [c_huber, robust, cand[0]]
     dist = lambda c0: (solve_triangular(L0, (cand - c0).T, lower=True) ** 2).sum(0)
     near = np.minimum.reduce([dist(c0) for c0 in starts])

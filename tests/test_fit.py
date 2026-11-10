@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from flatiron.audio.biquad import PeakingFilter, response_db
-from flatiron.fit.baseline import fit_baseline
+from flatiron.fit.baseline import fit_baseline, fit_shared_baseline
 from flatiron.fit.features import BROAD, NARROW, GroupCurve, find_features, seating_step, soft_weight
 from flatiron.fit.filters import FilterBounds, fit_filters, preamp_db, response
-from flatiron.fit.pipeline import CorrectionSettings, correct_ear, taper
+from flatiron.fit.pipeline import CorrectionSettings, EarInput, correct, correct_ear, shared_bases, taper
 from flatiron.fit.reference import read_curve_csv, reference
 from flatiron.model.grid import log_grid
 from flatiron.model.probit import ProbitFit
@@ -60,6 +60,75 @@ def test_baseline_leaves_features_in_the_residual():
     assert r[np.argmin(abs(G - 4000))] > 3.5
     assert r[np.argmin(abs(G - 8400))] < -4.5
     assert np.max(np.abs(r[G < 2500])) < 0.3
+
+
+def test_a_shared_baseline_of_identical_ears_is_each_ears_own():
+    """Same stiffness relative to the data: two copies of an ear give its own
+    baseline, and a level difference between them is only a level."""
+    data = 2.0 - 1.0 * X + bump(4000, 0.4, 4) + bump(8400, 0.08, -5)
+    sd = np.full(G.size, 0.5)
+    own = fit_baseline(G, data, sd, 1.0).values
+    both = fit_shared_baseline([G, G], [data, data + 3.0], [sd, sd], 1.0).values
+    assert np.max(np.abs(both[:G.size] - own)) < 1e-6
+    assert np.max(np.abs(both[G.size:] - own - 3.0)) < 1e-6
+
+
+def _two_ears():
+    """L has a narrow peak at 11.5 kHz; R a broad excess there (2 octaves), above a common shape."""
+    common = -1.0 * X + bump(9000, 1.5, 4.0)
+    return {"L": _fit_of(common + bump(11500, 0.25, 7.0), sd=0.5),
+            "R": _fit_of(common + bump(11000, 2.0, 6.0) + 1.0, sd=0.5)}
+
+
+@pytest.mark.parametrize("kind", ["robust", "joint"])
+def test_a_shared_baseline_has_one_shape_for_both_ears(kind):
+    fits = _two_ears()
+    st = CorrectionSettings(reference="none", baseline=kind)
+    shared = correct(fits, st).ears
+    d = shared["R"].baseline - shared["L"].baseline
+    assert np.ptp(d) < 1e-6  # only a level apart
+    apart = correct(fits, CorrectionSettings(reference="none", baseline=kind, shared_baseline=False)).ears
+    assert np.ptp(apart["R"].baseline - apart["L"].baseline) > 1.0  # R's own follows its shelf
+
+
+def test_the_other_ears_errors_reach_the_residual():
+    """R_L moves with D_R through the shared baseline, by −J_LR (the smoother's
+    block, at its final weights), which the residual's covariance carries as
+    J_LR Σ_R J_LRᵀ."""
+    fits = _two_ears()
+    ins = {e: EarInput(f, f.L.copy(), f.cov) for e, f in fits.items()}
+    b = shared_bases(ins, CorrectionSettings(reference="none"))
+    Jo = fit_shared_baseline([G, G], [ins["L"].D, ins["R"].D], [ins["L"].sd, ins["R"].sd], 1.0,
+                              CorrectionSettings().baseline_penalty).smoother[:G.size, G.size:]
+    assert np.abs(Jo).max() > 0.01
+    assert np.allclose(b["L"].other_cov, Jo @ fits["R"].cov @ Jo.T)
+    own = b["L"].M @ fits["L"].cov @ b["L"].M.T
+    assert np.all(np.diag(b["L"].cov(fits["L"].cov)) > np.diag(own))
+
+
+def test_each_session_takes_the_other_ears_deviation_in_that_session():
+    from flatiron.fit.pipeline import _group_curves
+
+    rng = np.random.default_rng(0)
+    fits = _two_ears()
+    n = G.size
+    for e, f in fits.items():
+        f.u = rng.normal(0, 1, (2, n))
+        f.group_trials = np.array([100, 100])
+        f.group_cov = np.stack([f.cov * 2] * 2)
+        f.group_u_cov = np.stack([f.cov] * 2)
+        f.groups = ["s1", "s2"] if e == "L" else ["s2", "s3"]  # R has no s1
+    ins = {e: EarInput(f, f.L.copy(), f.cov) for e, f in fits.items()}
+    b = shared_bases(ins, CorrectionSettings(reference="none"))["L"]
+    Jo = fit_shared_baseline([G, G], [ins["L"].D, ins["R"].D], [ins["L"].sd, ins["R"].sd], 1.0,
+                             CorrectionSettings().baseline_penalty).smoother[:n, n:]
+    R = ins["L"].D - b.values
+    s1, s2 = _group_curves(fits["L"], R, b)
+    own = R + b.M @ fits["L"].u[1]
+    assert np.allclose(s2.r, own - Jo @ fits["R"].u[0])  # R's s2 is its first group
+    assert np.allclose(s2.u_cov, b.M @ fits["L"].cov @ b.M.T + Jo @ fits["R"].cov @ Jo.T)
+    assert np.allclose(s1.r, R + b.M @ fits["L"].u[0])  # no s1 in R: its average stands in
+    assert np.allclose(s1.cov, b.M @ (2 * fits["L"].cov) @ b.M.T + b.other_cov)
 
 
 # -- features --------------------------------------------------------------

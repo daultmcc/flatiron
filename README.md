@@ -75,7 +75,8 @@ residual against a smoothed curve, no feature detection; corrects some noise too
 (experimental: correct the whole curve toward the reference, tonality included),
 `--baseline joint` (experimental: a baseline that moves smoothly with the data instead of jumping between two
 readings of a broad region well off the reference, shown with its uncertainty in the report; needs
-`--method features`).
+`--method features`), `--no-shared-baseline` (a baseline per ear, instead of one broad shape for both; it
+then also takes up broad differences between the ears).
 `--reset name,name` returns settings to the defaults (also `sessions`, `checkpoint`, or `all`
 for every setting and the sessions); it can't be combined with other changes.
 `-r consensus:A,B` uses the listed profiles' raw curves as the reference instead of a fixed one, smoothed over
