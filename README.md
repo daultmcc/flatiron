@@ -39,6 +39,17 @@ uv run pytest                                    # in parallel (pytest-xdist); -
 Commands that work on one profile take its name as the first argument, and it
 can be left out when there's only one profile.
 
+Several people can share one installation, each as a listener with their own
+profiles: `flatiron listeners new Bob`, then name Bob's profiles as `bob/NAME`
+(`flatiron run "bob/HD 600" --new`). With only one listener nothing changes;
+with several, a profile name needs its listener, unless `FLATIRON_LISTENER=bob`
+is set for the shell. `flatiron listeners` lists them, `listeners rename OLD NEW`
+renames one (the first is called `default`), and `profiles move NAME --to
+LISTENER` moves a profile measured under the wrong one. `compare` can take
+profiles from different listeners; a consensus, veto or pooling can't. How
+noisy your judgments are is estimated from all of a listener's profiles
+together, so a new headphone starts with it.
+
 `run` options: `--new` (start a new profile with this name), `--device N` (an
 index from `devices`, or part of the device's name), `--minutes` (at most 15),
 `--stimulus noise:N|warble:N|tone` (`noise:12`, a 1/12-octave band, by default;
@@ -56,7 +67,7 @@ Trial keys: ← or 1 = A louder, → or 2 = B louder, Space = replay, P = pause,
 U = undo the last answer (the pair plays again), L = re-adjust the level (with
 a warning; changes are logged), Q = save and quit, X = discard the session
 (asks first). Every answer is saved as it's given, under
-`~/.local/share/flatiron/profiles/<headphone>/sessions/` (macOS:
+`~/.local/share/flatiron/listeners/<listener>/profiles/<headphone>/sessions/` (macOS:
 `~/Library/Application Support/flatiron/`).
 
 There's no separate fit step: `report`, `export`, `audition`, `verify` and the

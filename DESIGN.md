@@ -15,6 +15,7 @@ This document describes how Flatiron works as built, the evidence behind its des
 | --- | --- | --- |
 | Seating as a hierarchical model | Built | "Perceptual model"; pipeline step 5 |
 | The listener's noise, shared by every profile | Built | "Shared noise" |
+| Several listeners | Built | "Listeners" |
 | Channel-balance prior | Built | "Channel balance" |
 | One baseline for both ears | Built | "Shared baseline" |
 | Profile comparison | Built | "Comparing profiles" |
@@ -218,7 +219,7 @@ The curves are then the MAP given these.
 
 - **What's shared.** $\sigma_0$, $d_0$, $r$ and $\lambda$, per ear (the right ear is noisier for every headphone so far). Not the seating spread, which belongs to the headphone, and not the time-order bias $\beta$, which differs between devices (see "Shared noise" under "Findings"). $\beta$ stays a fixed effect of each profile's fit.
 - **The fit.** The summed Laplace evidence of every member, each profile with its own curve and sessions and with $\tau_\text{seat}$ at its prior, is maximised over the four parameters with one prior on them. It always starts from the prior means, so it depends only on the trials. Each profile's fit then uses the result as fixed and estimates its own $\tau_\text{seat}$.
-- **Members.** Every profile of kind `headphone` or `iem` in the data folder, with its own sessions as its fit selects them (`config --sessions`). Pooled sessions count once, toward the profile they belong to. Only a profile with at least 200 trials in the ear counts: in a smaller one the curve absorbs the answers and pulls $\sigma_0$ down, and adding several small profiles together doesn't undo that. Speaker profiles (**NOT BUILT**) won't count, for the same reason at the level of each short block.
+- **Members.** Every profile of kind `headphone` or `iem` of the listener ("Listeners"), with its own sessions as its fit selects them (`config --sessions`). Pooled sessions count once, toward the profile they belong to. Only a profile with at least 200 trials in the ear counts: in a smaller one the curve absorbs the answers and pulls $\sigma_0$ down, and adding several small profiles together doesn't undo that. Speaker profiles (**NOT BUILT**) won't count, for the same reason at the level of each short block.
 - **Caching.** The result is cached in `cache/noise/`, keyed by every member's trials, and each profile's fit is keyed by the noise as well as its own trials. A session in any profile changes the noise, so every profile refits the next time it's used, which takes a few seconds each with the noise given.
 - **During a session.** The scheduler holds the listener's noise for the whole session. It no longer re-estimates it at block ends.
 
@@ -455,12 +456,12 @@ This replaced an earlier report of residuals and pointwise z-scores. Each profil
 `config -r consensus:A,B,C` uses a consensus of raw curves as $E$, in place of a fixed reference (pipeline step 1). Every later step is the same, including the baseline.
 
 1. **Raw curves.** The sources are the listed profiles' $\hat L_p$, from their own sessions and pooling, with no reference and no baseline. So a consensus depends only on its members' fits, and every profile using the same list shares one cache entry.
-2. **Members.** Exactly the profiles listed, which must be of kind `headphone`. The profile being corrected is included only if it's listed. Leaving it out makes the reference independent of it, but with two others the soft median falls back to their weighted mean, so one's peak reaches the reference at about half height. Listing it as well gives a real median of three. A single profile is allowed (the reference is then that headphone's curve), with a note. Profiles that share trials through pooling can't be used together: pooling means the same headphones measured again, and a consensus needs different ones.
+2. **Members.** Exactly the profiles listed, which must be of kind `headphone` and the same listener's. The profile being corrected is included only if it's listed. Leaving it out makes the reference independent of it, but with two others the soft median falls back to their weighted mean, so one's peak reaches the reference at about half height. Listing it as well gives a real median of three. A single profile is allowed (the reference is then that headphone's curve), with a note. Profiles that share trials through pooling can't be used together: pooling means the same headphones measured again, and a consensus needs different ones.
 3. **Alignment.** Each source gets the offset $\alpha_p$, fitted together with the soft median by the same robust loss, so a treble difference in one headphone doesn't shift its whole curve. A mean-based alignment would be pulled by exactly those differences.
 4. **Smoothing.** `--consensus-width` (FWHM, default 1/2 octave; 0: none) smooths $m$ with a local linear fit. Unsmoothed, the reference holds the members' narrow features, so a shared peak disappears before detection, and another headphone's peak reads as a dip here. Smoothed, the reference carries the broad shape, and narrow features go to detection, and to the veto if it's on. About half of a shared peak around 1/4 octave wide stays in the reference at this width, so a feature's height against it is lower than against a fixed reference.
 5. **Covariance.** $\operatorname{Cov}(\hat L - m)$ adds $m$'s error and, for a member, subtracts the correlation its own vote creates. The offsets are treated as fixed.
 
-Raw results are shared at the top of the data folder (`cache/consensus/`), keyed by the ear, the members and each member's perceptual-fit hash, and pruned least-recently-used at 200 MB. A new session in any member changes its fit, and so the key. The smoothing is applied after the cache.
+Raw results are shared in the listener's folder (`cache/consensus/`), keyed by the ear, the members and each member's perceptual-fit hash, and pruned least-recently-used at 200 MB. A new session in any member changes its fit, and so the key. The smoothing is applied after the cache.
 
 ## Veto against other profiles
 
@@ -470,7 +471,7 @@ Raw results are shared at the top of the data folder (`cache/consensus/`), keyed
 
 ### The rule
 
-1. **Voters.** The profiles listed plus this one, always. They must be of kind `headphone`, at least one must be another profile, and profiles that share trials through pooling can't be used together.
+1. **Voters.** The profiles listed plus this one, always. They must be of kind `headphone` and the same listener's, at least one must be another profile, and profiles that share trials through pooling can't be used together.
 2. **Matching.** Each voter contributes its tallest same-sign feature that overlaps this one, in the literal sense that their half-height widths intersect. A voter with no overlapping feature counts as having nothing there. A voter's narrow lobes of 1 dB or more count even if they aren't significant, since an undetected lobe isn't the same as nothing. There's no matching parameter. Peaks that are clear of each other, however close, are treated as separate features.
 3. **The median feature.** $F^\star$ is the most central of the candidates: the actual feature (or nothing) with the smallest total shape difference $\mathcal D_c$ to the rest, each drawn as a Gaussian of its height and half-height width. Ties go to this profile. With one other profile there's no middle, so $F^\star$ is their average.
 4. **Correction.** With $R$ the feature's residual, $C = -(R - F^\star)$, with any net boost in the feature's own direction limited. The limit is $I$ (`--veto-import`, default 1.5 dB) if $F^\star$ is more than 1/12 octave away, and 0 otherwise, so at the same place a feature can only shrink. Outside the feature only an import can add anything. $I = 0$ means nothing is ever imported. The result is then held to the usual cut and boost caps, and a feature whose largest correction comes to under 0.5 dB is left alone as shared.
@@ -614,7 +615,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 
 - `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
 - `model/`: grids (with the common grid and the interpolation $A_p$), the trials and fit types, the hierarchical fit (one ear, and both under the balance prior), and grid refinement.
-- `session/`: the adaptive scheduler, the trial runner (scheduler, stimuli and session file, without UI), storage, and the sweep.
+- `session/`: the adaptive scheduler, the trial runner (scheduler, stimuli and session file, without UI), storage (listeners, profiles and sessions, and the one-off migration), and the sweep.
 - `fit/`: reference, baseline (robust, and joint in `decompose.py`), features, filter fitting, the correction pipeline, the consensus, the comparison's flags and rows, the veto, and the per-profile fit (cache, settings, pooling, consensus, checkpoint).
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
 - `report/`: figures, the HTML report, and the comparison report.
@@ -627,7 +628,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 
 ## Commands
 
-Commands that work on one profile take it as an optional first argument, `PROFILE` below, which defaults to the only profile if there's just one (`tone` uses a profile only if one is named). `run` adds sessions to an existing profile; `run NAME --new` starts one. `-d`/`--device` takes an index from `devices` or part of a device's name, and `-n`/`--dry-run` runs with no audio. Frequencies can be given in Hz or with a `k` for kHz (`13k`).
+Commands that work on one profile take it as an optional first argument, `PROFILE` below, written `LISTENER/PROFILE` or just `PROFILE` for the current listener's ("Listeners"). Left out, it's the current listener's only profile; `LISTENER/` alone is that listener's only profile. `tone` uses a profile only if one is named. `run` adds sessions to an existing profile; `run NAME --new` starts one. `-d`/`--device` takes an index from `devices` or part of a device's name, and `-n`/`--dry-run` runs with no audio. Frequencies can be given in Hz or with a `k` for kHz (`13k`).
 
 | Command | Does | Options |
 | --- | --- | --- |
@@ -636,11 +637,12 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | `verify` | A short session through the correction | As `run`, without `--new` and the sweep, plus `--trials` (answers, both ears; default 150) |
 | `audition` | The correction on and off | `PROFILE`, `-d`, `-n`, `--source pink`, `sweep` or `FILE.wav` (repeatable; default pink and sweep) |
 | `tone` | The tone generator | `PROFILE`, `-d`, `-n`, `-f`/`--freq` (default 1000), `-e`/`--ear L`, `R` or `both` |
-| `profiles` | Lists profiles (sessions, trials per ear, last date and level, sessions not closed), or changes them | `new NAME --kind headphone` or `iem`; `set NAME --kind … --label …`, which affects no trials |
+| `listeners` | Lists listeners (profiles, trials per ear, each ear's noise and the trials behind it), or changes them | `new NAME`; `rename OLD NEW` (the folder and the name used in `LISTENER/PROFILE`) |
+| `profiles` | Lists profiles (sessions, trials per ear, last date and level, sessions not closed), grouped by listener when there are several, or changes them | `new NAME --kind headphone` or `iem`; `set NAME --kind … --label …`, which affects no trials; `move NAME --to LISTENER` |
 | `sessions` | Lists sessions: trials per ear, minutes, catch-trial accuracy, fast answers, share choosing the first interval, EQ context, verify and not-closed marks | `PROFILE`, `--delete ID` (a session left open by a crash, say), `-y`/`--yes` |
 | `config` | Shows or changes settings (see "Settings") | `PROFILE`, the options in "Settings", `--reset NAME,NAME` or `all`, `--checkpoint` |
 | `report` | Prints filters and features, and notes on the seating spread, noise and bias | `PROFILE`, `-H`/`--html`, `--csv FILE` |
-| `compare` | Compares profiles (see "Comparing profiles") | Two to eight profiles, `-H`/`--html`, `-w`, `-r`, `--ear`, `--include-kind iem` |
+| `compare` | Compares profiles (see "Comparing profiles") | Two to eight profiles, from any listeners, `-H`/`--html`, `-w`, `-r`, `--ear`, `--include-kind iem` |
 | `export` | Writes the correction | `PROFILE`, `-t`/`--target` (required: `apo`, `lsp`, `easyeffects`, `pipewire` or `tincan`), `-o`/`--output`, `--merge FILE` or `--merge L=FILE --merge R=FILE`, `--preamp safe` or `DB` |
 | `simulate` | Runs a simulated listener (see "Validation") | `--trials-per-ear` (default 600), `--seed`, `--design adaptive` or `uniform`, `--scenario consensus` or `seating`; hidden from help: `--sigma0`, `--lapse` |
 
@@ -658,9 +660,19 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Audition | Space switch, N next source, B blind, R reveal, Q/Esc quit |
 | Tone generator | ←/→ frequency, ↑/↓ tap size, G go to a frequency, E ear (left, right, both), S stimulus, +/− level, Q correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space pause, Esc quit |
 
+## Listeners
+
+Several people can share one installation. Each listener is a folder of their own (`listeners/<slug>/`) holding their profiles and the caches that belong to them, the shared noise and consensus results among them. A profile's fits treat that folder as their whole world, so the noise, consensus, veto, pooling and session selection all stay within one listener. Only `compare` reaches across: it compares any profiles, labelling each with its listener when they differ.
+
+- **Names.** A profile is named `LISTENER/PROFILE`. A bare `PROFILE` means the current listener's: the one `FLATIRON_LISTENER` names, else the only listener there is. With several and no variable set, a bare name is an error that says how to name one, so a session can't silently go to the wrong person. There's no sticky "current listener" setting for the same reason. Consensus, veto and `--sessions` lists take bare names only, of the same listener.
+- **The first listener** is called `default` (label "Default") until renamed with `listeners rename`, which renames the folder. Nothing in a listener refers to its own name, so renaming touches nothing else.
+- **Moving a profile** (`profiles move`) moves its folder. It's refused while the profile uses, or is used by, another of its listener's profiles through a consensus, veto or pooling, since those would dangle.
+- **Exports** with several listeners carry the listener's name in the preset or node name and the file name, so two people's presets for the same headphones don't collide.
+- **Migration.** The single-listener layout, with `profiles/` at the top, is moved once into `listeners/default/` the first time a command looks for profiles, the noise and consensus caches with it. The comparison report and the `diffuse` reference table stay at the top, since they aren't anyone's.
+
 ## Data on disk
 
-Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically.
+Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically. Each listener's folder is `listeners/<slug>/`, with a `listener.json` (label, slug, when it was made); the paths below starting with `profiles/` or `cache/noise/` and `cache/consensus/` are inside it.
 
 - `profiles/<slug>/profile.json`: label, kind (`headphone` by default, or `iem`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug`, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.

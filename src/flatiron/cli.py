@@ -1,6 +1,7 @@
 """Command-line entry point."""
 
 import argparse
+import os
 import sys
 
 import numpy as np
@@ -11,31 +12,37 @@ from flatiron.audio.stimulus import KINDS, StimulusSpec
 
 
 def _profile(args, create: bool = False):
-    """The profile named by the PROFILE argument, or the only one there is.
-    create (run --new): make a new one, which must be named and mustn't exist
-    yet. None (after printing why) if that doesn't identify one."""
-    from flatiron.session.store import Profile
+    """The profile named by the PROFILE argument (LISTENER/PROFILE, or a bare
+    name for the current listener's), or the listener's only one. create
+    (run --new): make a new one, which must be named and mustn't exist yet.
+    None (after printing why) if that doesn't identify one."""
+    from flatiron.session.store import Profile, current_listener, split_name
 
-    if create and not args.profile:
+    name = args.profile or ""
+    if create and not name.split("/")[-1]:
         print("--new needs a name for the new profile: flatiron run 'Headphone name' --new")
         return None
-    if args.profile:
-        try:
-            prof = Profile.existing(args.profile)
+    try:
+        listener, pname = split_name(name) if name else (current_listener(), "")
+        if pname:
+            prof = Profile.existing(pname, listener.root)
             if create and prof is not None:
-                print(f"There's already a profile {args.profile!r}: leave out --new to add sessions to it.")
+                print(f"There's already a profile {name!r}: leave out --new to add sessions to it.")
                 return None
             if create:
-                prof = Profile.open(args.profile)
-        except ValueError as e:
-            print(e)
-            return None
+                prof = Profile.open(pname, listener.root)
+        else:
+            prof = None
+    except ValueError as e:
+        print(e)
+        return None
+    if pname:
         if prof is None:
-            hint = (f" Start it with: flatiron run {args.profile!r} --new" if args.cmd == "run"
+            hint = (f" Start it with: flatiron run {name!r} --new" if args.cmd == "run"
                     else " See: flatiron profiles")
-            print(f"No profile {args.profile!r}.{hint}")
+            print(f"No profile {name!r}.{hint}")
         return prof
-    profiles = Profile.all()
+    profiles = Profile.all(listener.root)
     if len(profiles) == 1:
         return profiles[0]
     if not profiles:
@@ -118,8 +125,14 @@ def _current(prof):
     printing why there isn't one."""
     from flatiron.fit.run import NotEnoughTrials, current_fit
 
+    announce = [lambda: print("Fitting the new trials (a few seconds)...", flush=True)]
+
+    def on_fit():  # once, however many profiles (consensus members, voters) need refitting
+        if announce:
+            announce.pop()()
+
     try:
-        return current_fit(prof, on_fit=lambda: print("Fitting the new trials (a few seconds)...", flush=True))
+        return current_fit(prof, on_fit=on_fit)
     except NotEnoughTrials as e:
         print(f"Can't fit {prof.read()['label']!r} yet: {e}. Run some sessions first: flatiron run")
     except (ValueError, FileNotFoundError) as e:
@@ -288,51 +301,183 @@ def _confirm(question: str, yes: bool) -> bool:
         return False
 
 
-def cmd_profiles(args):
+def _profile_listing(p, indent=""):
+    info = p.read()
+    sessions = p.sessions()
+    n = {e: sum(t.ear == e for s in sessions for t in s.trials) for e in EARS}
+    level = p.last_level(sessions)
+    level_s = f"last level {level:+.0f} dBFS" if level is not None else "no sessions yet"
+    last = sessions[-1].started[:10] if sessions else "-"
+    open_s = sum(s.ended is None for s in sessions)
+    kind = info.get("kind", "headphone")
+    print(f"{indent}{info['label']}  ({p.slug})" + ("" if kind == "headphone" else f"  [{kind}]"))
+    print(f"{indent}    {len(sessions)} sessions, L {n['L']} / R {n['R']} trials, last {last}, {level_s}"
+          + (f", {open_s} not closed" if open_s else ""))
+
+
+def _named(name: str):
+    """(listener, profile or None, profile part) for LISTENER/PROFILE or a bare name; None after printing why."""
+    from flatiron.session.store import Profile, split_name
+
+    try:
+        listener, pname = split_name(name)
+        return listener, (Profile.existing(pname, listener.root) if pname else None), pname
+    except ValueError as e:
+        print(e)
+        return None
+
+
+def _references_to(prof):
+    """Other profiles of the same listener that use this one (consensus, veto,
+    pooling), and the ones this one uses."""
+    from flatiron.fit.run import profile_settings
     from flatiron.session.store import Profile
 
+    root = prof.dir.parent.parent
+
+    def uses(p):
+        st = profile_settings(p)
+        return set(st.consensus or ()) | set(st.veto or ()) | set(p.read().get("pool") or ())
+
+    users = [p.read()["label"] for p in Profile.all(root) if p.slug != prof.slug and prof.slug in uses(p)]
+    used = sorted(uses(prof) - {prof.slug})
+    return users, used
+
+
+def cmd_profiles(args):
+    from flatiron.session.store import Listener, Profile, current_listener
+
     action = getattr(args, "action", None)
+    if action in ("new", "set", "move"):
+        found = _named(args.name)
+        if found is None:
+            return 1
+        listener, prof, pname = found
+        if not pname:
+            print("Name the profile (LISTENER/PROFILE or PROFILE).")
+            return 1
     if action == "new":
+        if prof is not None:
+            print(f"There's already a profile {args.name!r}.")
+            return 1
         try:
-            if Profile.existing(args.name) is not None:
-                print(f"There's already a profile {args.name!r}.")
-                return 1
-            prof = Profile.open(args.name)
+            prof = Profile.open(pname, listener.root)
         except ValueError as e:
             print(e)
             return 1
         prof.update(kind=args.kind)
         print(f"Created {args.name!r} ({args.kind}).")
         return 0
+    if action in ("set", "move") and prof is None:
+        print(f"No profile {args.name!r}. See: flatiron profiles")
+        return 1
     if action == "set":
-        try:
-            prof = Profile.existing(args.name)
-        except ValueError:
-            prof = None
-        if prof is None:
-            print(f"No profile {args.name!r}. See: flatiron profiles")
-            return 1
         if args.kind:
             prof.update(kind=args.kind)
         if args.label:
             prof.update(label=args.label)
         return 0
-    profiles = Profile.all()
+    if action == "move":
+        to = Listener.find(args.to)
+        if to is None:
+            print(f"No listener {args.to!r}. See: flatiron listeners")
+            return 1
+        if to.root == listener.root:
+            print(f"{args.name!r} already belongs to {to.slug!r}.")
+            return 1
+        if Profile(prof.slug, to.root).path.exists():
+            print(f"{to.slug!r} already has a profile {prof.slug!r}: rename one first (profiles set --label "
+                  "changes only the label, so move into a listener without that name).")
+            return 1
+        users, used = _references_to(prof)
+        if users or used:
+            if users:
+                print(f"Not moved: {', '.join(users)} use{'s' if len(users) == 1 else ''} it (consensus, veto or "
+                      "pooled sessions). Change their settings first.")
+            if used:
+                print(f"Not moved: it uses {', '.join(used)} (consensus, veto or pooled sessions), which stay "
+                      f"with {listener.slug!r}. Reset those settings first (flatiron config NAME --reset ...).")
+            return 1
+        to.ensure()
+        (to.root / "profiles").mkdir(parents=True, exist_ok=True)
+        prof.dir.rename(Profile(prof.slug, to.root).dir)
+        print(f"Moved {args.name!r} to {to.slug!r}. Both listeners' noise "
+              "is refitted the next time it's needed.")
+        return 0
+    everyone = Listener.all()
+    if len(everyone) > 1:
+        for x in everyone:
+            print(f"{x.slug}/  ({x.label})")
+            ps = x.profiles()
+            for p in ps:
+                _profile_listing(p, "    ")
+            if not ps:
+                print("    no profiles yet")
+        return
+    profiles = Profile.all(current_listener().root)
     if not profiles:
         print("No profiles yet. Start one with: flatiron run 'Headphone name' --new")
         return
     for p in profiles:
-        info = p.read()
-        sessions = p.sessions()
-        n = {e: sum(t.ear == e for s in sessions for t in s.trials) for e in EARS}
-        level = p.last_level(sessions)
-        level_s = f"last level {level:+.0f} dBFS" if level is not None else "no sessions yet"
-        last = sessions[-1].started[:10] if sessions else "-"
-        open_s = sum(s.ended is None for s in sessions)
-        kind = info.get("kind", "headphone")
-        print(f"{info['label']}  ({p.slug})" + ("" if kind == "headphone" else f"  [{kind}]"))
-        print(f"    {len(sessions)} sessions, L {n['L']} / R {n['R']} trials, last {last}, {level_s}"
-              + (f", {open_s} not closed" if open_s else ""))
+        _profile_listing(p)
+
+
+def cmd_listeners(args):
+    from flatiron.fit.run import listener_noise
+    from flatiron.session.store import LISTENER_ENV, Listener, slugify
+
+    action = getattr(args, "action", None)
+    if action == "new":
+        try:
+            x = Listener.create(args.name)
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"Created listener {x.slug!r}. Name its profiles as {x.slug}/PROFILE, e.g. "
+              f"flatiron run '{x.slug}/Headphone name' --new")
+        return 0
+    if action == "rename":
+        x = Listener.find(args.name)
+        if x is None:
+            print(f"No listener {args.name!r}. See: flatiron listeners")
+            return 1
+        try:
+            new = x.rename(args.new)
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"Renamed {x.slug!r} to {new.slug!r}" + (f" ({args.new})" if args.new != new.slug else "") + ".")
+        env = os.environ.get(LISTENER_ENV)
+        if env and slugify(env) == x.slug and new.slug != x.slug:
+            print(f"Note: {LISTENER_ENV} still names {env!r}.")
+        return 0
+    everyone = Listener.all()
+    if not everyone:
+        print("No listeners yet: the first profile you create starts the default one. "
+              "flatiron listeners new NAME adds another.")
+        return 0
+    env = os.environ.get(LISTENER_ENV)
+    for x in everyone:
+        profiles = x.profiles()
+        trials = {e: 0 for e in EARS}
+        for p in profiles:
+            for s in p.sessions():
+                for e in EARS:
+                    trials[e] += sum(t.ear == e and not t.undone for t in s.trials)
+        mark = "  (FLATIRON_LISTENER)" if env and Listener.find(env) and Listener.find(env).slug == x.slug else ""
+        print(f"{x.slug}  ({x.label}){mark}")
+        print(f"    {len(profiles)} profiles, L {trials['L']} / R {trials['R']} trials")
+        noise = listener_noise(x.root, fit=False)
+        for e in EARS:
+            n = noise.get(e)
+            if n is None:
+                print(f"    {e} noise: not fitted yet (it is the next time a fit is needed)")
+            elif n.n_trials:
+                print(f"    {e} noise: {n.sigma0:.2f} dB (×{n.treble_noise:.2f} above 10 kHz), lapse {n.lapse:.1%}, "
+                      f"from {n.n_trials} trials")
+            else:
+                print(f"    {e} noise: the prior (needs a profile with 200 trials in this ear)")
+    return 0
 
 
 def cmd_sessions(args):
@@ -468,14 +613,18 @@ def _show(st, f) -> str:
     return f"{v:g}" if isinstance(v, float) else str(v)
 
 
-def _slug_list(names, what):
-    """Profile slugs for names (None after printing why, if one doesn't exist)."""
+def _slug_list(names, what, root):
+    """Profile slugs for names, all the listener's at `root` (None after
+    printing why, if one doesn't exist)."""
     from flatiron.session.store import Profile
 
     out = []
     for name in names:
+        if "/" in name:
+            print(f"The {what} takes profiles of the same listener: {name!r} names a listener (nothing changed).")
+            return None
         try:
-            other = Profile.existing(name)
+            other = Profile.existing(name, root)
         except ValueError:
             other = None
         if other is None:
@@ -490,14 +639,15 @@ def _session_selection(prof, text):
     profile names, or None after printing why it can't be used."""
     from flatiron.session.store import Profile
 
-    owner = {s.id: p.slug for p in Profile.all() for s in p.sessions()}
+    root = prof.dir.parent.parent
+    owner = {s.id: p.slug for p in Profile.all(root) for s in p.sessions()}
     pool, chosen = [], []
     for item in (x.strip() for x in text.split(",") if x.strip()):
         if item in owner:
             slug = owner[item]
             chosen.append(item)
         else:
-            slugs = _slug_list([item], "session selection (not a session id either)")
+            slugs = _slug_list([item], "session selection (not a session id either)", root)
             if slugs is None:
                 return None
             slug = slugs[0]
@@ -519,7 +669,8 @@ def _describe_selection(prof) -> str:
 
     ids = profile_session_ids(prof)
     pool = prof.read().get("pool") or []
-    label = lambda slug: Profile(slug).read()["label"] if Profile(slug).path.exists() else slug
+    root = prof.dir.parent.parent
+    label = lambda slug: Profile(slug, root).read()["label"] if Profile(slug, root).path.exists() else slug
     if not ids:
         own = "all of this profile's"
         return own + (f", and all of {', '.join(label(s) for s in pool)}'s (pooled)" if pool else "")
@@ -592,7 +743,7 @@ def cmd_config(args):
             changes[f] = conv[0][0](v) if conv else v
 
     if str(changes.get("reference", "")).startswith(CONSENSUS_PREFIX):
-        members = _slug_list(NAMES[0](changes["reference"][len(CONSENSUS_PREFIX):]), "consensus")
+        members = _slug_list(NAMES[0](changes["reference"][len(CONSENSUS_PREFIX):]), "consensus", prof.dir.parent.parent)
         if members is None:
             return 1
         if not members:
@@ -604,7 +755,7 @@ def cmd_config(args):
 
         changes["reference"] = str(Path(changes["reference"]).expanduser().resolve())
     if changes.get("veto"):
-        changes["veto"] = _slug_list(changes["veto"], "veto")
+        changes["veto"] = _slug_list(changes["veto"], "veto", prof.dir.parent.parent)
         if changes["veto"] is None:
             return 1
     try:
@@ -651,7 +802,8 @@ def cmd_config(args):
     if "reference" in changes and new.consensus and new.reference != old.reference:
         from flatiron.session.store import Profile
 
-        print("Consensus of " + ", ".join(Profile(s).read()["label"] for s in new.consensus) + ".")
+        print("Consensus of " + ", ".join(Profile(s, prof.dir.parent.parent).read()["label"]
+                                          for s in new.consensus) + ".")
         if len(new.consensus) == 1:
             print("Note: that's a single headphone's curve, not a consensus.")
         elif len(new.consensus) == 2:
@@ -785,14 +937,18 @@ def cmd_compare(args):
         return 1
     profiles = []
     for name in args.profiles:
-        try:
-            p = Profile.existing(name)
-        except ValueError:
-            p = None
-        if p is None:
+        found = _named(name)
+        if found is None:
+            return 1
+        if found[1] is None:
             print(f"No profile {name!r}. See: flatiron profiles")
             return 1
-        profiles.append(p)
+        profiles.append(found[1])
+    # Profiles from different listeners are named with theirs.
+    from flatiron.session.store import listener_of
+
+    mixed = len({listener_of(p).slug for p in profiles}) > 1
+    name_of = lambda p: f"{listener_of(p).slug}/{p.read()['label']}" if mixed else p.read()["label"]
 
     from itertools import combinations
 
@@ -800,7 +956,7 @@ def cmd_compare(args):
 
     for a, b in combinations(profiles, 2):
         if shares_trials(a, b):
-            print(f"Warning: {a.read()['label']} and {b.read()['label']} share trials through pooling, so they'll "
+            print(f"Warning: {name_of(a)} and {name_of(b)} share trials through pooling, so they'll "
                   "agree more than separate measurements would.")
     own = [profile_settings(p) for p in profiles]
 
@@ -832,7 +988,7 @@ def cmd_compare(args):
             announce.pop()()
 
     try:
-        members = [Member(p.read()["label"], p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
+        members = [Member(name_of(p), p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
                    for p in profiles]
         comparisons = compare(members, st, ears, voting)
     except (NotEnoughTrials, ValueError) as e:
@@ -860,6 +1016,10 @@ def cmd_report(args):
     pf = _current(prof)
     if pf is None:
         return 1
+    from flatiron.session.store import listener_of, several_listeners
+
+    if several_listeners():
+        print(f"Listener: {listener_of(prof).label} ({listener_of(prof).slug})")
     _print_fit(pf)
     if args.csv:
         from flatiron.report.compare import write_csv
@@ -940,7 +1100,12 @@ def cmd_export(args):
             print(f"Note: with this preamp the EQ boosts up to {peak:+.1f} dB at its peak, so loud "
                   "material in that band can clip.")
     ext = {"apo": ".txt", "lsp": ".cfg", "easyeffects": ".json", "pipewire": ".conf", "tincan": ".toml"}[args.target]
-    label = prof.read()["label"]
+    from flatiron.session.store import listener_of, several_listeners
+
+    label, slug = prof.read()["label"], prof.slug
+    if several_listeners():  # two people's presets for the same headphones mustn't collide
+        who = listener_of(prof)
+        label, slug = f"{who.label} {label}", f"{who.slug}-{slug}"
     preset_name = f"{label} Flatiron {plan.fit_hash}{' merged' if plan.merged else ''}"
     if args.output:
         out = Path(args.output)
@@ -951,7 +1116,7 @@ def cmd_export(args):
                   "or write the preset elsewhere with -o and import it in TinCan's Manage presets.")
             return 1
     else:
-        out = Path(f"{prof.slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
+        out = Path(f"{slug}-{plan.fit_hash}{'-merged' if plan.merged else ''}{ext}")
     if not out.suffix:
         out = out.with_suffix(ext)
     if not out.parent.is_dir():
@@ -976,7 +1141,7 @@ def cmd_export(args):
                 if worst > 0.3:
                     print("Not writing it: PipeWire doesn't do what Flatiron predicts.")
                     return 1
-            out.write_text(pipewire.write(plan, label, prof.slug))
+            out.write_text(pipewire.write(plan, label, slug))
             written.append(out)
         elif args.target == "tincan":
             out.write_text(tincan.write(plan, preset_name))
@@ -1095,7 +1260,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="flatiron", description="By-ear headphone resonance EQ.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def profile_arg(s, help="profile name (default: the only profile)"):
+    def profile_arg(s, help="profile name, as LISTENER/PROFILE when there are several listeners "
+                             "(default: the only profile)"):
         s.add_argument("profile", nargs="?", metavar="PROFILE", help=help)
 
     def device_arg(s):
@@ -1144,6 +1310,15 @@ def main(argv=None):
                    help="what to play (repeatable; default: pink noise and the slow sweep)")
     s.set_defaults(func=cmd_audition)
 
+    s = sub.add_parser("listeners", help="list listeners, add one, or rename one")
+    s.set_defaults(func=cmd_listeners)
+    actions = s.add_subparsers(dest="action")
+    n = actions.add_parser("new", help="add a listener")
+    n.add_argument("name")
+    n = actions.add_parser("rename", help="rename a listener (its folder, and how its profiles are named)")
+    n.add_argument("name")
+    n.add_argument("new")
+
     s = sub.add_parser("profiles", help="list headphone profiles, add one, or change one's kind or label")
     s.set_defaults(func=cmd_profiles)
     actions = s.add_subparsers(dest="action")
@@ -1155,6 +1330,9 @@ def main(argv=None):
     n.add_argument("name")
     n.add_argument("--kind", choices=("headphone", "iem"))
     n.add_argument("--label")
+    n = actions.add_parser("move", help="move a profile to another listener")
+    n.add_argument("name")
+    n.add_argument("--to", required=True, metavar="LISTENER")
 
     s = sub.add_parser("sessions", help="list a profile's sessions, or delete one")
     profile_arg(s)

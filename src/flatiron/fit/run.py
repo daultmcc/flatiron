@@ -105,12 +105,13 @@ def noise_sessions(profile: Profile) -> list[Session]:
     return [s for s in own if s.id in chosen or profile.slug in chosen]
 
 
-def listener_noise(root: Path, on_fit: Callable[[], None] | None = None) -> dict[str, Noise]:
+def listener_noise(root: Path, on_fit: Callable[[], None] | None = None, fit: bool = True) -> dict[str, Noise]:
     """Per ear, the noise shared by every profile in the data folder: fitted to
     their trials together (each profile with its own curve and seatings).
     Only profiles with MIN_TRIALS_NOISE_FIT trials in the ear count; until
     there's one, the prior's values. Cached at the top of the data folder,
-    keyed by every member's trials."""
+    keyed by every member's trials. fit=False: only what's cached (an ear
+    that isn't is left out)."""
     sets: dict[str, list] = {e: [] for e in EARS}
     for p in Profile.all(root):
         if p.kind not in NOISE_KINDS:
@@ -131,6 +132,8 @@ def listener_noise(root: Path, on_fit: Callable[[], None] | None = None) -> dict
         if path.exists():
             out[e] = Noise(**json.loads(path.read_text()))
             os.utime(path)
+            continue
+        if not fit:
             continue
         if on_fit is not None and any(len(t) >= MIN_TRIALS_NOISE_FIT for t, _ in sets[e]):
             on_fit()
