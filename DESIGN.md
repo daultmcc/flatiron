@@ -14,6 +14,7 @@ This document describes how Flatiron works as built, the evidence behind its des
 | Part | Status | Where |
 | --- | --- | --- |
 | Seating as a hierarchical model | Built | "Perceptual model"; pipeline step 5 |
+| The listener's noise, shared by every profile | Built | "Shared noise" |
 | Channel-balance prior | Built | "Channel balance" |
 | One baseline for both ears | Built | "Shared baseline" |
 | Profile comparison | Built | "Comparing profiles" |
@@ -79,7 +80,7 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 | $L(f)$, $\hat L$, $\Sigma_L$ | The average perceived-level curve over seatings, its estimate (posterior mode), and the estimate's covariance | `L`, `cov` |
 | $g$ | A group in the hierarchical model: a session (a speaker block, in the NOT BUILT speaker design) | `group` |
 | $u_g(f)$, $L_g = L + u_g$ | Session $g$'s deviation from $L$, and that session's own curve | `u` |
-| $\tau_\text{seat}(f)$; $\tau_\text{lo}$, $\tau_\text{hi}$ | How far a seating typically departs from $L$ at $f$; its values below 5 kHz and above 8 kHz | `tau`; `tau_lo`, `tau_hi` |
+| $\tau_\text{seat}(f)$; $\tau_\text{lo}$, $\tau_\text{mid}$, $\tau_\text{hi}$ | How far a seating typically departs from $L$ at $f$; its values at 5, 8 and 12 kHz | `tau`; `tau_lo`, `tau_mid`, `tau_hi` |
 | $\ell_\text{seat}$ | Correlation width of $u_g$ across frequency (1/12 octave) | `ell_oct` |
 | $t$; $f_a$, $f_b$ | A trial; the centre frequencies of its intervals A and B | `f_a`, `f_b` |
 | $\Delta_a$, $\Delta_b$ | Level offsets the scheduler applies to A and B | |
@@ -175,7 +176,7 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 
 ## Perceptual model
 
-**In brief.** For each ear, the model's unknowns are a smooth average curve $L$, one deviation $u_g$ per session, and a handful of noise parameters. An answer is a noisy comparison of that session's curve at the two frequencies, so a trial informs both $L$ and its own session's deviation. Treating sessions as groups (a hierarchical, or random-effects, model) is what makes reseating useful: judgment noise is new on every trial, while all of a session's trials share one seating, so more trials in a session say more about that seating and little about seatings in general. Modelling that directly also works with a single session, where a consistency check run afterwards can't. The noise parameters and the seating spread are set by maximising the marginal likelihood (empirical Bayes); the curves are then the posterior mode, with error bars from the Laplace approximation.
+**In brief.** For each ear, the model's unknowns are a smooth average curve $L$, one deviation $u_g$ per session, and a handful of noise parameters. An answer is a noisy comparison of that session's curve at the two frequencies, so a trial informs both $L$ and its own session's deviation. Treating sessions as groups (a hierarchical, or random-effects, model) is what makes reseating useful: judgment noise is new on every trial, while all of a session's trials share one seating, so more trials in a session say more about that seating and little about seatings in general. Modelling that directly also works with a single session, where a consistency check run afterwards can't. The noise parameters are the listener's, so they're estimated once per ear from every profile together ("Shared noise"); the seating spread is each profile's own. Both are set by maximising the marginal likelihood (empirical Bayes); the curves are then the posterior mode, with error bars from the Laplace approximation.
 
 ### The likelihood
 
@@ -199,17 +200,32 @@ $$
 - **Level**: a very weak $\mathcal N(0, 100^2)$ dB prior on each point of $L$, so the fit is well-posed with few trials. The gauge is fixed by $\operatorname{mean}(L) = 0$.
 - **Noise**: log-normal priors around $\sigma_0 = 1$ dB and $d_0 = 0.5$ octave; $r$ around 1; $\lambda$ around 2%.
 - **Seating deviation $u_g$**: Gaussian, with amplitude $\tau_\text{seat}(f)$ and a squared-exponential correlation in log-frequency of width $\ell_\text{seat} = 1/12$ octave, centred across frequency because a constant offset cancels within a session. $u_g$ also picks up anything else that changes between sessions: the noise token, the listener's state, or the stimulus when profiles are pooled. A session with few trials is pulled strongly toward the average, and a well-measured one can stand further from it. $\ell_\text{seat}$ is fixed: on the real data the evidence shows no clear preference for a value. $\sigma_0$, $d_0$, $\lambda$ and $\beta$ are shared across an ear's sessions, so $\sigma_0$ doesn't have to absorb seating differences.
-- **Seating spread**: $\tau_\text{seat}$ takes two values, $\tau_\text{lo}$ below 5 kHz and $\tau_\text{hi}$ above 8 kHz, log-interpolated between them, per ear and profile, with log-normal priors (medians 0.5 and 1.5 dB, log SD 0.7). With fewer than two sessions of at least 60 trials in the ear, $\tau_\text{seat}$ stays at those medians, so a single session's error bars allow for seatings not yet measured, rather than tightening without limit as trials are added. The medians are judgment calls. On the real data, treble spread is clear for one ear and profile, suggestive for another, and absent for the other two. About three sessions of 110 trials per ear can detect a spread of 2 dB or more, but can't resolve one under about 1 dB. The prior decides that range, and matters little there: $\tau_\text{seat} = 1$ dB raised the median SD by 2 to 12% at these trial counts.
+- **Seating spread**: $\tau_\text{seat}$ takes three values, $\tau_\text{lo}$, $\tau_\text{mid}$ and $\tau_\text{hi}$ at 5, 8 and 12 kHz, log-interpolated in log-frequency between them and constant beyond, per ear and profile, with independent log-normal priors (medians 0.5, 1.5 and 1.5 dB, log SD 0.7). The prior curve is the same as the two-value one it replaced, which was constant above 8 kHz; the third value lets a spread that keeps rising into the top octave, as a speaker's does, be represented (see "Three-knot seating spread" under "Findings"). With fewer than two sessions of at least 60 trials in the ear, $\tau_\text{seat}$ stays at those medians, so a single session's error bars allow for seatings not yet measured, rather than tightening without limit as trials are added. The medians are judgment calls. On the real data, treble spread is clear for one ear and profile, suggestive for another, and absent for the other two. About three sessions of 110 trials per ear can detect a spread of 2 dB or more, but can't resolve one under about 1 dB. The prior decides that range, and matters little there: $\tau_\text{seat} = 1$ dB raised the median SD by 2 to 12% at these trial counts.
 
 ### Estimating the noise and the seating spread
 
-$\sigma_0$, $d_0$, $r$ and $\lambda$, and then $\tau_\text{lo}$ and $\tau_\text{hi}$, are set by maximising the Laplace-approximated marginal likelihood, with $L$ and the $u_g$ integrated out (empirical Bayes; Nelder–Mead, started from both the prior means and the warm start). The inner fits start from a fixed point, so the evidence is deterministic. The order and limits matter:
+$\sigma_0$, $d_0$, $r$ and $\lambda$, and then $\tau_\text{lo}$, $\tau_\text{mid}$ and $\tau_\text{hi}$, are set by maximising the Laplace-approximated marginal likelihood, with $L$ and the $u_g$ integrated out (empirical Bayes; Nelder–Mead). The noise is maximised over every profile's evidence together (next section), $\tau_\text{seat}$ over the profile's own. The inner fits start from a fixed point, so the evidence is deterministic. The order and limits matter:
 
 - **Not a joint MAP.** A joint MAP over the curve and the noise overfits: with a few trials per point, the curve separates the answers and $\sigma_0$ collapses.
-- **Not with few trials.** Below 200 trials per ear the noise, $r$ included, stays at the prior, because the evidence underestimates $\sigma_0$ with fewer trials.
+- **Not with few trials.** A profile with fewer than 200 trials in an ear doesn't inform the noise, because the evidence underestimates $\sigma_0$ with fewer trials. Until some profile has that many, the noise, $r$ included, stays at the prior.
 - **One pass, noise first.** The noise is fitted with $\tau_\text{seat}$ at its prior, then $\tau_\text{seat}$ once with the noise fixed. Searching both together, or repeating the pass, runs away at sessions of about 110 trials: $\tau_\text{seat}$ grows to several times the truth while $\sigma_0$ collapses. One pass leaves some of a large spread in $\sigma_0$, so a true 3 dB reads low.
 
 The curves are then the MAP given these.
+
+### Shared noise
+
+**In brief.** How noisy the listener's judgments are, how fast that grows with separation, how much more in the treble, and how often they answer at random is the listener's, not the headphone's. So it's estimated once per ear from every profile together and used by all of them. A new profile starts with it, and its first sessions don't have to supply it.
+
+- **What's shared.** $\sigma_0$, $d_0$, $r$ and $\lambda$, per ear (the right ear is noisier for every headphone so far). Not the seating spread, which belongs to the headphone, and not the time-order bias $\beta$, which differs between devices (see "Shared noise" under "Findings"). $\beta$ stays a fixed effect of each profile's fit.
+- **The fit.** The summed Laplace evidence of every member, each profile with its own curve and sessions and with $\tau_\text{seat}$ at its prior, is maximised over the four parameters with one prior on them. It always starts from the prior means, so it depends only on the trials. Each profile's fit then uses the result as fixed and estimates its own $\tau_\text{seat}$.
+- **Members.** Every profile of kind `headphone` or `iem` in the data folder, with its own sessions as its fit selects them (`config --sessions`). Pooled sessions count once, toward the profile they belong to. Only a profile with at least 200 trials in the ear counts: in a smaller one the curve absorbs the answers and pulls $\sigma_0$ down, and adding several small profiles together doesn't undo that. Speaker profiles (**NOT BUILT**) won't count, for the same reason at the level of each short block.
+- **Caching.** The result is cached in `cache/noise/`, keyed by every member's trials, and each profile's fit is keyed by the noise as well as its own trials. A session in any profile changes the noise, so every profile refits the next time it's used, which takes a few seconds each with the noise given.
+- **During a session.** The scheduler holds the listener's noise for the whole session. It no longer re-estimates it at block ends.
+
+If refitting every profile after each session becomes slow (with many more profiles than now), there are two ways to avoid most of it, neither built:
+
+- **Round the noise in the cache keys,** to about 5% in log space. One session moves the noise by 1 to 5% in $\sigma_0$ and up to about 9% in the others, and a 5 to 10% change moves a curve by 0.02 to 0.05 dB RMS, so most sessions would change nothing for the other profiles. Results still depend only on the trials. An estimate near a step's edge can flip now and then. (Keeping the noise until a new estimate drifts past a tolerance flips less, but makes results depend on the order sessions were run in, which this design avoids.)
+- **Cache each profile's evidence as a quadratic in the noise,** keyed by its trials, around the current shared value. The shared estimate then sums cached quadratics, and only a changed profile is refitted. Untested.
 
 ### Solving, and error bars
 
@@ -225,7 +241,7 @@ A session selected or pooled in with `--sessions`, or run by `verify`, is simply
 
 **In brief.** At the real profiles' trial counts, most of each ear-to-ear difference is within its error bars, and a consensus reference passed one headphone's apparent imbalance on to the others. So the two ears are fitted together under a prior that their curves are alike. Small differences are shrunk toward zero; large, well-measured ones survive, though shrunk.
 
-Each ear is first fitted on its own, as above; that fit gives the ear's noise and $\tau_\text{seat}$. The two curves are then fitted together, with those held fixed, under a prior on their difference $\delta = L_\mathrm{L} - L_\mathrm{R}$:
+Each ear is first fitted on its own, as above, with the listener's noise; that fit gives the ear's $\tau_\text{seat}$. The two curves are then fitted together, with those held fixed, under a prior on their difference $\delta = L_\mathrm{L} - L_\mathrm{R}$:
 
 - $\delta$ is Gaussian on the common 1/48-octave grid, with SD $\sigma_\delta$ of 1.5 dB below 5 kHz and 3 dB above 8 kHz (log-interpolated between them), and a squared-exponential correlation of width $\ell_\delta = 1/8$ octave.
 - Its constant is free, since each ear's level is a gauge.
@@ -241,13 +257,13 @@ Thicker tails may be worth trying later: a Student-t or a mixture (a narrow and 
 
 ## Adaptive selection
 
-**In brief.** The scheduler asks the question whose answer would most reduce the uncertainty in the curve, aims the level offset where the listener is closest to 50/50, and periodically re-estimates the noise and refines the grid.
+**In brief.** The scheduler asks the question whose answer would most reduce the uncertainty in the curve, aims the level offset where the listener is closest to 50/50, and periodically refines the grid.
 
 - **Candidate pairs**: up to 3 grid steps apart, or (with probability 0.25) a longer jump of up to one octave.
 - **Scoring**: each candidate is scored by how much one answer would shrink the posterior variance of $L_i - L_j$. An answer is about this session's curve, so the score is the squared covariance of the $L$ and $L_g$ differences over the $L_g$ difference's variance plus the answer's noise; it falls off once the current seating is well known at a pair. The score is weighted up where $L$ bends (by 0.5 per SD of curvature, capped at 4 SD). Pairs in the same quarter-octave region as the previous trial are skipped. The pair is drawn at random from the top 8.
 - **Level offset**: aims at the 50% point as the listener hears it, on this session's curve, time-order bias included, plus jitter of ±1 posterior SD of the difference (at most 4 dB). The offset is capped at 12 dB in magnitude.
-- **Refits**: the curves are refitted after every answer with the noise and $\tau_\text{seat}$ fixed (about 10 ms at 8 sessions of 150 trials on a 199-point grid). Every 50 trials per ear, the noise is re-estimated with $\tau_\text{seat}$ fixed, and a midpoint is inserted on both sides of every point of $L$ whose second difference exceeds 2 SD, down to 1/48 octave. Every ear's block ends together, since ending only one would put the other's slow refit on the very next trial, a second pause in a row.
-- **Seating spread**: $\tau_\text{seat}$ is re-estimated, with the noise, in the cached fit of all the trials, the first time one is wanted after a session (by `report`, `export` or the next `run`), never within a session.
+- **Refits**: the curves are refitted after every answer with the noise and $\tau_\text{seat}$ fixed (about 10 ms at 8 sessions of 150 trials on a 199-point grid). The noise is the listener's ("Shared noise"), fixed for the session. Every 50 trials per ear, the curves are refitted fully and a midpoint is inserted on both sides of every point of $L$ whose second difference exceeds 2 SD, down to 1/48 octave. Every ear's block ends together, since ending only one would put the other's slow refit on the very next trial, a second pause in a row.
+- **Seating spread**: $\tau_\text{seat}$ is re-estimated in the cached fit of all the trials, the first time one is wanted after a session (by `report`, `export` or the next `run`), never within a session.
 
 ## Sweep and tone-generator marks
 
@@ -648,8 +664,9 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 
 - `profiles/<slug>/profile.json`: label, kind (`headphone` by default, or `iem`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug`, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
-- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
+- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
 - `reference/diffuse_minus_free_db.csv`: the user-supplied table for the `diffuse` reference.
+- `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
 - `cache/consensus/`: consensus results, shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
 
 ## Session flow
@@ -714,12 +731,12 @@ Criteria, measured over 14 to 21 simulated listeners for what's built. Code and 
 | 4 | **Split-speakers variant.** With speaker 1's peak moved onto $\mathrm{cup}$, $\mathrm{cup}$ is kept, matching the "one shows it, one lacks it" row of the evidence table | — | **NOT BUILT** |
 | 5 | **One speaker.** With speaker 2 only, any removal of $\mathrm{cup}$ is marked in the report as resting on one device | — | **NOT BUILT** |
 | 6 | **Low trust.** Results match criterion 2 within 0.5 dB | — | **NOT BUILT** |
-| 7 | **Speaker model.** $L$ recovers the mean over positions within 1.5 dB RMS from 1 to 13 kHz, at both 20 × 24 and 8 × 60 trials. Its reported SD covers the error about 68% of the time over 50 simulated listeners. It also runs with the fixed $\tau_\text{pos}$ at half the true curve, to show how much a wrong assumption costs | — | **NOT BUILT** |
+| 7 | **Speaker model.** $L$ recovers the mean over positions within 1.5 dB RMS from 1 to 13 kHz, at both 20 × 24 and 8 × 60 trials. Its reported SD covers the error about 68% of the time over 50 simulated listeners. It also runs with the fixed $\tau_\text{pos}$ at half the true curve, to show how much a wrong assumption costs | In scratch simulation, with the listener's noise known (30 listeners): 0.88 dB RMS at 20 × 24 and 1.07 at 8 × 60, coverage 0.72 and 0.68; 0.60 to 0.65 at half the spread (see "Simulations for speakers") | **NOT BUILT** |
 | 8 | **Rule and edge cases.** A two-profile consensus runs and warns, and every row of the veto table comes out as specified (unit tests on the rule alone). Three-headphone cases come out near the worked values | Every row of the table; the worked values; the two-profile warning | Met |
-| 9 | **Seating spread.** With three sessions of about 110 trials per ear, a true $\tau_\text{seat}$ of 2 or 3 dB is recovered within a factor of 1.5, and a true $\tau_\text{seat}$ of zero isn't estimated above 1 dB | True 2 and 3 dB within a factor of 1.5 in 79% of runs. True 0: below 1 dB in 64% above 8 kHz (the prior's median there is 1.5 dB) | Partly met |
-| 10 | **Coverage.** $L$'s reported SD covers the error about 68% of the time at 1, 3 and 8 sessions, and $m$'s SD does the same for the consensus | $L$'s 1 SD covers 66%, 78% and 74% at 1, 3 and 8 sessions; the consensus SD is within 1% of Monte Carlo | Met, a little conservative |
-| 11 | **Moving resonances.** A 9 dB resonance in two seatings of three is corrected within 2 dB of its median level. A resonance in one seating of three is dropped. With one session, a seating-specific resonance of up to about twice the prior's spread isn't corrected as confident | 9 dB in all three seatings: −8.0 dB. In two of three: −5.5 dB (within 2 dB of −8 in 43% of runs). In one of three: median −2.1 dB, with some correction left in half the runs. 3 dB in one session: left alone in 86% | Partly met: the Gaussian deviation shrinks on-or-off resonances |
-| 12 | **Speed.** A per-answer refit takes under 100 ms at 8 sessions of 150 trials on a fully refined 199-point grid, and a block-end pause is no longer than before the hierarchical fit | 10 ms per answer at 8 × 150 trials on 199 points; about 1 s at a block end; about 2 s for a full fit | Met |
+| 9 | **Seating spread.** With three sessions of about 110 trials per ear, a true $\tau_\text{seat}$ of 2 or 3 dB is recovered within a factor of 1.5, and a true $\tau_\text{seat}$ of zero isn't estimated above 1 dB | Over 40 simulated listeners each, each of the three values within a factor of 1.5 of a true 2 or 3 dB in 63% of cases (the two-value fit, measured the same way: 70%). True 0: $\tau_\text{lo}$ below 1 dB in 82% of runs, $\tau_\text{mid}$ in 32% and $\tau_\text{hi}$ in 52% (the prior's median above 5 kHz is 1.5 dB; the two-value fit's treble value: 67%) | Partly met |
+| 10 | **Coverage.** $L$'s reported SD covers the error about 68% of the time at 1, 3 and 8 sessions, and $m$'s SD does the same for the consensus | $L$'s 1 SD covers 69%, 71% and 73% at 1, 3 and 8 sessions (30 listeners each); the consensus SD is within 1% of Monte Carlo | Met, a little conservative |
+| 11 | **Moving resonances.** A 9 dB resonance in two seatings of three is corrected within 2 dB of its median level. A resonance in one seating of three is dropped. With one session, a seating-specific resonance of up to about twice the prior's spread isn't corrected as confident | 9 dB in all three seatings: −8.0 dB. Over 20 listeners each: in two of three, median −5.0 dB (within 2 dB of −8 in 25% of runs; the two-value fit, −5.7 dB and 45%). In one of three: median 0.0 dB, with 1 dB or more of correction left in 15% of runs (two-value: 35%). 3 dB in one session: left alone in 80% | Partly met: the Gaussian deviation shrinks on-or-off resonances |
+| 12 | **Speed.** A per-answer refit takes under 100 ms at 8 sessions of 150 trials on a fully refined 199-point grid, and a block-end pause is no longer than before the hierarchical fit | 10 ms per answer at 8 × 150 trials on 199 points; about 1 s at a block end; about 2 s for a full fit. The third seating-spread value made a full fit about 20% slower and changed nothing else | Met |
 
 For criterion 2, the table gives passes out of 42 headphone checks over 14 simulated listeners. A check passes when the headphone's own features are corrected within 1.5 dB, shared ones are left alone, and nothing else is corrected above 1.5 dB. *Standard* is the ground truth above. *Broad* gives each headphone its own feature about an octave wide, and doubled tilts. *Contour* has a listener off ISO 226 by −4 dB near 2.5 kHz and +11 dB near 9 kHz. *Moved* puts the shared 7 kHz peak up to 0.2 octave apart between headphones, and doesn't judge that peak, since moving it is allowed.
 
@@ -761,6 +778,13 @@ From a prototype run on `sundara` and `sundaratone` (three or four sessions per 
 - Treble spread, tested against simulations with no spread: `sundaratone` R is clear (none of 30 matched it), `sundara` L suggestive (10% matched), and the other two show none.
 - With `sundara` L and $\tau_\text{seat}$ fixed at 0.5, 1 and 1.5 dB, the prototype keeps 5, 4 and 3 of the pooled fit's 6 features (with no seating step applied), losing the smallest ones first.
 
+## Three-knot seating spread
+
+The seating spread had two values, below 5 kHz and above 8 kHz. A third, at 12 kHz, was added so that a speaker's position spread, which keeps rising into the top octave, can be represented exactly, and so that headphones and speakers share one model. The prior curve didn't change. Compared with the two-value fit:
+
+- **Real profiles** (all four, at default settings and at each profile's own): $L$ moved by at most 0.17 dB RMS over 1 to 13 kHz in any ear, the target by at most 0.22 dB RMS and 1.5 dB at any frequency (`ft1` L), and SDs above 8 kHz by −6% to +5%. Two borderline features changed: `hd560` L gained one at 4.07 kHz at default settings, and `ft1` R lost one at 1.75 kHz with its own. The three values read real shapes: `hd560` L rises (0.27, 1.06, 2.73 dB) where `ft1` L peaks at 8 kHz (0.63, 2.78, 1.55).
+- **Simulated listeners** (three sessions of 110 trials): with a true spread of 0.5, 1 and 4 dB at the three knots, the 12 kHz value read 3.2 dB (median), against 2.45 for the two-value fit, which can't rise above 8 kHz. Coverage was unchanged (criterion 10). The cost is with no true spread: the 8 kHz value sits nearer its prior (criterion 9), since each value now has less data behind it.
+
 ## Grid
 
 On `sundara` L (108 points, 399 on a 1/96-octave grid; pure noise, $k = 2$):
@@ -784,6 +808,17 @@ Against fitting each ear alone, the target error fell 0.12 to 0.24 dB RMS in eve
 
 - Firmer priors (0.5 and 1.5 dB, and 1 and 2 dB) and always pooling the ears gained a little more on the target. They kept less of the ear-specific peak (0.28 to 0.39) and made the error bars overconfident.
 - Pooling locally where the ears are consistent: the Bayes factor in half-octave windows, equality against a 1.5 and 3 dB difference. Blended by the probability of equality, it did about as well as the prior (0.49 of the peak) with slightly overconfident error bars. Pooled outright where that probability is over 1/2, it gained least and added false corrections, from the steps between pooled and separate.
+
+## Shared noise
+
+On the four real profiles' own sessions (each counted once), compared with each profile estimating its own noise:
+
+- **One noise per ear fits.** Per profile, $\sigma_0$ ranged 1.08 to 1.37 dB in the left ear and 1.50 to 2.11 in the right, with $d_0$, $\lambda$ and $r$ similar apart from `hd560` L's $r$ of 2.55. Shared, the left ear reads $\sigma_0 = 1.19$ dB, $d_0 = 0.34$ octave, $\lambda = 1.4\%$, $r = 1.97$, and the right ear 1.97 dB, 0.53, 1.4% and 1.48. Letting each profile have its own improves the evidence by only 4.1 (L) and 4.4 (R) nats for 12 more parameters, against about 10.5 for chance at 5%. Each profile's own optimum, without the prior, is poorly pinned down: $\lambda$ runs to 0, $d_0$ to 1.73 octave, $r$ to 3.5. Noise bands and tones share without trouble (`sundaratone` costs 0.3 to 1.5 nats).
+- **Small profiles bias it.** Through the real scheduler, with a true $\sigma_0$ of 1.5 dB (16 simulated listeners each), the shared estimate's median was 1.36 dB from one profile of 2 × 100 trials and 1.46 from three, but 0.49 from four profiles of one 100-trial session each. A profile of 3 × 200 trials gave 1.27 with one new 60-trial profile added and 0.65 with three. Hence the 200-trial minimum for each member, the same minimum a profile used to need for its own noise.
+- **Effect on corrections** (with the third seating-spread value as well, against both off, at default settings and each profile's own): $L$ moves by at most 0.29 dB RMS over 1 to 13 kHz, the target by at most 0.35 dB RMS and 1.04 dB at any frequency, and SDs above 8 kHz by −7% to +10%. Borderline features change, most near 1 kHz. With its own settings, `hd560` L loses three (1.01, 1.45 and 4.98 kHz) and `hd560` R one (5.13 kHz); `ft1` loses one in each ear (1.04 and 7.06 kHz); `sundara` R gains one at 2.71 kHz.
+- **How much one session moves it.** Leaving out any profile's last session moves the shared $\sigma_0$ by 1 to 5% and $d_0$, $\lambda$ or $r$ by up to about 9%. Moving $\sigma_0$ by 5%, or $d_0$ or $r$ by 10%, moves a profile's $L$ by 0.02 to 0.05 dB RMS (0.13 dB at most) and its SDs by about 3%.
+- **The time-order bias isn't shared.** Per profile, $\beta$ in the left ear is +0.22 ± 0.09 dB for `ft1` against +0.89 to +1.28 for the others (Cochran's Q 58 on 3 degrees of freedom), and in the right ear +1.16 to +1.76 (Q 14, $p = 0.003$). It isn't drift: `ft1`'s sessions interleave in time with `hd560`'s and `sundara`'s, and its left ear reads low in every one. Each profile's $\beta$ is already well determined (SD 0.09 to 0.27 dB), so sharing it would gain little and remove a real difference.
+- **Why speakers need it.** With 24- or 40-trial blocks, each block's deviation absorbs its answers and a speaker profile's own noise estimate collapses (see "Simulations for speakers").
 
 ## Treble noise
 
@@ -966,7 +1001,7 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 
 # Open questions
 
-- **Seating priors and shape.** The $\tau_\text{seat}$ prior medians and the two-value shape need tuning on more data. Criterion 11 is accepted as partly met for now; if a Gaussian $u_g$ keeps handling on-or-off resonances badly, even with the median rule, a heavy-tailed $u_g$ is the next thing to try.
+- **Seating priors and shape.** The $\tau_\text{seat}$ prior medians and the three-value shape need tuning on more data. Criterion 11 is accepted as partly met for now; if a Gaussian $u_g$ keeps handling on-or-off resonances badly, even with the median rule, a heavy-tailed $u_g$ is the next thing to try.
 - **Minimum widths.** 1/12 octave may miss the narrowest features at $k = 2$, so $k$ and the width should be chosen together. The narrow test has a related weakness: "two adjacent points" means 1/24 octave on most of a fit's grid and 1/48 where it's refined. Should it move to a width in octaves too? That would change existing corrections.
 - **The $\tau_\text{hp}$ floor.** 0.5 dB is a judgment call, so that the most-measured headphone can't dominate where the profiles happen to agree. Tune it in the simulator.
 - **IEMs in the consensus.** Excluded by default, because they lack the pinna and concha. They could be allowed as hearing-only evidence, separating hearing from ear acoustics. Not needed for corrections, so deferred.
@@ -974,7 +1009,7 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 
 # Speaker profiles (NOT BUILT)
 
-**NOT BUILT: nothing in this section exists in the code.** There's no `speaker` profile kind, block runner, position model, joint model or speaker simulation, and none of the commands, options or file fields below exist. The only trace is two placeholders, `speaker_trust` and `speaker_response`, always null, in the consensus cache key. This is the design to build from. In this section a group $g$ is a speaker block.
+**NOT BUILT: nothing in this section exists in the code.** There's no `speaker` profile kind, block runner, position model, joint model or speaker simulation, and none of the commands, options or file fields below exist. The only trace is two placeholders, `speaker_trust` and `speaker_response`, always null, in the consensus cache key. This is the design to build from. In this section a group $g$ is a speaker block, which is one session.
 
 **In brief.** Speaker profiles answer the same question as the comparison and consensus: which narrow features belong to the listener, and which to the headphone. They'd add one thing the headphones can't show: a feature every headphone shares may still be an over-ear coupling artifact, because no speaker has it. A speaker is measured in many short blocks, each at a different position, with the other ear plugged; the hierarchical model averages the positions into one direction-averaged curve per ear. That curve then enters a joint model with the headphones, where it can only demote a shared headphone feature to a coupling artifact, never create a correction of its own. Speakers would be downstream of the cached perceptual fits, so like every other setting they could be switched on and off without new trials.
 
@@ -988,18 +1023,19 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 
 **Blocks.**
 
-- One block = one session file = one open ear and one position. The default is 24 answered trials, about a minute (`--block`, 16 to 60).
+- One block = one session file = one open ear and one position. The default is 24 answered trials, about a minute (`--block`, 16 to 60). Short blocks are better: more positions average the treble better, and with the listener's noise known, block length matters little otherwise (see "Simulations for speakers"). 24 to 40 is the useful range.
 - Before a block, the screen names the open ear and asks for a foam earplug in the other ear, fully inserted. Ears alternate every block: a block on L, then on R at a new position, and so on.
 - Position plan: the screen suggests the next position from a rotation meant to spread directions around the open ear: front, 30° and 60° toward the open side, side-on, rear quarter (turn the chair), plus one higher and one lower placement. The listener can accept it or type their own label. Optional numbers (azimuth, elevation, distance) are stored when given.
 - Prefer turning the head or chair over moving the speaker. The speaker then always faces the listener, so its own on-axis colouration stays constant across positions instead of adding variance.
-- Suggested minimum: at least 8 positions and about 400 to 500 trials per ear in total, such as 20 blocks of 24 or 8 of 60. About 200 trials per ear was too few in simulation (see "Prototype results for speakers"). The report shows how much more trials or positions would tighten the curve.
-- Anchor pairs: about a quarter of each block goes to a small fixed set of frequency pairs repeated across blocks, so that differences between positions can be observed directly (see "Open questions for speakers").
+- Suggested minimum: about 480 trials per ear in total, such as 20 blocks of 24 or 12 of 40, which met criterion 7 in simulation. The report shows how much more trials or positions would tighten the curve.
 - No seating step. Positions are supposed to differ, and that variation is modelled instead.
 
 **Trials.**
 
 - Same stimuli, level offsets, rove, catch trials, undo and reaction-time logging as headphone trials. Bursts go to the speaker's channel. The trial's ear is the open ear.
-- Adaptive selection runs on the pooled speaker model (below), not per block, so a block's trials are spent where the average curve is least certain.
+- Adaptive selection runs on the pooled speaker model (below), not per block, so a block's trials are spent where the average curve is least certain. A fixed set of anchor pairs repeated across blocks was tried and didn't help (see "Simulations for speakers").
+- The grid is refined when a block starts, from the fit of the blocks so far: a block is shorter than the scheduler's 50-trial refinement interval, so it would otherwise never refine.
+- The noise is the listener's ("Shared noise"), held for the block like any session's. Speaker trials don't count toward it: a profile's own noise estimate collapses with blocks this short. Until some headphone or IEM profile has 200 trials in the ear, the prior's noise is used, and the report says so.
 - The channel check is replaced by a plug prompt. A plugged ear can't be verified by listening, so it's a confirmation only.
 
 ## Positions as random effects (NOT BUILT)
@@ -1009,7 +1045,7 @@ This is the perceptual model with blocks as the groups. Per ear, the perceived l
 - $L$ is the quantity of interest: the average over the directions the position plan is meant to cover, with each position weighted equally. It has the same priors as a headphone $L$.
 - $u_g$ is block $g$'s deviation, with amplitude $\tau_\text{pos}(f)$ and correlation width 1/12 octave.
 - With 24 trials a block can't pin down its own $u_g$. The model doesn't need it to: $L$'s uncertainty includes $\tau_\text{pos}^2$ divided by the number of positions. That's what "averaged, not rejected" means in practice.
-- $\tau_\text{pos}$ is fixed rather than estimated at this block size, by default at 1 dB below 5 kHz rising to 4 dB at 12 kHz. Estimating it alongside $L$ from 24-trial blocks doesn't work: in simulation it ran up to many times the true value, and a prior would only hide that. The fixed curve is an assumption, so the report labels it as one. Estimation (with a log-normal prior, log SD 0.3, around that curve) is enabled only if the simulator shows that anchor pairs make it reliable.
+- $\tau_\text{pos}$ uses the three seating-spread values, fixed by default at 1, 2.1 and 4 dB at 5, 8 and 12 kHz (1 dB rising log-linearly to 4 dB). The fixed curve is an assumption, so the report labels it as one. With the listener's noise known, estimating it from 24- to 120-trial blocks doesn't run away: medians were 0.6 to 1.2 times the truth, though each value alone was often off by more than a factor of 1.5, and coverage held. An earlier prototype's runaway came from estimating the noise alongside. Whether to estimate it by default, with a weak prior around the fixed curve, is open (see "Open questions for speakers").
 - The result is a perceptual fit like any other ($\hat L$ with covariance), so `report`, `compare` and the pipeline can treat it as a profile. Its kind marks it as speaker evidence: it's drawn dashed in comparisons and doesn't vote by default.
 
 The SD covers the sampling of positions and the judgment noise. It doesn't cover bias from the plan itself: the rotation isn't a random draw of directions, so if it misses a region, nothing in the error bars shows that.
@@ -1080,35 +1116,39 @@ On disk:
 Modules:
 
 - `fit/consensus.py`: the joint $T$/$\mathrm{cup}$/$\mathrm{hp}$/$\mathrm{spk}$ model.
-- `session/`: a speaker block runner (plug prompt, position plan, anchor pairs, ear alternation).
+- `session/`: a speaker block runner (plug prompt, position plan, ear alternation, refinement at block start).
 - `sim/`: the speaker position model and speaker ground truth (see "Seating and multi-headphone scenarios").
 
 Build order, continuing from what's built:
 
-1. Speaker profile kind and block runner: plug prompt, position plan, anchor pairs, ear alternation.
-2. The speaker position model, simulator criterion 7.
+1. Speaker profile kind and block runner: plug prompt, position plan, ear alternation, refinement at block start.
+2. The speaker position model (the hierarchical fit with the fixed $\tau_\text{pos}$ and the listener's noise), simulator criterion 7 as a test.
 3. The joint $T$/$\mathrm{cup}$/$\mathrm{hp}$/$\mathrm{spk}$ model with speaker trust, simulator criteria 3 to 6.
 
-## Prototype results for speakers (NOT BUILT)
+## Simulations for speakers
 
-Scratch code only, with simulated speaker pairs that were random rather than adaptive, and $\tau_\text{pos}$ known:
+Scratch code driving the real scheduler and the hierarchical fit (with the three-value spread), one ear, 480 trials per ear in blocks of 24, 40, 60 or 120, each block a new position. Positions deviate from the population mean by a draw from the model's own prior, with $\tau_\text{pos}$ 1, 2.1 and 4 dB at 5, 8 and 12 kHz. The listener has $\sigma_0 = 1.3$ dB, treble noise ×1.5, 3% lapses and a 1 dB time-order bias; the features are the design example's. 30 simulated listeners per configuration. Error is against the population mean, level and slope removed, over 1 to 13 kHz.
 
-| Positions × trials | RMS error, 1–13 kHz | Median SD | SD, 8–13 kHz | 68% coverage |
+With the noise known and $\tau_\text{pos}$ fixed at the truth:
+
+| Blocks × trials | RMS error, all / above 8 kHz | Median SD, all / above 8 kHz | 1 SD coverage | Coverage, $\tau_\text{pos}$ fixed at half |
 | --- | --- | --- | --- | --- |
-| 8 × 24 | 2.14 dB | 1.93 dB | 2.80 dB | 0.70 |
-| 16 × 24 | 1.47 dB | 1.24 dB | 1.88 dB | 0.66 |
-| 8 × 60 | 1.22 dB | 1.15 dB | 1.70 dB | 0.71 |
+| 20 × 24 | 0.88 / 1.07 dB | 0.91 / 1.15 dB | 0.72 | 0.65 |
+| 12 × 40 | 0.90 / 1.07 dB | 0.91 / 1.20 dB | 0.71 | 0.64 |
+| 8 × 60 | 1.07 / 1.30 dB | 1.04 / 1.40 dB | 0.68 | 0.60 |
+| 4 × 120 | 1.00 / 1.40 dB | 1.00 / 1.46 dB | 0.71 | 0.62 |
 
-- At 8 × 24, fixing $\tau_\text{pos}$ at half the true curve only lowers coverage to 0.64.
-- Estimating $\tau_\text{pos}$ at 8 × 24 with $L$ also free: a true 4 dB gives a median at the top of the tested range (14 dB), and a true 1 dB gives a median of 5 dB, ranging from 1 to 14. With $L$ held at the truth, the Laplace approximation agrees with brute-force integration and centres near the true value, so the approximation isn't the cause. At 8 × 60 the median is 5 to 6 dB for a true 4 dB.
+- **Noise.** Estimated from the speaker blocks themselves, $\sigma_0$'s median was 0.11 to 0.40 dB at 24 and 40 trials a block (true 1.3), 1.0 to 1.2 at 60 (with 3 to 23% of runs below 0.5) and 1.3 to 1.4 at 120. Each short block's deviation absorbs its answers. Hence the listener's noise, and short blocks.
+- **Estimating $\tau_\text{pos}$.** With the noise known and a nearly flat prior, the median estimate at each of the three frequencies was 0.55 to 1.3 times the truth at every block size, with 10–90% ranges as wide as 0.45 to 1.9 times; all three were within a factor of 1.5 in 13 to 47% of runs. Coverage stayed at 0.66 to 0.73. With the noise estimated as well, it ran to the 15 dB bound at 24 and 40 trials a block: the runaway an earlier prototype saw, which held the noise fixed but used random pairs and 192 trials.
+- **Anchor pairs.** A quarter of each block on a fixed set of pairs 1/6 octave apart, repeated across blocks (six pairs once each, or three twice), changed neither the curve's error (within ±0.1 dB RMS) nor the $\tau_\text{pos}$ estimates. Repeats in a block are what would make positions comparable, and a few per block are too few against a deviation's dozens of free dimensions. They aren't used.
 
 ## Open questions for speakers (NOT BUILT)
 
 - **dB vs power averaging over positions.** A diffuse field averages power, which fills in moving notches more than averaging perceived dB does. A power average of per-position posteriors is possible, but each position is barely measured, so it'd be noisy. Proposed: dB averaging, with the expected bias at notch frequencies estimated in the simulator before deciding.
 - **The default $\sigma_\mathrm{cup}$, and whether $\mathrm{cup}$'s prior should be Gaussian.** 1.5 dB keeps shared features unless both speakers clearly lack them. Too small, and real coupling artifacts are never caught; too large, and noisy speakers start removing the listener's own features. A rough hand calculation (one frequency, no noise, ignoring $T$'s smoothness prior and $\mathrm{hp}_h$) suggests the bigger problem is the shape of the prior. With both speakers lacking a 4 dB shared peak at medium trust, the best split is about $T = 2.6$ and $\mathrm{cup} = 1.4$ dB, which would miss criterion 3. At 8 dB, $\mathrm{cup}$ only reaches about 1.7 dB, because the Gaussian penalty keeps growing while the speakers' Student-t penalty levels off. Check this in a simulation before building the joint model, and try a heavier-tailed prior on $\mathrm{cup}$. Then tune it, using the real data with `compare` as a sanity check.
-- **Why $\tau_\text{pos}$ runs away, and whether anchor pairs fix it.** The likely cause is that 24-trial blocks rarely compare the same frequencies, so differences between blocks can't be seen, but this isn't proven. Anchor pairs are untested. If they don't work, $\tau_\text{pos}$ stays fixed and anchor trials go back to the adaptive scheduler.
+- **Estimating $\tau_\text{pos}$.** With the listener's noise it doesn't run away, but each value is imprecise at 480 trials per ear. Fixed is the default until real speaker data show whether the assumed curve is far off, which a weak prior around it would let the data correct.
 - **Same-ear assumption.** Earplug attenuation and bone conduction leave the plugged ear about 30 dB down in the treble. That should be enough for loudness comparisons in the open ear, but it's worth a check: one block with the "plugged" ear actually open should look different.
-- **Room.** The position spread absorbs room comb filtering along with HRTF variation. A small, reflective room may make $\tau_\text{pos}$ large enough that speakers rarely move a decision. With $\tau_\text{pos}$ fixed, the model can't see that, so the anchor-pair question matters here too. The report should show weak speaker evidence as weak, not hide it.
+- **Room.** The position spread absorbs room comb filtering along with HRTF variation. A small, reflective room may make $\tau_\text{pos}$ large enough that speakers rarely move a decision. With $\tau_\text{pos}$ fixed, the model can't see that, so whether to estimate it matters here too. The report should show weak speaker evidence as weak, not hide it.
 
 # Sources
 

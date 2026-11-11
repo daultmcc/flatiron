@@ -160,10 +160,12 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
                    f'<img src="{light}" alt="{EAR_NAMES[e]} ear: measured level, residual and correction">'
                    f"</picture></div>")
-        out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse rate {f.lapse:.1%}, '
-                   f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
+        out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse rate {f.lapse:.1%} '
+                   + (f"(shared: {f.noise_trials} trials in this ear across profiles), " if f.noise_trials
+                      else "(the prior: estimating it needs a profile with 200 trials in this ear), ")
+                   + f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
                    f"{'louder' if f.bias_db >= 0 else 'quieter'}; fitted, so it doesn't distort the curve). "
-                   f"Seating spread {f.tau_lo:.1f} dB below 5 kHz, {f.tau_hi:.1f} dB above 8 kHz "
+                   f"Seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
                    + (f"(estimated from {f.n_groups} sessions)" if f.tau_fitted
                       else "(the prior: estimating it needs two sessions with 60+ trials for this ear)")
                    + f". Filter fit: χ² per point {c.fit.chi2:.2f}"

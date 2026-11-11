@@ -81,11 +81,36 @@ class Priors:
     lapse_logit_sd: float = 1.0
     treble_noise_log_sd: float = 0.5  # noise above 10 kHz relative to below 6 kHz, centred on no difference
     bias_sd_db: float = 3.0  # time-order error prior, centred on none
-    # Seating spread (DESIGN.md, "Perceptual model"): medians below 5 kHz and above 8 kHz.
+    # Seating spread (DESIGN.md, "Perceptual model"): medians at 5, 8 and 12 kHz.
     tau_lo: float = 0.5
+    tau_mid: float = 1.5
     tau_hi: float = 1.5
     tau_log_sd: float = 0.7
     ell_oct: float = 1 / 12  # correlation width of a seating's deviation
+
+
+@dataclass(frozen=True)
+class Noise:
+    """The listener's judgment noise in one ear (DESIGN.md, "Shared noise"):
+    sigma0, d0, lapse and treble_noise as in the likelihood. n_trials: the
+    trials behind the estimate (0: the prior's values)."""
+    sigma0: float
+    d0: float
+    lapse: float
+    treble_noise: float = 1.0
+    n_trials: int = 0
+
+    @classmethod
+    def prior(cls, priors: "Priors") -> "Noise":
+        return cls(priors.sigma0, priors.d0, priors.lapse, 1.0)
+
+    @classmethod
+    def of(cls, fit: "ProbitFit") -> "Noise":
+        return cls(fit.sigma0, fit.d0, fit.lapse, fit.treble_noise)
+
+    def key(self) -> str:
+        """For cache keys: the values, to 6 significant figures."""
+        return "noise:" + ",".join(f"{x:.6g}" for x in (self.sigma0, self.d0, self.lapse, self.treble_noise))
 
 
 @dataclass(frozen=True)
@@ -114,7 +139,8 @@ class ProbitFit:
     bias_db: float = 0.0  # time-order error: the first interval sounds this much louder
     bias_sd: float = 0.0
     treble_noise: float = 1.0  # noise above 10 kHz as a multiple of sigma0
-    tau_lo: float = 0.5  # seating spread below 5 kHz / above 8 kHz (dB)
+    tau_lo: float = 0.5  # seating spread at 5 / 8 / 12 kHz (dB), constant beyond
+    tau_mid: float = 1.5
     tau_hi: float = 1.5
     tau_fitted: bool = False  # False: at the prior or held fixed
     tau: np.ndarray | None = None  # the spread at each grid point
@@ -126,6 +152,7 @@ class ProbitFit:
     focus_cov: np.ndarray | None = None  # Cov(L + u_f) for the group the fit was focused on (the last)
     focus_cross: np.ndarray | None = None  # Cov(L, L + u_f)
     groups: list = field(default_factory=list)  # what each group is (session ids), when known
+    noise_trials: int = 0  # trials behind a shared noise estimate, when known (0: the prior's values)
 
     @property
     def sd(self) -> np.ndarray:

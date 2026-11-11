@@ -388,8 +388,9 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     alone = run_mod.current_fit(prof)
     assert lr(alone) > coupled
     trials, _ = prof.history()
+    noise = run_mod.listener_noise(prof.dir.parent.parent)
     for e in "LR":  # off, the fit is each ear's own
-        own = run_mod.cached_fit(prof, trials[e], alone.fits[e].grid)
+        own = run_mod.cached_fit(prof, trials[e], alone.fits[e].grid, noise[e])
         assert np.allclose(alone.fits[e].L, own.L)
     assert main(["config", "--balance", "3"]) == 0
     assert coupled < lr(run_mod.current_fit(prof)) < lr(alone)
@@ -645,3 +646,58 @@ def test_band_limit_follows_the_largest_exporter():
 def test_soft_rejection_and_the_soft_veto_are_on_by_default():
     st = CorrectionSettings()
     assert st.soft_width == 0.5 and st.veto_softness == 0.1
+
+
+# -- the listener's noise, shared by every profile ----------------------------
+
+def _two_profiles(tmp_path, monkeypatch, trials=(220, 60)):
+    from flatiron.session.scheduler import SchedulerConfig
+    from flatiron.session.store import Profile
+    from flatiron.sim.listener import design_example
+    from flatiron.sim.profile import simulate_profile
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "linux")
+    a, b = Profile.open("A"), Profile.open("B")
+    for p, seed, n in ((a, 3, trials[0]), (b, 4, trials[1])):
+        simulate_profile(p, {e: design_example(e) for e in "LR"}, sessions=1, trials_per_ear=n, seed=seed,
+                         sigma0=1.5, config=SchedulerConfig(min_trials_noise_fit=10_000))
+    return a, b
+
+
+def test_every_profile_fits_with_the_listeners_noise(tmp_path, monkeypatch):
+    import flatiron.fit.run as run_mod
+    from flatiron.sim.listener import design_example
+    from flatiron.sim.profile import simulate_profile
+    from flatiron.session.scheduler import SchedulerConfig
+
+    a, b = _two_profiles(tmp_path, monkeypatch)
+    fa, ka, _ = run_mod.perceptual_fits(a)
+    fb, _, _ = run_mod.perceptual_fits(b)
+    for e in "LR":  # B's 60 trials are too few to inform the noise, but B uses it
+        assert fa[e].noise_trials == 220 and fa[e].sigma0 == fb[e].sigma0 and fa[e].d0 == fb[e].d0
+    # Pooled trials count once, toward their own profile.
+    b.update(pool=["a"])
+    assert run_mod.perceptual_fits(b)[0]["L"].noise_trials == 220
+    b.update(pool=None)
+    # Once B has enough, its trials change the noise, and so A's fit.
+    simulate_profile(b, {e: design_example(e) for e in "LR"}, sessions=1, trials_per_ear=150, seed=9,
+                     sigma0=1.5, config=SchedulerConfig(min_trials_noise_fit=10_000))
+    fa2, ka2, _ = run_mod.perceptual_fits(a)
+    assert fa2["L"].noise_trials == 430 and ka2["L"] != ka["L"] and fa2["L"].sigma0 != fa["L"].sigma0
+    # Kinds that don't inform the noise are left out of it.
+    monkeypatch.setattr(run_mod, "NOISE_KINDS", ("headphone",))
+    b.update(kind="iem")
+    assert run_mod.perceptual_fits(a)[0]["L"].noise_trials == 220
+
+
+def test_a_new_profile_starts_with_the_listeners_noise(tmp_path, monkeypatch):
+    import flatiron.fit.run as run_mod
+    from flatiron.session.runner import TrialRunner
+    from flatiron.session.store import Profile
+
+    _two_profiles(tmp_path, monkeypatch, trials=(220, 0))
+    noise = run_mod.listener_noise(tmp_path / "flatiron")
+    r = TrialRunner(Profile.open("New"), seed=1)
+    for e in "LR":
+        assert noise[e].n_trials == 220 and r.scheduler.ears[e].fit.sigma0 == pytest.approx(noise[e].sigma0)

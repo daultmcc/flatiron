@@ -17,16 +17,17 @@ from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.consensus import KINDS_VOTING, MODEL_VERSION, EarConsensus, SoftMedian, Source, raw_consensus
 from flatiron.fit.pipeline import Correction, CorrectionSettings, correct, ear_reference
 from flatiron.model.grid import log_grid
-from flatiron.model.hierarchical import fit_balanced, fit_hierarchical
-from flatiron.model.probit import BalancePrior, Priors, ProbitFit, Trials
+from flatiron.model.hierarchical import MIN_TRIALS_NOISE_FIT, fit_balanced, fit_hierarchical, fit_shared_noise
+from flatiron.model.probit import BalancePrior, Noise, Priors, ProbitFit, Trials
 from flatiron.session.store import Profile, Session, now_iso
 
-# 2: time-order bias; 3: per-trial stimulus spectrum; 4: seatings as random effects; 5: treble noise
-CACHE_VERSION = "5"
+# 2: time-order bias; 3: per-trial stimulus spectrum; 4: seatings as random effects; 5: treble noise;
+# 6: three-knot seating spread; 7: the listener's noise, shared by every profile
+CACHE_VERSION = "7"
 
 
-def fit_key(trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> str:
-    """What a perceptual fit depends on: changes whenever it would."""
+def trials_key(trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> str:
+    """One ear's trials, grid and priors."""
     h = hashlib.sha256(CACHE_VERSION.encode())
     for a in (trials.f_a, trials.f_b, trials.offset, trials.a_louder.astype(np.int8), trials.order,
               trials.group, grid):
@@ -36,8 +37,14 @@ def fit_key(trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> str:
     return h.hexdigest()[:20]
 
 
-def _cache_path(profile: Profile, trials: Trials, grid: np.ndarray, priors: Priors = Priors()):
-    return profile.dir / "cache" / f"probit-{fit_key(trials, grid, priors)}.npz"
+def fit_key(trials: Trials, grid: np.ndarray, noise: Noise, priors: Priors = Priors()) -> str:
+    """What a perceptual fit depends on: changes whenever it would. The noise
+    is the listener's, so a new session in any profile changes it."""
+    return hashlib.sha256(f"{trials_key(trials, grid, priors)}|{noise.key()}".encode()).hexdigest()[:20]
+
+
+def _cache_path(profile: Profile, trials: Trials, grid: np.ndarray, noise: Noise, priors: Priors = Priors()):
+    return profile.dir / "cache" / f"probit-{fit_key(trials, grid, noise, priors)}.npz"
 
 
 def _load_fit(path: Path) -> ProbitFit:
@@ -45,7 +52,7 @@ def _load_fit(path: Path) -> ProbitFit:
     return ProbitFit(z["grid"], z["L"], z["cov"], float(z["sigma0"]), float(z["d0"]), float(z["lapse"]),
                      int(z["n_trials"]), float(z["nlp"]), bool(z["converged"]),
                      bias_db=float(z["bias"]), bias_sd=float(z["bias_sd"]), treble_noise=float(z["treble_noise"]),
-                     tau_lo=float(z["tau_lo"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
+                     tau_lo=float(z["tau_lo"]), tau_mid=float(z["tau_mid"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
                      tau=z["tau"], u=z["u"], v=z["v"], group_trials=z["group_trials"],
                      group_cov=z["group_cov"], group_u_cov=z["group_u_cov"],
                      focus_cov=z["focus_cov"], focus_cross=z["focus_cross"])
@@ -56,25 +63,86 @@ def _save_fit(path: Path, fit: ProbitFit) -> None:
     tmp = path.with_name(path.stem + ".tmp.npz")
     np.savez(tmp, grid=fit.grid, L=fit.L, cov=fit.cov, sigma0=fit.sigma0, d0=fit.d0, lapse=fit.lapse,
              n_trials=fit.n_trials, nlp=fit.neg_log_post, converged=fit.converged,
-             bias=fit.bias_db, bias_sd=fit.bias_sd, treble_noise=fit.treble_noise, tau_lo=fit.tau_lo, tau_hi=fit.tau_hi,
+             bias=fit.bias_db, bias_sd=fit.bias_sd, treble_noise=fit.treble_noise, tau_lo=fit.tau_lo, tau_mid=fit.tau_mid, tau_hi=fit.tau_hi,
              tau_fitted=fit.tau_fitted, tau=fit.tau, u=fit.u, v=fit.v, group_trials=fit.group_trials,
              group_cov=fit.group_cov, group_u_cov=fit.group_u_cov,
              focus_cov=fit.focus_cov, focus_cross=fit.focus_cross)
     tmp.replace(path)
 
 
-def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> ProbitFit:
-    """The perceptual fit depends only on the trials, so it's cached on disk.
-    The seating spread is estimated here, so it's estimated once per set of
-    trials: the first time a fit is wanted after a session. This is one ear
-    on its own: what the scheduler works from, and where each ear's noise and
-    seating spread come from."""
-    path = _cache_path(profile, trials, grid, priors)
+def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, noise: Noise,
+               priors: Priors = Priors()) -> ProbitFit:
+    """The perceptual fit depends only on the trials and the listener's noise,
+    so it's cached on disk. The seating spread is estimated here, so it's
+    estimated once per set of trials: the first time a fit is wanted after a
+    session. This is one ear on its own: what the scheduler works from, and
+    where each ear's seating spread comes from."""
+    path = _cache_path(profile, trials, grid, noise, priors)
     if path.exists():
         return _load_fit(path)
-    fit = fit_hierarchical(trials, grid, priors)
+    fit = fit_hierarchical(trials, grid, priors, noise=noise)
     _save_fit(path, fit)
     return fit
+
+
+# -- the listener's noise (DESIGN.md, "Shared noise") --------------------------
+
+# Profiles whose trials inform the noise. Speakers' short blocks can't: their
+# deviations absorb the answers, and the noise collapses.
+NOISE_KINDS = ("headphone", "iem")
+NOISE_CACHE_KEEP = 200  # newest entries kept
+
+
+def noise_sessions(profile: Profile) -> list[Session]:
+    """The profile's own sessions that inform the listener's noise: those its
+    fit uses (`config --sessions`), not counting pooled ones, which count
+    toward their own profile."""
+    selection = profile_session_ids(profile)
+    own = profile.sessions()
+    if not selection:
+        return own
+    chosen = set(selection)
+    return [s for s in own if s.id in chosen or profile.slug in chosen]
+
+
+def listener_noise(root: Path, on_fit: Callable[[], None] | None = None) -> dict[str, Noise]:
+    """Per ear, the noise shared by every profile in the data folder: fitted to
+    their trials together (each profile with its own curve and seatings).
+    Only profiles with MIN_TRIALS_NOISE_FIT trials in the ear count; until
+    there's one, the prior's values. Cached at the top of the data folder,
+    keyed by every member's trials."""
+    sets: dict[str, list] = {e: [] for e in EARS}
+    for p in Profile.all(root):
+        if p.kind not in NOISE_KINDS:
+            continue
+        sessions = noise_sessions(p)
+        if not sessions:
+            continue
+        trials, grids = p.history(sessions)
+        for e in EARS:
+            if len(trials[e]) >= 2:
+                sets[e].append((trials[e], grids.get(e, log_grid())))
+    out = {}
+    folder = root / "cache" / "noise"
+    for e in EARS:
+        keys = sorted(trials_key(t, g) for t, g in sets[e])
+        key = hashlib.sha256(json.dumps([CACHE_VERSION, e, keys]).encode()).hexdigest()[:24]
+        path = folder / f"{key}.json"
+        if path.exists():
+            out[e] = Noise(**json.loads(path.read_text()))
+            os.utime(path)
+            continue
+        if on_fit is not None and any(len(t) >= MIN_TRIALS_NOISE_FIT for t, _ in sets[e]):
+            on_fit()
+            on_fit = None
+        out[e] = fit_shared_noise(sets[e])
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.stem + ".tmp")
+        tmp.write_text(json.dumps(asdict(out[e])))
+        tmp.replace(path)
+        for old in sorted(folder.glob("*.json"), key=lambda q: q.stat().st_mtime)[:-NOISE_CACHE_KEEP]:
+            old.unlink(missing_ok=True)
+    return out
 
 
 # The prior that the ears' curves are alike (DESIGN.md, "Channel balance") at
@@ -125,8 +193,9 @@ class ProfileFit:
         out = self.correction.summary()
         out.update(sessions=[s.id for s in self.sessions],
                    noise={e: {"sigma0": f.sigma0, "d0": f.d0, "treble_noise": f.treble_noise, "lapse": f.lapse, "trials": f.n_trials,
+                              "noise_trials": f.noise_trials,
                               "time_order_bias_db": f.bias_db, "time_order_bias_sd": f.bias_sd,
-                              "tau_seat": [f.tau_lo, f.tau_hi], "tau_fitted": f.tau_fitted}
+                              "tau_seat": [f.tau_lo, f.tau_mid, f.tau_hi], "tau_fitted": f.tau_fitted}
                           for e, f in self.fits.items()})
         return out
 
@@ -218,27 +287,31 @@ def select_sessions(profile: Profile, selection: list[str] | None) -> list[Sessi
 def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
                     on_fit: Callable[[], None] | None = None) -> tuple[dict[str, ProbitFit], dict[str, str], list[Session]]:
     """Per ear, the profile's cached perceptual fit and what it's keyed on. It
-    depends only on the trials (its sessions and pooling), not on the settings.
-    With the balance prior on (the profile's `balance` setting), the two ears'
-    curves are fitted together, each with the noise and seating spread of its
-    own fit. A consensus or veto member uses its own setting."""
+    depends only on the trials (its sessions and pooling) and the listener's
+    noise, not on the settings. With the balance prior on (the profile's
+    `balance` setting), the two ears' curves are fitted together, each with
+    the seating spread of its own fit. A consensus or veto member uses its
+    own setting."""
     sessions = select_sessions(profile, session_ids)
     trials, grids = profile.history(sessions)
-    fits, keys = {}, {}
     for e in EARS:
         if len(trials[e]) < 2:
             raise NotEnoughTrials(f"not enough trials for the {e} ear yet ({len(trials[e])})")
+    noise = listener_noise(profile.dir.parent.parent, on_fit)
+    fits, keys = {}, {}
+    for e in EARS:
         grid = grids.get(e, log_grid())
-        if on_fit is not None and not _cache_path(profile, trials[e], grid).exists():
+        if on_fit is not None and not _cache_path(profile, trials[e], grid, noise[e]).exists():
             on_fit()
             on_fit = None
-        fits[e] = cached_fit(profile, trials[e], grid)
-        keys[e] = fit_key(trials[e], grid)
+        fits[e] = cached_fit(profile, trials[e], grid, noise[e])
+        keys[e] = fit_key(trials[e], grid, noise[e])
     balance = balance_prior(profile)
     if balance is not None:
         fits, keys = cached_balanced(profile, trials, fits, keys, balance)
     for e in EARS:
         fits[e].groups = [s.id for s in sessions if len(s.trials_for(e))]
+        fits[e].noise_trials = noise[e].n_trials
     return fits, keys, sessions
 
 

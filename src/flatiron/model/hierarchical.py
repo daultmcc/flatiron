@@ -14,7 +14,8 @@ uncertainty is part of L's error bars.
 
 u_g is a Gaussian deviation with amplitude tau(f) and correlation width ell,
 centred across frequency (a constant offset cancels within a group). tau(f) has
-two values, below 5 kHz and above 8 kHz, log-interpolated between them. It's
+three values, at 5, 8 and 12 kHz, log-interpolated between them and constant
+beyond. It's
 held in a whitened basis, u_g = C D Phi v_g with v_g ~ N(0, I), where
 Phi Phi' = the correlation (truncated to its significant eigenvectors, which
 also deals with its ill-conditioning), D = diag(tau) and C centres. So a group
@@ -28,7 +29,9 @@ The noise (sigma0, d0, lapse, treble_noise) and then tau are set by maximising t
 Laplace-approximated marginal likelihood with L and the u_g integrated out. A
 joint MAP overfits: with a few trials per grid point the curve can separate the
 answers and sigma0 collapses. With few trials the noise stays at the prior; with
-fewer than two groups of MIN_GROUP_TRIALS, tau does.
+fewer than two groups of MIN_GROUP_TRIALS, tau does. The noise can instead be
+given (a Noise): fit_shared_noise estimates one for several sets of trials,
+each with its own curve and groups, as a profile's fit uses the listener's.
 """
 
 from dataclasses import dataclass
@@ -40,7 +43,7 @@ from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.special import expit, logit, ndtr
 
 from flatiron.model.grid import interp_matrix, log_grid, second_difference
-from flatiron.model.probit import BalancePrior, Priors, ProbitFit, Trials, band_rows, noise_sd
+from flatiron.model.probit import BalancePrior, Noise, Priors, ProbitFit, Trials, band_rows, noise_sd
 
 SQRT_2PI = np.sqrt(2 * np.pi)
 # Box bounds on the hyperparameters, in their unconstrained coordinates.
@@ -55,15 +58,20 @@ GAUGE_SD = 0.01  # dB, soft gauge mean(L) = 0 used during optimisation
 MIN_TRIALS_NOISE_FIT = 200
 # tau is estimated only with at least two groups of this many trials in the ear.
 MIN_GROUP_TRIALS = 60
-TAU_LO_HZ, TAU_HI_HZ = 5000.0, 8000.0
+TAU_KNOTS_HZ = (5000.0, 8000.0, 12000.0)
 BASIS_TOL = 1e-6  # eigenvalues below this share of the largest are dropped
 TOL_FINAL = 1e-7  # Newton decrement (nats) for a converged fit
 TOL_REFIT = 1e-3  # looser, for the refit after each answer: it starts next to the answer
 MAX_ITER = 200  # Fisher scoring can crawl along a nearly flat ridge: the lapse term makes this non-concave
 
 
-def tau_curve(grid, tau_lo: float, tau_hi: float) -> np.ndarray:
-    return np.exp(np.interp(np.log2(grid), np.log2([TAU_LO_HZ, TAU_HI_HZ]), np.log([tau_lo, tau_hi])))
+def log_ramp(grid, knots_hz, values) -> np.ndarray:
+    """Values at the knots, log-interpolated in log frequency, constant beyond."""
+    return np.exp(np.interp(np.log2(grid), np.log2(knots_hz), np.log(values)))
+
+
+def tau_curve(grid, tau_lo: float, tau_mid: float, tau_hi: float) -> np.ndarray:
+    return log_ramp(grid, TAU_KNOTS_HZ, [tau_lo, tau_mid, tau_hi])
 
 
 @lru_cache(maxsize=16)
@@ -111,7 +119,7 @@ class _Model:
         self.Phi0 = _kernel_basis(grid.tobytes(), priors.ell_oct)
         self.r = self.Phi0.shape[1]
         self.mu = np.array([np.log(priors.sigma0), np.log(priors.d0), logit(priors.lapse), 0.0])
-        self.mu_tau = np.log([priors.tau_lo, priors.tau_hi])
+        self.mu_tau = np.log([priors.tau_lo, priors.tau_mid, priors.tau_hi])
 
     # -- hyperparameters -----------------------------------------------------
 
@@ -126,8 +134,8 @@ class _Model:
         return 0.5 * float(d @ d)
 
     def set_tau(self, log_tau) -> None:
-        self.tau_lo, self.tau_hi = float(np.exp(log_tau[0])), float(np.exp(log_tau[1]))
-        self.tau = tau_curve(self.grid, self.tau_lo, self.tau_hi)
+        self.tau_lo, self.tau_mid, self.tau_hi = (float(x) for x in np.exp(log_tau))
+        self.tau = tau_curve(self.grid, self.tau_lo, self.tau_mid, self.tau_hi)
         Phi = self.tau[:, None] * self.Phi0
         self.Phi = Phi - Phi.mean(axis=0)  # C D Phi
         # A's rows sum to zero, so centring doesn't change what a trial sees.
@@ -299,38 +307,83 @@ def enough_groups(trials: Trials) -> bool:
     return int(np.sum(np.bincount(trials.group) >= MIN_GROUP_TRIALS)) >= 2
 
 
+def _noise_h(n: Noise) -> np.ndarray:
+    return np.array([np.log(n.sigma0), np.log(n.d0), logit(n.lapse), np.log(n.treble_noise)])
+
+
+NOISE_LO = np.array([LOG_SIGMA0_BOUNDS[0], LOG_D0_BOUNDS[0], LOGIT_LAPSE_BOUNDS[0], LOG_TREBLE_NOISE_BOUNDS[0]])
+NOISE_HI = np.array([LOG_SIGMA0_BOUNDS[1], LOG_D0_BOUNDS[1], LOGIT_LAPSE_BOUNDS[1], LOG_TREBLE_NOISE_BOUNDS[1]])
+
+
+def fit_shared_noise(sets: list[tuple[Trials, np.ndarray]], priors: Priors = Priors()) -> Noise:
+    """One noise for several sets of trials (each a profile's, on its own
+    grid, with its own curve and groups): the maximum of their summed
+    Laplace evidence, each with tau at the prior, as in fit_hierarchical's
+    own noise step. Only sets of at least MIN_TRIALS_NOISE_FIT trials count:
+    in a smaller one the curve absorbs the answers and pulls sigma0 down, and
+    summing several small sets doesn't undo that. With none, the prior's
+    values. Always started from the prior, so it depends only on the trials."""
+    sets = [(t, np.asarray(g, float)) for t, g in sets if len(t) >= MIN_TRIALS_NOISE_FIT]
+    n = sum(len(t) for t, _ in sets)
+    if not sets:
+        return Noise.prior(priors)
+    models = []
+    for t, g in sets:
+        m = _Model(t, g, priors)
+        m.set_tau(m.mu_tau)
+        m.set_noise(m.mu)
+        a_s, v_s, *_ = m.solve(np.zeros(m.n + 1), np.zeros((m.n_groups, m.r)), tol=TOL_REFIT)
+        models.append((m, a_s, v_s))
+
+    def outer(h):
+        total = models[0][0].noise_prior(h)
+        for m, a_s, v_s in models:
+            m.set_noise(h)
+            total += m.neg_log_evidence(a_s, v_s)[0]
+        return total
+
+    start = np.clip(models[0][0].mu, NOISE_LO, NOISE_HI)
+    res = optimize.minimize(outer, start, method="Nelder-Mead", bounds=list(zip(NOISE_LO, NOISE_HI)),
+                            options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 1000,
+                                     "initial_simplex": _simplex(start, NOISE_LO, NOISE_HI)})
+    h = res.x
+    return Noise(float(np.exp(h[0])), float(np.exp(h[1])), float(expit(h[2])), float(np.exp(h[3])), n)
+
+
 def fit_hierarchical(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
                      init: ProbitFit | None = None, fit_hyper: bool = True, fit_tau: bool | None = None,
                      n_groups: int | None = None, all_groups: bool = True,
-                     tol: float = TOL_FINAL) -> ProbitFit:
+                     tol: float = TOL_FINAL, noise: Noise | None = None) -> ProbitFit:
     """Fit L_avg and each group's deviation, with Laplace error bars.
 
     fit_hyper: estimate the noise (with enough trials; otherwise it stays at
     `init` or the prior). fit_tau (default: as fit_hyper): estimate tau (with
     two groups of enough trials; otherwise it stays at the prior). Not fitted,
-    tau stays at `init`, or the prior.
+    tau stays at `init`, or the prior. noise: use this noise, and don't
+    estimate it whatever fit_hyper says (fit_tau still defaults to fit_hyper).
     n_groups: at least this many groups, the later ones possibly still empty
     (the scheduler's current session). The last group is the fit's focus.
     all_groups: also return every group's covariance (not needed trial by trial).
     """
     fit_tau = fit_hyper if fit_tau is None else fit_tau
     m = _Model(trials, grid, priors, n_groups)
-    noise_lo = np.array([LOG_SIGMA0_BOUNDS[0], LOG_D0_BOUNDS[0], LOGIT_LAPSE_BOUNDS[0], LOG_TREBLE_NOISE_BOUNDS[0]])
-    noise_hi = np.array([LOG_SIGMA0_BOUNDS[1], LOG_D0_BOUNDS[1], LOGIT_LAPSE_BOUNDS[1], LOG_TREBLE_NOISE_BOUNDS[1]])
-    tau_lo, tau_hi = np.full(2, LOG_TAU_BOUNDS[0]), np.full(2, LOG_TAU_BOUNDS[1])
+    noise_lo, noise_hi = NOISE_LO, NOISE_HI
+    tau_lo, tau_hi = np.full(3, LOG_TAU_BOUNDS[0]), np.full(3, LOG_TAU_BOUNDS[1])
 
     a0, v0 = np.zeros(m.n + 1), np.zeros((m.n_groups, m.r))
     h0, t0 = m.mu.copy(), m.mu_tau.copy()
     if init is not None:
         a0 = np.append(init.at(m.grid)[0], init.bias_db)
         h0 = np.array([np.log(init.sigma0), np.log(init.d0), logit(init.lapse), np.log(init.treble_noise)])
-        t0 = np.log([init.tau_lo, init.tau_hi])
+        t0 = np.log([init.tau_lo, init.tau_mid, init.tau_hi])
         if init.v is not None and init.v.shape[1] == m.r and np.array_equal(init.grid, m.grid):
             k = min(init.v.shape[0], m.n_groups)
             v0[:k] = init.v[:k]
+    if noise is not None:
+        h0 = _noise_h(noise)
     h0, t0 = np.clip(h0, noise_lo, noise_hi), np.clip(t0, tau_lo, tau_hi)
 
-    search_noise = fit_hyper and len(trials) >= MIN_TRIALS_NOISE_FIT
+    search_noise = fit_hyper and noise is None and len(trials) >= MIN_TRIALS_NOISE_FIT
     tau_free = bool(fit_tau) and enough_groups(trials)
     if fit_tau and not tau_free:
         t0 = m.mu_tau.copy()  # too little to go on: the prior, so error bars allow for unseen seatings
@@ -390,7 +443,7 @@ def _result(m: _Model, a, v, val, fac: _Factor, converged: bool, tau_free: bool,
         grid=m.grid, L=L - L.mean(), cov=cov_L, sigma0=m.s0, d0=m.d0, lapse=m.lam, n_trials=n_trials,
         neg_log_post=val, converged=converged, bias_db=float(a[m.n]), bias_sd=bias_sd,
         treble_noise=m.treble_noise,
-        tau_lo=m.tau_lo, tau_hi=m.tau_hi, tau_fitted=tau_free, tau=m.tau, u=v @ m.Phi.T, v=v,
+        tau_lo=m.tau_lo, tau_mid=m.tau_mid, tau_hi=m.tau_hi, tau_fitted=tau_free, tau=m.tau, u=v @ m.Phi.T, v=v,
         group_trials=np.diff(m.starts), group_cov=group_cov, group_u_cov=group_u_cov,
         focus_cov=focus_cov, focus_cross=focus_cross)
 
@@ -398,6 +451,7 @@ def _result(m: _Model, a, v, val, fac: _Factor, converged: bool, tau_free: bool,
 # -- the two ears together (DESIGN.md, "Channel balance") ----------------------
 
 BALANCE_STEP_OCT = 1 / 48  # the grid the L-R difference is judged on
+BALANCE_KNOTS_HZ = (5000.0, 8000.0)
 BALANCE_NUGGET = 1e-3  # share of the variance left uncorrelated: numerical, and keeps the precision finite
 
 
@@ -409,7 +463,7 @@ def balance_precision(grid_a: np.ndarray, grid_b: np.ndarray, balance: BalancePr
     lo, hi = max(grid_a[0], grid_b[0]), min(grid_a[-1], grid_b[-1])
     G = log_grid(lo, hi, BALANCE_STEP_OCT)
     x = np.log2(G)
-    amp = tau_curve(G, balance.lo_db, balance.hi_db)
+    amp = log_ramp(G, BALANCE_KNOTS_HZ, [balance.lo_db, balance.hi_db])
     K = amp[:, None] * np.exp(-0.5 * ((x[:, None] - x[None, :]) / balance.ell_oct) ** 2) * amp[None, :]
     K[np.diag_indices_from(K)] += BALANCE_NUGGET * amp**2
     Q = cho_solve(cho_factor(K, lower=True), np.eye(G.size))
@@ -433,7 +487,7 @@ def fit_balanced(trials: dict, fits: dict, balance: BalancePrior = BalancePrior(
         f = fits[e]
         m = _Model(trials[e], f.grid, priors)
         m.set_noise([np.log(f.sigma0), np.log(f.d0), logit(f.lapse), np.log(f.treble_noise)])
-        m.set_tau(np.log([f.tau_lo, f.tau_hi]))
+        m.set_tau(np.log([f.tau_lo, f.tau_mid, f.tau_hi]))
         v = np.zeros((m.n_groups, m.r))
         if f.v is not None and f.v.shape[1] == m.r:
             k = min(f.v.shape[0], m.n_groups)

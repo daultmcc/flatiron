@@ -3,8 +3,8 @@ import pytest
 from scipy import optimize
 
 from flatiron.model.grid import log_grid
-from flatiron.model.hierarchical import _Model, enough_groups, fit_hierarchical, tau_curve
-from flatiron.model.probit import Priors, Trials, noise_sd
+from flatiron.model.hierarchical import _Model, enough_groups, fit_hierarchical, fit_shared_noise, tau_curve
+from flatiron.model.probit import Noise, Priors, Trials, noise_sd
 from flatiron.sim.design import random_pairs, uniform_design
 from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
 
@@ -92,9 +92,9 @@ def test_group_covariances_match_the_dense_inverse():
                                                             np.diag(gc[last] + cov_L - guc[last]), atol=1e-6)
 
 
-def test_tau_is_two_values_log_interpolated():
-    f = np.array([1000.0, 5000.0, np.sqrt(5000 * 8000.0), 8000.0, 14000.0])
-    assert tau_curve(f, 0.5, 2.0) == pytest.approx([0.5, 0.5, 1.0, 2.0, 2.0])
+def test_tau_is_three_values_log_interpolated():
+    f = np.array([1000.0, 5000.0, np.sqrt(5000 * 8000.0), 8000.0, np.sqrt(8000 * 12000.0), 12000.0, 16000.0])
+    assert tau_curve(f, 0.5, 2.0, 8.0) == pytest.approx([0.5, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0])
 
 
 def test_noise_then_tau_does_not_run_away():
@@ -106,7 +106,9 @@ def test_noise_then_tau_does_not_run_away():
     parts = [simulate(EarTruth(phon=None, deviation=seating_deviation(2.0, 2.0, rng)), 110, 30 + s, g) for s in range(3)]
     f = fit_hierarchical(Trials.grouped(parts), g)
     assert f.tau_fitted and 0.7 < f.sigma0 < 2.5
-    assert 2 / 2 < f.tau_lo < 2 * 2 and 2 / 2 < f.tau_hi < 2 * 2
+    taus = np.array([f.tau_lo, f.tau_mid, f.tau_hi])
+    # Each value has a third of the data, so each alone is noisy; together they don't run away.
+    assert np.all(taus < 2 * 2) and 2 / 1.5 < np.exp(np.mean(np.log(taus))) < 2 * 1.5
 
 
 def test_a_single_session_stays_at_the_prior_and_its_error_bars_allow_for_other_seatings():
@@ -114,15 +116,15 @@ def test_a_single_session_stays_at_the_prior_and_its_error_bars_allow_for_other_
     t = simulate(EarTruth(phon=None), 400, 1, g)
     assert not enough_groups(t)
     f = fit_hierarchical(t, g)
-    assert not f.tau_fitted and f.tau_lo == Priors().tau_lo and f.tau_hi == Priors().tau_hi
-    tight = fit_hierarchical(t, g, Priors(tau_lo=0.02, tau_hi=0.02))
+    assert not f.tau_fitted and (f.tau_lo, f.tau_mid, f.tau_hi) == (Priors().tau_lo, Priors().tau_mid, Priors().tau_hi)
+    tight = fit_hierarchical(t, g, Priors(tau_lo=0.02, tau_mid=0.02, tau_hi=0.02))
     top = g > 9000
     assert np.median(f.sd[top]) > 1.15 * np.median(tight.sd[top])
 
 
 def test_sd_of_the_average_stops_shrinking_once_each_seating_is_known():
     g = log_grid()
-    p = Priors(tau_lo=2.0, tau_hi=2.0)
+    p = Priors(tau_lo=2.0, tau_mid=2.0, tau_hi=2.0)
     sd = {}
     for per in (300, 1500):
         parts = [simulate(EarTruth(phon=None), per, 10 + s, g) for s in range(2)]
@@ -138,7 +140,7 @@ def test_a_group_with_few_trials_is_pulled_toward_the_average():
     flat = EarTruth(phon=None)
     peak = EarTruth(phon=None, deviation=bump)
     k = np.argmin(np.abs(g - 3000))
-    p = Priors(tau_lo=2.0, tau_hi=2.0)
+    p = Priors(tau_lo=2.0, tau_mid=2.0, tau_hi=2.0)
     level = {}
     for n in (600, 12):
         parts = [simulate(flat, 600, 20, g), simulate(flat, 600, 21, g), simulate(peak, n, 22, g)]
@@ -390,3 +392,35 @@ def test_the_balance_prior_pulls_equal_ears_together_and_keeps_a_large_real_diff
     out = fit_balanced(trials, fits)
     d = lambda fs: float((_shape(fs["R"], f) - _shape(fs["L"], f))[np.argmin(np.abs(f - 5000))])
     assert d(out) > 0.45 * d(fits) and d(out) > 4.0
+
+
+def _profile_sets(n, sigma0, seed=0):
+    """Three 'profiles' of one listener: different curves, two sessions each."""
+    g = log_grid(1000, 8000)
+    truths = [EarTruth(tilt_db_per_oct=t, phon=None) for t in (-1.0, 0.5, 0.0)]
+    truths[2] = design_example()
+    return [(Trials.grouped([simulate(tr, n, seed + 10 * k + s, g, sigma0=sigma0) for s in range(2)]), g)
+            for k, tr in enumerate(truths)]
+
+
+def test_shared_noise_is_the_prior_until_one_profile_has_enough_trials():
+    """Several small profiles don't add up: each one's curve absorbs its
+    answers, and sigma0 comes out far too small."""
+    sets = _profile_sets(60, 1.6)  # 360 trials in all, 120 a profile
+    assert fit_shared_noise(sets) == Noise.prior(Priors())
+    big = _profile_sets(150, 1.6, seed=3)[0]
+    assert fit_shared_noise(sets + [big]).n_trials == 300
+
+
+def test_shared_noise_is_recovered_from_several_profiles():
+    sets = _profile_sets(150, 1.6, seed=3)
+    n = fit_shared_noise(sets)
+    assert n.n_trials == 900 and 1.6 / 1.3 < n.sigma0 < 1.6 * 1.3
+
+
+def test_a_given_noise_is_used_and_not_estimated():
+    t, g = _profile_sets(150, 1.6)[0]
+    given = Noise(1.234, 0.4, 0.02, 1.5)
+    f = fit_hierarchical(t, g, noise=given)
+    got = Noise.of(f)
+    assert [got.sigma0, got.d0, got.lapse, got.treble_noise] == pytest.approx([1.234, 0.4, 0.02, 1.5]) and f.tau_fitted

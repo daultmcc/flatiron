@@ -62,7 +62,7 @@ def test_refinement_adds_midpoints_only_at_bends():
     # A small seating spread: with the prior's, one session's treble is too
     # uncertain about seatings in general for a bend there to count.
     fit = fit_hierarchical(Trials(g[i], g[j], off, lis.respond("L", g[i], g[j], off)), g,
-                           Priors(tau_lo=0.05, tau_hi=0.05))
+                           Priors(tau_lo=0.05, tau_mid=0.05, tau_hi=0.05))
     new = refine_grid(fit)
     added = np.setdiff1d(new, g)
     assert added.size > 0

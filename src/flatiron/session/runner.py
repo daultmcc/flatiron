@@ -68,17 +68,21 @@ class TrialRunner:
         self.settings = settings
         self.fs = fs
         self.seed = secrets.randbelow(2**31) if seed is None else seed
+        from flatiron.fit.run import cached_fit, listener_noise
+
         hist, grids = profile.history()
-        self.scheduler = Scheduler(config, seed=self.seed, stimulus_key=stimulus_key(settings.stimulus))
+        # The listener's noise, from every profile's trials, held for the
+        # session (DESIGN.md, "Shared noise"): a new profile starts with it.
+        noise = listener_noise(profile.dir.parent.parent)
+        self.scheduler = Scheduler(config, seed=self.seed, stimulus_key=stimulus_key(settings.stimulus),
+                                   noise=noise)
         for e in EARS:
             if len(hist[e]) or e in grids:
                 # The history's fit is the one `report` would use, so it's the
                 # same cached fit: the spread is estimated once, between sessions.
                 fit = None
                 if e in grids and config.estimate_tau and len(hist[e]) >= 2:
-                    from flatiron.fit.run import cached_fit
-
-                    fit = cached_fit(profile, hist[e], np.asarray(grids[e], float))
+                    fit = cached_fit(profile, hist[e], np.asarray(grids[e], float), noise[e])
                 self.scheduler.load_history(e, hist[e], grids.get(e), fit=fit)
         self.prior_trials = {e: len(hist[e]) for e in EARS}
         self.discarded = False

@@ -17,7 +17,7 @@ from flatiron import EARS
 from flatiron.audio.stimulus import POINT
 from flatiron.model.grid import MIN_STEP_OCT, log_grid, octaves
 from flatiron.model.hierarchical import TOL_REFIT, fit_hierarchical
-from flatiron.model.probit import Priors, ProbitFit, Trials, noise_sd
+from flatiron.model.probit import Noise, Priors, ProbitFit, Trials, noise_sd
 from flatiron.model.refine import curvature_z, refine_grid
 
 # Variance of a single probit answer at the 50% point, in units of sigma^2:
@@ -99,19 +99,30 @@ def candidate_pairs(grid: np.ndarray, max_step: int, long_max_oct: float):
 class Scheduler:
     def __init__(self, config: SchedulerConfig = SchedulerConfig(), seed: int = 0,
                  ears=EARS, grid: np.ndarray | None = None, priors: Priors = Priors(),
-                 stimulus_key: str = POINT):
+                 stimulus_key: str = POINT, noise: dict[str, Noise] | None = None):
+        """noise: per ear, the listener's noise (DESIGN.md, "Shared noise"),
+        held for the whole session. None: estimated from this ear's own
+        trials at block ends, once there are enough (simulations)."""
         self.cfg = config
         self.stimulus_key = stimulus_key  # what this session's bursts are
         self.priors = priors
+        self.noise = noise
         self.rng = np.random.default_rng(seed)
         g = log_grid() if grid is None else np.asarray(grid, float)
         empty = Trials([], [], [], [])
-        self.ears = {e: EarState(g, fit_hierarchical(empty, g, priors, fit_hyper=False, all_groups=False))
+        self.ears = {e: EarState(g, fit_hierarchical(empty, g, priors, fit_hyper=False, all_groups=False,
+                                                     noise=self._noise(e)))
                      for e in ears}
         self._ear_cycle = list(ears)
         self._n = 0
         self._last_centre: float | None = None
         self.refinements: list[tuple[str, int, int]] = []  # (ear, trial no., points added)
+
+    def _noise(self, ear: str) -> Noise | None:
+        return None if self.noise is None else self.noise.get(ear)
+
+    def _fits_noise(self, n_trials: int) -> bool:
+        return self.noise is None and n_trials >= self.cfg.min_trials_noise_fit
 
     def load_history(self, ear: str, trials: Trials, grid: np.ndarray | None = None,
                      fit: ProbitFit | None = None) -> None:
@@ -129,8 +140,8 @@ class Scheduler:
         st.current = int(trials.group.max()) + 1 if len(trials) else 0
         if fit is None:
             fit = fit_hierarchical(trials, st.grid, self.priors, all_groups=False,
-                                   fit_hyper=len(trials) >= self.cfg.min_trials_noise_fit,
-                                   fit_tau=self.cfg.estimate_tau)
+                                   fit_hyper=self._fits_noise(len(trials)),
+                                   fit_tau=self.cfg.estimate_tau, noise=self._noise(ear))
         st.fit = self._refit(st, init=fit)
         st.since_refit = st.since_block = 0
 
@@ -260,9 +271,10 @@ class Scheduler:
         st.since_refit = st.since_block = 0
         if not self.cfg.adaptive:
             return  # uniform pairs use no fit and no refinement (final_fit fits at the end)
-        # The noise is re-estimated with the spread fixed: the spread is
-        # re-estimated when a fit of all the trials is next wanted.
-        st.fit = self._refit(st, fit_hyper=len(st.f_a) >= self.cfg.min_trials_noise_fit)
+        # Without the listener's noise, it's re-estimated here with the spread
+        # fixed: the spread is re-estimated when a fit of all the trials is
+        # next wanted.
+        st.fit = self._refit(st, fit_hyper=self._fits_noise(len(st.f_a)))
         new = refine_grid(st.fit, self.cfg.refine_k, self.cfg.min_step_oct)
         if new.size > st.grid.size:
             self.refinements.append((ear, len(st.f_a), new.size - st.grid.size))
@@ -271,4 +283,4 @@ class Scheduler:
 
     def final_fit(self, ear: str) -> ProbitFit:
         st = self.ears[ear]
-        return fit_hierarchical(st.trials(), st.grid, self.priors, init=st.fit)
+        return fit_hierarchical(st.trials(), st.grid, self.priors, init=st.fit, noise=self._noise(ear))
