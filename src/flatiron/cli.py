@@ -716,7 +716,8 @@ def _print_fit(pf):
         print("Baseline: one per ear (--no-shared-baseline).")
     for e, c in corr.ears.items():
         f = pf.fits[e]
-        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%}, "
+        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%} "
+              f"({_noise_source(f)}), "
               f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
         print(f"  seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
               f"({f'estimated from {f.n_groups} sessions' if f.tau_fitted else 'the prior: needs two sessions of 60+ trials'})")
@@ -845,6 +846,11 @@ def cmd_compare(args):
         print(f"report: {path}")
         webbrowser.open(path.as_uri())
     return 0
+
+
+def _noise_source(f) -> str:
+    return (f"shared: {f.noise_trials} trials in this ear across profiles" if f.noise_trials
+            else "the prior: estimating it needs a profile with 200 trials in this ear")
 
 
 def cmd_report(args):

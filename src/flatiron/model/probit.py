@@ -90,6 +90,30 @@ class Priors:
 
 
 @dataclass(frozen=True)
+class Noise:
+    """The listener's judgment noise in one ear (DESIGN.md, "Shared noise"):
+    sigma0, d0, lapse and treble_noise as in the likelihood. n_trials: the
+    trials behind the estimate (0: the prior's values)."""
+    sigma0: float
+    d0: float
+    lapse: float
+    treble_noise: float = 1.0
+    n_trials: int = 0
+
+    @classmethod
+    def prior(cls, priors: "Priors") -> "Noise":
+        return cls(priors.sigma0, priors.d0, priors.lapse, 1.0)
+
+    @classmethod
+    def of(cls, fit: "ProbitFit") -> "Noise":
+        return cls(fit.sigma0, fit.d0, fit.lapse, fit.treble_noise)
+
+    def key(self) -> str:
+        """For cache keys: the values, to 6 significant figures."""
+        return "noise:" + ",".join(f"{x:.6g}" for x in (self.sigma0, self.d0, self.lapse, self.treble_noise))
+
+
+@dataclass(frozen=True)
 class BalancePrior:
     """The difference between the ears' curves (DESIGN.md, "Channel balance"):
     SD below 5 kHz and above 8 kHz (log-interpolated between), and its
@@ -128,6 +152,7 @@ class ProbitFit:
     focus_cov: np.ndarray | None = None  # Cov(L + u_f) for the group the fit was focused on (the last)
     focus_cross: np.ndarray | None = None  # Cov(L, L + u_f)
     groups: list = field(default_factory=list)  # what each group is (session ids), when known
+    noise_trials: int = 0  # trials behind a shared noise estimate, when known (0: the prior's values)
 
     @property
     def sd(self) -> np.ndarray:

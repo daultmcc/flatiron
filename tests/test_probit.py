@@ -3,8 +3,8 @@ import pytest
 from scipy import optimize
 
 from flatiron.model.grid import log_grid
-from flatiron.model.hierarchical import _Model, enough_groups, fit_hierarchical, tau_curve
-from flatiron.model.probit import Priors, Trials, noise_sd
+from flatiron.model.hierarchical import _Model, enough_groups, fit_hierarchical, fit_shared_noise, tau_curve
+from flatiron.model.probit import Noise, Priors, Trials, noise_sd
 from flatiron.sim.design import random_pairs, uniform_design
 from flatiron.sim.listener import EarTruth, SimulatedListener, design_example
 
@@ -392,3 +392,35 @@ def test_the_balance_prior_pulls_equal_ears_together_and_keeps_a_large_real_diff
     out = fit_balanced(trials, fits)
     d = lambda fs: float((_shape(fs["R"], f) - _shape(fs["L"], f))[np.argmin(np.abs(f - 5000))])
     assert d(out) > 0.45 * d(fits) and d(out) > 4.0
+
+
+def _profile_sets(n, sigma0, seed=0):
+    """Three 'profiles' of one listener: different curves, two sessions each."""
+    g = log_grid(1000, 8000)
+    truths = [EarTruth(tilt_db_per_oct=t, phon=None) for t in (-1.0, 0.5, 0.0)]
+    truths[2] = design_example()
+    return [(Trials.grouped([simulate(tr, n, seed + 10 * k + s, g, sigma0=sigma0) for s in range(2)]), g)
+            for k, tr in enumerate(truths)]
+
+
+def test_shared_noise_is_the_prior_until_one_profile_has_enough_trials():
+    """Several small profiles don't add up: each one's curve absorbs its
+    answers, and sigma0 comes out far too small."""
+    sets = _profile_sets(60, 1.6)  # 360 trials in all, 120 a profile
+    assert fit_shared_noise(sets) == Noise.prior(Priors())
+    big = _profile_sets(150, 1.6, seed=3)[0]
+    assert fit_shared_noise(sets + [big]).n_trials == 300
+
+
+def test_shared_noise_is_recovered_from_several_profiles():
+    sets = _profile_sets(150, 1.6, seed=3)
+    n = fit_shared_noise(sets)
+    assert n.n_trials == 900 and 1.6 / 1.3 < n.sigma0 < 1.6 * 1.3
+
+
+def test_a_given_noise_is_used_and_not_estimated():
+    t, g = _profile_sets(150, 1.6)[0]
+    given = Noise(1.234, 0.4, 0.02, 1.5)
+    f = fit_hierarchical(t, g, noise=given)
+    got = Noise.of(f)
+    assert [got.sigma0, got.d0, got.lapse, got.treble_noise] == pytest.approx([1.234, 0.4, 0.02, 1.5]) and f.tau_fitted
