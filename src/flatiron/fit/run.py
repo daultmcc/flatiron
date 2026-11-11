@@ -21,8 +21,9 @@ from flatiron.model.hierarchical import fit_balanced, fit_hierarchical
 from flatiron.model.probit import BalancePrior, Priors, ProbitFit, Trials
 from flatiron.session.store import Profile, Session, now_iso
 
-# 2: time-order bias; 3: per-trial stimulus spectrum; 4: seatings as random effects; 5: treble noise
-CACHE_VERSION = "5"
+# 2: time-order bias; 3: per-trial stimulus spectrum; 4: seatings as random effects; 5: treble noise;
+# 6: three-knot seating spread
+CACHE_VERSION = "6"
 
 
 def fit_key(trials: Trials, grid: np.ndarray, priors: Priors = Priors()) -> str:
@@ -45,7 +46,7 @@ def _load_fit(path: Path) -> ProbitFit:
     return ProbitFit(z["grid"], z["L"], z["cov"], float(z["sigma0"]), float(z["d0"]), float(z["lapse"]),
                      int(z["n_trials"]), float(z["nlp"]), bool(z["converged"]),
                      bias_db=float(z["bias"]), bias_sd=float(z["bias_sd"]), treble_noise=float(z["treble_noise"]),
-                     tau_lo=float(z["tau_lo"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
+                     tau_lo=float(z["tau_lo"]), tau_mid=float(z["tau_mid"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
                      tau=z["tau"], u=z["u"], v=z["v"], group_trials=z["group_trials"],
                      group_cov=z["group_cov"], group_u_cov=z["group_u_cov"],
                      focus_cov=z["focus_cov"], focus_cross=z["focus_cross"])
@@ -56,7 +57,7 @@ def _save_fit(path: Path, fit: ProbitFit) -> None:
     tmp = path.with_name(path.stem + ".tmp.npz")
     np.savez(tmp, grid=fit.grid, L=fit.L, cov=fit.cov, sigma0=fit.sigma0, d0=fit.d0, lapse=fit.lapse,
              n_trials=fit.n_trials, nlp=fit.neg_log_post, converged=fit.converged,
-             bias=fit.bias_db, bias_sd=fit.bias_sd, treble_noise=fit.treble_noise, tau_lo=fit.tau_lo, tau_hi=fit.tau_hi,
+             bias=fit.bias_db, bias_sd=fit.bias_sd, treble_noise=fit.treble_noise, tau_lo=fit.tau_lo, tau_mid=fit.tau_mid, tau_hi=fit.tau_hi,
              tau_fitted=fit.tau_fitted, tau=fit.tau, u=fit.u, v=fit.v, group_trials=fit.group_trials,
              group_cov=fit.group_cov, group_u_cov=fit.group_u_cov,
              focus_cov=fit.focus_cov, focus_cross=fit.focus_cross)
@@ -126,7 +127,7 @@ class ProfileFit:
         out.update(sessions=[s.id for s in self.sessions],
                    noise={e: {"sigma0": f.sigma0, "d0": f.d0, "treble_noise": f.treble_noise, "lapse": f.lapse, "trials": f.n_trials,
                               "time_order_bias_db": f.bias_db, "time_order_bias_sd": f.bias_sd,
-                              "tau_seat": [f.tau_lo, f.tau_hi], "tau_fitted": f.tau_fitted}
+                              "tau_seat": [f.tau_lo, f.tau_mid, f.tau_hi], "tau_fitted": f.tau_fitted}
                           for e, f in self.fits.items()})
         return out
 

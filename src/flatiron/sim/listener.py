@@ -59,16 +59,19 @@ def design_example(ear: str = "L") -> EarTruth:
     )
 
 
-def seating_deviation(tau_lo: float, tau_hi: float, rng: np.random.Generator, ell_oct: float = 1 / 12):
+def seating_deviation(tau_lo: float, tau_hi: float, rng: np.random.Generator, ell_oct: float = 1 / 12,
+                      tau_mid: float | None = None):
     """One seating's u_g as a function of frequency: a draw from the model's
-    own prior (amplitude tau(f), correlation width ell), on a fine grid."""
+    own prior (amplitude tau(f), correlation width ell), on a fine grid.
+    tau_mid: the spread at 8 kHz (default tau_hi: constant from 8 kHz up)."""
     from flatiron.model.hierarchical import tau_curve
     from flatiron.model.grid import log_grid
 
     f = log_grid(500, 24_000, 1 / 96)
     x = np.log2(f)
     C = np.exp(-0.5 * ((x[:, None] - x[None, :]) / ell_oct) ** 2) + 1e-8 * np.eye(f.size)
-    u = tau_curve(f, max(tau_lo, 1e-9), max(tau_hi, 1e-9)) * (np.linalg.cholesky(C) @ rng.normal(size=f.size))
+    mid = tau_hi if tau_mid is None else tau_mid
+    u = tau_curve(f, max(tau_lo, 1e-9), max(mid, 1e-9), max(tau_hi, 1e-9)) * (np.linalg.cholesky(C) @ rng.normal(size=f.size))
     return lambda q: np.interp(np.log2(q), x, u)
 
 

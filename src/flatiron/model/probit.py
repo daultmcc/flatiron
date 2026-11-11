@@ -81,8 +81,9 @@ class Priors:
     lapse_logit_sd: float = 1.0
     treble_noise_log_sd: float = 0.5  # noise above 10 kHz relative to below 6 kHz, centred on no difference
     bias_sd_db: float = 3.0  # time-order error prior, centred on none
-    # Seating spread (DESIGN.md, "Perceptual model"): medians below 5 kHz and above 8 kHz.
+    # Seating spread (DESIGN.md, "Perceptual model"): medians at 5, 8 and 12 kHz.
     tau_lo: float = 0.5
+    tau_mid: float = 1.5
     tau_hi: float = 1.5
     tau_log_sd: float = 0.7
     ell_oct: float = 1 / 12  # correlation width of a seating's deviation
@@ -114,7 +115,8 @@ class ProbitFit:
     bias_db: float = 0.0  # time-order error: the first interval sounds this much louder
     bias_sd: float = 0.0
     treble_noise: float = 1.0  # noise above 10 kHz as a multiple of sigma0
-    tau_lo: float = 0.5  # seating spread below 5 kHz / above 8 kHz (dB)
+    tau_lo: float = 0.5  # seating spread at 5 / 8 / 12 kHz (dB), constant beyond
+    tau_mid: float = 1.5
     tau_hi: float = 1.5
     tau_fitted: bool = False  # False: at the prior or held fixed
     tau: np.ndarray | None = None  # the spread at each grid point

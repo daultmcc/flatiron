@@ -92,9 +92,9 @@ def test_group_covariances_match_the_dense_inverse():
                                                             np.diag(gc[last] + cov_L - guc[last]), atol=1e-6)
 
 
-def test_tau_is_two_values_log_interpolated():
-    f = np.array([1000.0, 5000.0, np.sqrt(5000 * 8000.0), 8000.0, 14000.0])
-    assert tau_curve(f, 0.5, 2.0) == pytest.approx([0.5, 0.5, 1.0, 2.0, 2.0])
+def test_tau_is_three_values_log_interpolated():
+    f = np.array([1000.0, 5000.0, np.sqrt(5000 * 8000.0), 8000.0, np.sqrt(8000 * 12000.0), 12000.0, 16000.0])
+    assert tau_curve(f, 0.5, 2.0, 8.0) == pytest.approx([0.5, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0])
 
 
 def test_noise_then_tau_does_not_run_away():
@@ -106,7 +106,9 @@ def test_noise_then_tau_does_not_run_away():
     parts = [simulate(EarTruth(phon=None, deviation=seating_deviation(2.0, 2.0, rng)), 110, 30 + s, g) for s in range(3)]
     f = fit_hierarchical(Trials.grouped(parts), g)
     assert f.tau_fitted and 0.7 < f.sigma0 < 2.5
-    assert 2 / 2 < f.tau_lo < 2 * 2 and 2 / 2 < f.tau_hi < 2 * 2
+    taus = np.array([f.tau_lo, f.tau_mid, f.tau_hi])
+    # Each value has a third of the data, so each alone is noisy; together they don't run away.
+    assert np.all(taus < 2 * 2) and 2 / 1.5 < np.exp(np.mean(np.log(taus))) < 2 * 1.5
 
 
 def test_a_single_session_stays_at_the_prior_and_its_error_bars_allow_for_other_seatings():
@@ -114,15 +116,15 @@ def test_a_single_session_stays_at_the_prior_and_its_error_bars_allow_for_other_
     t = simulate(EarTruth(phon=None), 400, 1, g)
     assert not enough_groups(t)
     f = fit_hierarchical(t, g)
-    assert not f.tau_fitted and f.tau_lo == Priors().tau_lo and f.tau_hi == Priors().tau_hi
-    tight = fit_hierarchical(t, g, Priors(tau_lo=0.02, tau_hi=0.02))
+    assert not f.tau_fitted and (f.tau_lo, f.tau_mid, f.tau_hi) == (Priors().tau_lo, Priors().tau_mid, Priors().tau_hi)
+    tight = fit_hierarchical(t, g, Priors(tau_lo=0.02, tau_mid=0.02, tau_hi=0.02))
     top = g > 9000
     assert np.median(f.sd[top]) > 1.15 * np.median(tight.sd[top])
 
 
 def test_sd_of_the_average_stops_shrinking_once_each_seating_is_known():
     g = log_grid()
-    p = Priors(tau_lo=2.0, tau_hi=2.0)
+    p = Priors(tau_lo=2.0, tau_mid=2.0, tau_hi=2.0)
     sd = {}
     for per in (300, 1500):
         parts = [simulate(EarTruth(phon=None), per, 10 + s, g) for s in range(2)]
@@ -138,7 +140,7 @@ def test_a_group_with_few_trials_is_pulled_toward_the_average():
     flat = EarTruth(phon=None)
     peak = EarTruth(phon=None, deviation=bump)
     k = np.argmin(np.abs(g - 3000))
-    p = Priors(tau_lo=2.0, tau_hi=2.0)
+    p = Priors(tau_lo=2.0, tau_mid=2.0, tau_hi=2.0)
     level = {}
     for n in (600, 12):
         parts = [simulate(flat, 600, 20, g), simulate(flat, 600, 21, g), simulate(peak, n, 22, g)]
