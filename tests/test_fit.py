@@ -697,7 +697,7 @@ def test_a_new_profile_starts_with_the_listeners_noise(tmp_path, monkeypatch):
     from flatiron.session.store import Profile
 
     _two_profiles(tmp_path, monkeypatch, trials=(220, 0))
-    noise = run_mod.listener_noise(tmp_path / "flatiron")
+    noise = run_mod.listener_noise(tmp_path / "flatiron" / "listeners" / "default")
     r = TrialRunner(Profile.open("New"), seed=1)
     for e in "LR":
         assert noise[e].n_trials == 220 and r.scheduler.ears[e].fit.sigma0 == pytest.approx(noise[e].sigma0)

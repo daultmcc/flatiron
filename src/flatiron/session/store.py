@@ -1,13 +1,16 @@
-"""Profiles and session files on disk (DESIGN.md, "Data on disk").
+"""Listeners, profiles and session files on disk (DESIGN.md, "Data on disk").
 
-profiles/<slug>/profile.json
-profiles/<slug>/sessions/<timestamp>.json   every trial, written after each one
-profiles/<slug>/cache/                      perceptual fits, the last HTML report
+listeners/<listener>/listener.json
+listeners/<listener>/profiles/<slug>/profile.json
+listeners/<listener>/profiles/<slug>/sessions/<timestamp>.json   every trial, written after each one
+listeners/<listener>/profiles/<slug>/cache/                      perceptual fits, the last HTML report
+listeners/<listener>/cache/                                      the listener's noise, consensus results
 """
 
 import json
 import os
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +27,10 @@ FORMAT_VERSION = 1
 fsync = os.fsync  # the tests swap in a no-op: their files are throwaway
 RESERVED = ("none",)  # profile names the CLI uses as keywords
 KINDS = ("headphone", "iem")
+
+
+LISTENER_ENV = "FLATIRON_LISTENER"  # the listener an unprefixed profile name belongs to
+DEFAULT_LISTENER = "default"
 
 
 def slugify(label: str) -> str:
@@ -118,10 +125,149 @@ class Session:
                       [t.a_louder for t in ts], [1.0 if t.a_first else -1.0 for t in ts], [key] * len(ts))
 
 
+# -- listeners (DESIGN.md, "Listeners") ----------------------------------------
+
+class AmbiguousListener(ValueError):
+    pass
+
+
+class Listener:
+    """One person: their profiles, caches and noise, in a folder of their own.
+    `root` is what a profile's fits treat as their data folder."""
+
+    def __init__(self, slug: str, data: Path | None = None):
+        self.slug = slug
+        self.data = data or data_dir()
+        self.root = self.data / "listeners" / slug
+
+    @property
+    def path(self) -> Path:
+        return self.root / "listener.json"
+
+    @property
+    def label(self) -> str:
+        return json.loads(self.path.read_text()).get("label", self.slug) if self.path.exists() else self.slug
+
+    def ensure(self) -> "Listener":
+        if not self.path.exists():
+            write_json(self.path, {"label": self.slug if self.slug != DEFAULT_LISTENER else "Default",
+                                   "slug": self.slug, "created": now_iso(), "version": FORMAT_VERSION})
+        return self
+
+    @classmethod
+    def all(cls, data: Path | None = None) -> list["Listener"]:
+        migrate(data)
+        base = (data or data_dir()) / "listeners"
+        if not base.is_dir():
+            return []
+        return [cls(d.name, data) for d in sorted(base.iterdir()) if d.is_dir() and not d.name.startswith(".")]
+
+    @classmethod
+    def find(cls, name: str, data: Path | None = None) -> "Listener | None":
+        for x in cls.all(data):
+            if name in (x.slug, x.label) or slugify(name) == x.slug:
+                return x
+        return None
+
+    @classmethod
+    def create(cls, label: str, data: Path | None = None) -> "Listener":
+        x = cls(slugify(label), data)
+        if x.root.exists():
+            raise ValueError(f"There's already a listener {x.slug!r}.")
+        x.root.mkdir(parents=True)
+        write_json(x.path, {"label": label, "slug": x.slug, "created": now_iso(), "version": FORMAT_VERSION})
+        return x
+
+    def rename(self, label: str) -> "Listener":
+        new = Listener(slugify(label), self.data)
+        if new.slug != self.slug:
+            if new.root.exists():
+                raise ValueError(f"There's already a listener {new.slug!r}.")
+            self.ensure()
+            self.root.rename(new.root)
+        d = json.loads(new.path.read_text())
+        d.update(label=label, slug=new.slug)
+        write_json(new.path, d)
+        return new
+
+    def profiles(self) -> list["Profile"]:
+        return Profile.all(self.root)
+
+
+def migrate(data: Path | None = None) -> "Listener | None":
+    """Once: the single-listener layout (profiles/ at the top) becomes the
+    default listener's. The caches that belong to a listener move with it."""
+    data = data or data_dir()
+    old = data / "profiles"
+    if not old.is_dir():
+        return None
+    target = Listener(DEFAULT_LISTENER, data)
+    if (target.root / "profiles").exists():
+        raise RuntimeError(f"Can't move {old} into {target.root}: it already has profiles. Move one of them by hand.")
+    target.root.mkdir(parents=True, exist_ok=True)
+    target.ensure()
+    old.rename(target.root / "profiles")
+    for sub in ("noise", "consensus"):
+        src = data / "cache" / sub
+        if src.is_dir():
+            dst = target.root / "cache" / sub
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                shutil.rmtree(src)  # a cache: it's recomputed
+            else:
+                src.rename(dst)
+    return target
+
+
+def current_listener(data: Path | None = None) -> Listener:
+    """The listener an unprefixed profile name belongs to: the one named by
+    FLATIRON_LISTENER, or the only one (the default, before there are any)."""
+    env = os.environ.get(LISTENER_ENV)
+    everyone = Listener.all(data)
+    if env:
+        x = Listener.find(env, data)
+        if x is None:
+            raise ValueError(f"{LISTENER_ENV}={env!r} isn't a listener. See: flatiron listeners")
+        return x
+    if len(everyone) > 1:
+        raise AmbiguousListener("There are several listeners (" + ", ".join(x.slug for x in everyone)
+                                + "): name the profile as LISTENER/PROFILE, or set " + LISTENER_ENV + ".")
+    return everyone[0] if everyone else Listener(DEFAULT_LISTENER, data)
+
+
+def split_name(name: str, data: Path | None = None) -> tuple[Listener, str]:
+    """`listener/profile` or `profile` (the current listener's). The profile
+    part may be empty: the listener's only profile."""
+    if "/" in name:
+        who, prof = name.split("/", 1)
+        x = Listener.find(who, data)
+        if x is None:
+            raise ValueError(f"No listener {who!r}. See: flatiron listeners")
+        return x, prof
+    return current_listener(data), name
+
+
+def listener_of(profile: "Profile") -> Listener:
+    root = profile.dir.parent.parent
+    return Listener(root.name, root.parent.parent)
+
+
+def several_listeners(data: Path | None = None) -> bool:
+    return len(Listener.all(data)) > 1
+
+
+def qualified(profile: "Profile") -> str:
+    """The profile's label, with its listener's name when there are several."""
+    label = profile.read()["label"]
+    x = listener_of(profile)
+    return f"{x.slug}/{label}" if several_listeners(x.data) else label
+
+
 class Profile:
     def __init__(self, slug: str, root: Path | None = None):
+        """root: the listener's folder (default: the current listener's)."""
         self.slug = slug
-        self.dir = (root or data_dir()) / "profiles" / slug
+        self.dir = (root or current_listener().root) / "profiles" / slug
 
     @classmethod
     def open(cls, label: str, root: Path | None = None) -> "Profile":
@@ -130,13 +276,14 @@ class Profile:
         if p.slug in RESERVED and not p.path.exists():
             raise ValueError(f"{label!r} can't be a profile name: `config --veto none` uses it")
         if not p.path.exists():
+            listener_of(p).ensure()
             write_json(p.path, {"label": label, "slug": p.slug, "created": now_iso(),
                                 "version": FORMAT_VERSION})
         return p
 
     @classmethod
     def all(cls, root: Path | None = None) -> list["Profile"]:
-        base = (root or data_dir()) / "profiles"
+        base = (root or current_listener().root) / "profiles"
         if not base.exists():
             return []
         return [cls(d.name, root) for d in sorted(base.iterdir()) if (d / "profile.json").exists()]

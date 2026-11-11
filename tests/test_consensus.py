@@ -588,22 +588,22 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert "raw curves of Three, Two, smoothed over 0.5 octave" in out
     assert "weighted mean" in out
     assert current_fit(one).correction.ears["L"].consensus.G is None  # it isn't a member
-    entries = list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))
+    entries = list(consensus_dir(tmp_path / "flatiron" / "listeners" / "default").glob("*.npz"))
     assert len(entries) == 2  # one per ear
 
     # The same list from another profile shares the entries; another list doesn't.
     assert main(["config", "Three", "-r", "consensus:Three,Two"]) == 0
     assert current_fit(three).correction.ears["L"].consensus.G is not None  # listed, so it's a member
-    assert len(list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))) == 2
+    assert len(list(consensus_dir(tmp_path / "flatiron" / "listeners" / "default").glob("*.npz"))) == 2
     assert main(["config", "Three", "-r", "consensus:Two"]) == 0
     assert "single headphone" in capsys.readouterr().out
     current_fit(three)
-    assert len(list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))) == 4
+    assert len(list(consensus_dir(tmp_path / "flatiron" / "listeners" / "default").glob("*.npz"))) == 4
 
     # Neither the width nor the smoothing is part of the raw entry.
     assert main(["config", "One", "-w", "0.5", "--consensus-width", "0.25"]) == 0
     assert current_fit(one).correction.ears["L"].consensus.smooth_oct == 0.25
-    assert len(list(consensus_dir(tmp_path / "flatiron").glob("*.npz"))) == 4
+    assert len(list(consensus_dir(tmp_path / "flatiron" / "listeners" / "default").glob("*.npz"))) == 4
     assert main(["config", "One", "--reset", "width,consensus-width"]) == 0
 
     # The combinations that used to be refused aren't any more.

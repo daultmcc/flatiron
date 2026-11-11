@@ -623,7 +623,9 @@ class FlatironApp(App):
 
     def start_session(self):
         self.runner = self.make_runner()
-        self.sub_title = f"{self.runner.profile.read()['label']} · session {self.runner.session.id}"
+        from flatiron.session.store import qualified
+
+        self.sub_title = f"{qualified(self.runner.profile)} · session {self.runner.session.id}"
         self.push_screen(LevelScreen(self.runner.level_dbfs), self.after_level)
 
     def after_level(self, level):
