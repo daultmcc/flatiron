@@ -148,7 +148,7 @@ def cmd_tone(args):
     prof, eq = None, None
     if args.profile:
         prof = _profile(args)
-        if prof is None:
+        if prof is None or not _not_speaker(prof, "apply"):
             return 1
         pf = _current(prof)
         if pf is not None:
@@ -209,7 +209,8 @@ def _launch(args, sweep: bool, profile=None, **extra):
                 pass
             except (ValueError, FileNotFoundError) as e:
                 print(f"Can't apply the correction during the sweep: {e}")
-    settings = lambda: replace(_settings(args, profile), **extra)
+    extra_now = lambda: {k: (v() if callable(v) else v) for k, v in extra.items()}  # speaker: the next position
+    settings = lambda: replace(_settings(args, profile), **extra_now())
     settings()  # validate options before the UI starts
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
@@ -228,8 +229,56 @@ def _launch(args, sweep: bool, profile=None, **extra):
     return 0
 
 
+def _not_speaker(prof, what: str) -> bool:
+    """False (after saying why) for a speaker profile: it's evidence about the
+    listener's ears, not something to correct."""
+    if prof.kind == "speaker":
+        print(f"{prof.read()['label']!r} is a speaker profile: it has no correction to {what}. "
+              "See: flatiron report, flatiron compare")
+        return False
+    return True
+
+
+def _launch_speaker(args, prof):
+    """Speaker blocks (DESIGN.md, "Speaker sessions"), one after another down the position plan."""
+    from flatiron.fit.run import listener_noise
+    from flatiron.session.speaker import MAX_BLOCK, MIN_BLOCK, next_position, progress
+
+    if args.sweep:
+        print("There's no sweep for speaker profiles.")
+        return 1
+    block = args.block
+    if not MIN_BLOCK <= block <= MAX_BLOCK:
+        print(f"--block must be {MIN_BLOCK} to {MAX_BLOCK} trials")
+        return 1
+    done, total = progress(prof.sessions())
+    if next_position(prof.sessions()) is None:
+        print(f"All {total} blocks of the position plan are done. See: flatiron report")
+        return 0
+    noise = listener_noise(prof.dir.parent.parent)
+    if any(n.n_trials == 0 for n in noise.values()):
+        print("Note: no headphone or IEM profile of this listener has 200 trials in each ear yet, so speaker "
+              "blocks use a default judgment noise. Their error bars are only as right as that guess.")
+    print(f"{done} of {total} blocks done. Each block: one ear open, one position, {block} trials.")
+    channel = prof.read()["channel"]
+
+    def speaker():
+        nxt = next_position(prof.sessions())
+        return {"open_ear": nxt.ear, "channel": channel, "position": nxt.to_json(), "block": block}
+
+    return _launch(args, sweep=False, profile=prof, speaker=speaker, max_trials=block)
+
+
 def cmd_run(args):
-    return _launch(args, sweep=args.sweep)
+    prof = _profile(args, create=args.new)
+    if prof is None:
+        return 1
+    if prof.kind == "speaker":
+        return _launch_speaker(args, prof)
+    if args.block is not None:
+        print("--block is for speaker profiles.")
+        return 1
+    return _launch(args, sweep=args.sweep, profile=prof)
 
 
 def cmd_verify(args):
@@ -238,6 +287,8 @@ def cmd_verify(args):
 
     prof = _profile(args)
     if prof is None:
+        return 1
+    if not _not_speaker(prof, "verify"):
         return 1
     pf = _current(prof)
     if pf is None:
@@ -276,6 +327,8 @@ def cmd_audition(args):
     prof = _profile(args)
     if prof is None:
         return 1
+    if not _not_speaker(prof, "audition"):
+        return 1
     try:
         sources = [load_source(x) for x in (args.source or ["pink", "sweep"])]
     except (FileNotFoundError, ValueError) as e:
@@ -310,8 +363,14 @@ def _profile_listing(p, indent=""):
     last = sessions[-1].started[:10] if sessions else "-"
     open_s = sum(s.ended is None for s in sessions)
     kind = info.get("kind", "headphone")
+    extra = ""
+    if kind == "speaker":
+        from flatiron.session.speaker import progress
+
+        done, total = progress(sessions)
+        kind, extra = f"speaker, channel {info.get('channel')}", f", {done} of {total} blocks"
     print(f"{indent}{info['label']}  ({p.slug})" + ("" if kind == "headphone" else f"  [{kind}]"))
-    print(f"{indent}    {len(sessions)} sessions, L {n['L']} / R {n['R']} trials, last {last}, {level_s}"
+    print(f"{indent}    {len(sessions)} sessions{extra}, L {n['L']} / R {n['R']} trials, last {last}, {level_s}"
           + (f", {open_s} not closed" if open_s else ""))
 
 
@@ -360,18 +419,35 @@ def cmd_profiles(args):
         if prof is not None:
             print(f"There's already a profile {args.name!r}.")
             return 1
+        if args.kind == "speaker" and not args.channel:
+            print("A speaker profile needs --channel L or R: the output channel that drives the speaker "
+                  "(only one plays at a time).")
+            return 1
+        if args.channel and args.kind != "speaker":
+            print("--channel is only for speaker profiles (--kind speaker).")
+            return 1
         try:
             prof = Profile.open(pname, listener.root)
         except ValueError as e:
             print(e)
             return 1
-        prof.update(kind=args.kind)
-        print(f"Created {args.name!r} ({args.kind}).")
+        prof.update(kind=args.kind, **({"channel": args.channel} if args.channel else {}))
+        print(f"Created {args.name!r} ({args.kind}" + (f", channel {args.channel}" if args.channel else "") + ").")
+        if args.kind == "speaker":
+            print(f"Measure it with: flatiron run {args.name!r} (blocks of one ear and one position each)")
         return 0
     if action in ("set", "move") and prof is None:
         print(f"No profile {args.name!r}. See: flatiron profiles")
         return 1
     if action == "set":
+        if args.kind and args.kind != prof.kind and "speaker" in (args.kind, prof.kind) and prof.sessions():
+            print("A profile with sessions can't become a speaker profile or stop being one: their sessions "
+                  "mean different things. Start a new profile instead.")
+            return 1
+        if args.kind == "speaker" and not prof.read().get("channel"):
+            print("A speaker profile needs a channel: create one with flatiron profiles new NAME --kind speaker "
+                  "--channel L|R")
+            return 1
         if args.kind:
             prof.update(kind=args.kind)
         if args.label:
@@ -511,6 +587,7 @@ def cmd_sessions(args):
         print(f"{s.id}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  catch {acc:>4}  "
               f"fast {fast:3d}  chose first {first:>4}  EQ: {s.eq_context.get('note')}"
               f"{'  [verify ' + s.preview.get('fit_hash', '') + ']' if s.preview else ''}"
+              f"{'  [' + s.speaker['open_ear'] + ' ear open, ' + s.speaker['position']['label'] + ']' if s.speaker else ''}"
               f"{'' if s.ended else '  (not closed)'}")
     trials, _ = prof.history(sessions)
     print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
@@ -910,6 +987,29 @@ def _print_fit(pf):
     print("settings: flatiron config")
 
 
+def _print_speaker(prof, pf):
+    """A speaker profile: its direction-averaged curve's features, with no
+    correction (DESIGN.md, "Positions as random effects")."""
+    from flatiron.session.speaker import progress
+
+    done, total = progress(pf.sessions)
+    print(f"Speaker profile (channel {prof.read().get('channel')}): {done} of {total} blocks of the position plan. "
+          "It's evidence about your ears, so it has no correction.")
+    for e, c in pf.correction.ears.items():
+        f = pf.fits[e]
+        print(f"\n{e} ear: {f.n_trials} trials at {f.n_groups} positions, noise {f.sigma0:.2f} dB "
+              f"(×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%} ({_noise_source(f)}), "
+              f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB")
+        print(f"  position spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
+              "(assumed, not estimated)")
+        for kind in ("narrow", "broad"):
+            acc = sorted((x for x in c.features if x.accepted and x.kind == kind), key=lambda x: x.fc)
+            print(f"  {kind} features: " + (", ".join(f"{x.fc:.0f} Hz ({x.peak_db:+.1f} dB)" for x in acc)
+                                            if acc else "none significant"))
+    print("\nTo see it beside your headphones: flatiron compare HEADPHONE ... SPEAKER (a speaker is drawn dashed "
+          "and doesn't count toward the median)")
+
+
 def _correction_of(f) -> float:
     if f.veto is not None:
         return 0.0 if not f.accepted else f.veto.correction_db
@@ -1020,7 +1120,10 @@ def cmd_report(args):
 
     if several_listeners():
         print(f"Listener: {listener_of(prof).label} ({listener_of(prof).slug})")
-    _print_fit(pf)
+    if prof.kind == "speaker":
+        _print_speaker(prof, pf)
+    else:
+        _print_fit(pf)
     if args.csv:
         from flatiron.report.compare import write_csv
 
@@ -1069,7 +1172,7 @@ def cmd_export(args):
     from flatiron.export.plan import build_plan, response_db
 
     prof = _profile(args)
-    if prof is None:
+    if prof is None or not _not_speaker(prof, "export"):
         return 1
     pref = None
     if args.merge:
@@ -1226,7 +1329,18 @@ def _simulate_seating(args):
           f"full fit {s['full_s']:.1f} s")
 
 
+def _simulate_speaker(args):
+    from flatiron.sim.speaker import criterion_7
+
+    r = criterion_7(args.seed)
+    print(f"Speaker, 15 positions x 32 trials, noise known (criterion 7): RMS error {r.rms:.2f} dB, "
+          f"1 SD covers {r.coverage:.0%}; with the position spread assumed at half: {r.rms_half:.2f} dB, "
+          f"{r.coverage_half:.0%}")
+
+
 def cmd_simulate(args):
+    if args.scenario == "speaker":
+        return _simulate_speaker(args)
     if args.scenario == "consensus":
         return _simulate_consensus(args)
     if args.scenario == "seating":
@@ -1296,6 +1410,8 @@ def main(argv=None):
     s.add_argument("-s", "--sweep", action="store_true",
                    help="start with the coarse sweep, through the current correction if there is one")
     s.add_argument("--sweep-seconds", type=float, help="sweep length each way (default 30)")
+    s.add_argument("--block", type=int, metavar="N",
+                   help="speaker profiles: trials per block, one position each (16 to 60, default 32)")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")
@@ -1324,11 +1440,12 @@ def main(argv=None):
     actions = s.add_subparsers(dest="action")
     n = actions.add_parser("new", help="create a profile")
     n.add_argument("name")
-    n.add_argument("--kind", choices=("headphone", "iem"), default="headphone",
-                   help="IEMs are shown in comparisons but don't count toward a consensus")
+    n.add_argument("--kind", choices=("headphone", "iem", "speaker"), default="headphone",
+                   help="IEMs and speakers are shown in comparisons but don't count toward a consensus")
+    n.add_argument("--channel", choices=("L", "R"), help="speakers: the output channel that drives the speaker")
     n = actions.add_parser("set", help="change a profile's kind or label (no trials affected)")
     n.add_argument("name")
-    n.add_argument("--kind", choices=("headphone", "iem"))
+    n.add_argument("--kind", choices=("headphone", "iem", "speaker"))
     n.add_argument("--label")
     n = actions.add_parser("move", help="move a profile to another listener")
     n.add_argument("name")
@@ -1370,7 +1487,7 @@ def main(argv=None):
     s.add_argument("-w", "--width", type=float, help="max feature width W in octaves (default 1)")
     s.add_argument("-r", "--reference", help="reference (default: the one the profiles share)")
     s.add_argument("--ear", choices=("L", "R", "both"), default="both", help="which ear")
-    s.add_argument("--include-kind", action="append", choices=("iem",),
+    s.add_argument("--include-kind", action="append", choices=("iem", "speaker"),
                    help="let this kind count toward the consensus (it's drawn dashed either way)")
     s.set_defaults(func=cmd_compare)
 
@@ -1401,8 +1518,9 @@ def main(argv=None):
     s.add_argument("--sigma0", type=float, default=1.0, help=argparse.SUPPRESS)
     s.add_argument("--lapse", type=float, default=0.03, help=argparse.SUPPRESS)
     s.add_argument("--design", choices=("adaptive", "uniform"), default="adaptive")
-    s.add_argument("--scenario", choices=("consensus", "seating"),
-                   help="consensus: three headphones on one listener; seating: sessions that differ")
+    s.add_argument("--scenario", choices=("consensus", "seating", "speaker"),
+                   help="consensus: three headphones on one listener; seating: sessions that differ; "
+                        "speaker: speaker blocks at positions that differ")
     s.set_defaults(func=cmd_simulate)
 
     args = p.parse_args(argv)

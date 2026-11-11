@@ -37,6 +37,9 @@ class RunSettings:
     # records each burst's level change as a known offset.
     preview: PreviewEQ | None = None
     max_trials: int | None = None  # end the session after this many answers
+    # A speaker block (DESIGN.md, "Speaker sessions"): {open_ear, channel,
+    # position, block}. Trials are in the open ear; bursts go to the channel.
+    speaker: dict | None = None
 
     def __post_init__(self):
         if not 0.15 <= self.gap_s <= 0.6:
@@ -70,20 +73,28 @@ class TrialRunner:
         self.seed = secrets.randbelow(2**31) if seed is None else seed
         from flatiron.fit.run import cached_fit, listener_noise
 
+        from dataclasses import replace
+
+        from flatiron.fit.run import profile_priors
+
         hist, grids = profile.history()
         # The listener's noise, from every profile's trials, held for the
         # session (DESIGN.md, "Shared noise"): a new profile starts with it.
         noise = listener_noise(profile.dir.parent.parent)
+        self.speaker = settings.speaker
+        ears = (self.speaker["open_ear"],) if self.speaker else EARS
+        if self.speaker:  # the position spread is fixed, not estimated
+            config = replace(config, estimate_tau=False)
         self.scheduler = Scheduler(config, seed=self.seed, stimulus_key=stimulus_key(settings.stimulus),
-                                   noise=noise)
-        for e in EARS:
+                                   noise=noise, ears=ears, priors=profile_priors(profile))
+        for e in ears:
             if len(hist[e]) or e in grids:
                 # The history's fit is the one `report` would use, so it's the
                 # same cached fit: the spread is estimated once, between sessions.
                 fit = None
                 if e in grids and config.estimate_tau and len(hist[e]) >= 2:
                     fit = cached_fit(profile, hist[e], np.asarray(grids[e], float), noise[e])
-                self.scheduler.load_history(e, hist[e], grids.get(e), fit=fit)
+                self.scheduler.load_history(e, hist[e], grids.get(e), fit=fit, refine=bool(self.speaker))
         self.prior_trials = {e: len(hist[e]) for e in EARS}
         self.discarded = False
         self._lock = threading.Lock()
@@ -97,8 +108,10 @@ class TrialRunner:
             eq_context={"note": settings.eq_note, "apo": settings.eq_text},
             stimulus=asdict(settings.stimulus), level_dbfs=self.level_dbfs,
             gap_s=settings.gap_s, seed=self.seed, scheduler=asdict(config),
-            preview=settings.preview.to_json() if settings.preview is not None else None)
-        self._apply_tone_marks()
+            preview=settings.preview.to_json() if settings.preview is not None else None,
+            speaker=dict(self.speaker, plugged=True) if self.speaker else None)
+        if not self.speaker:
+            self._apply_tone_marks()
         self._save()
 
     # -- setup steps -------------------------------------------------------
@@ -176,10 +189,11 @@ class TrialRunner:
             b, pb = s.preview.burst_gain_db(b, plan.ear, self.fs)
         la = self.level_dbfs + plan.rove_db + plan.delta_a
         lb = self.level_dbfs + plan.rove_db + plan.delta_b
+        channel = self.speaker["channel"] if self.speaker else plan.ear
         if plan.a_first:
-            buf, lim = render_pair(a, b, la, lb, s.gap_s, plan.ear, self.fs)
+            buf, lim = render_pair(a, b, la, lb, s.gap_s, channel, self.fs)
         else:
-            buf, lim = render_pair(b, a, lb, la, s.gap_s, plan.ear, self.fs)
+            buf, lim = render_pair(b, a, lb, la, s.gap_s, channel, self.fs)
         d = a.size / self.fs
         return PreparedTrial(plan, buf, 0.0, d, d + s.gap_s, 2 * d + s.gap_s, lim.gain_db,
                              self.level_dbfs, retake, pa, pb)
@@ -266,8 +280,9 @@ class TrialRunner:
         return {
             "session_trials": len(live),
             "session_trials_ear": {e: sum(t.ear == e for t in live) for e in EARS},
-            "total": {e: self.scheduler.n_trials(e) for e in EARS},
-            "block_left": min(self.scheduler.until_block_end(e) for e in EARS),
+            "total": {e: self.scheduler.n_trials(e) if e in self.scheduler.ears else self.prior_trials[e]
+                      for e in EARS},
+            "block_left": min(self.scheduler.until_block_end(e) for e in self.scheduler.ears),
             "fast": sum(t.fast for t in live),
             "undone": len(self.session.trials) - len(live),
         }
@@ -276,5 +291,5 @@ class TrialRunner:
         with self._lock:
             if self.discarded:
                 return
-            self.session.grid = {e: self.scheduler.ears[e].grid.tolist() for e in EARS}
+            self.session.grid = {e: st.grid.tolist() for e, st in self.scheduler.ears.items()}
             self.profile.save(self.session)

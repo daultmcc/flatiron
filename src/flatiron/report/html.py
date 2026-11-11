@@ -64,7 +64,7 @@ def veto_line(f) -> str:
     return f"{seen}; median: {v.median.height_db:+.1f} dB at {v.median.fc:,.0f} Hz" + (" (elsewhere)" if v.moved else "")
 
 
-def _features_table(feats, veto=False):
+def _features_table(feats, veto=False, speaker=False):
     rows = [(f"{f.fc:,.0f} Hz", f"{f.width_oct:.2f}", f"{f.peak_db:+.1f}", f"{f.z:.1f}",
              "" if f.level_sd is None else f"{f.level_sd:.2f}",
              "" if f.seat_spread is None else f"{f.seat_spread:.2f}",
@@ -74,11 +74,11 @@ def _features_table(feats, veto=False):
               + (f", {f.weight:.0%} by significance" if f.weight < 1 else "")
               + (f"; {f.reason}" if f.reason else "")) if f.accepted else f"no: {f.reason}")
             for f in sorted(feats, key=lambda f: f.fc)]
-    head = ["centre", "width (oct)", "residual dB", "z", "level SD", "seating spread"]
+    head = ["centre", "width (oct)", "residual dB", "z", "level SD", "position spread" if speaker else "seating spread"]
     numeric = tuple(range(1, len(head)))
     if veto:
         head += ["veto", "corrected dB"]
-    return _table(head + ["corrected"], rows, numeric)
+    return _table(head + ["significant" if speaker else "corrected"], rows, numeric)
 
 
 def consensus_notes(pf: ProfileFit) -> list[str]:
@@ -146,17 +146,21 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         notes.append(f"Experimental smooth method: the baseline is the curve smoothed over {st.smooth_oct:g} "
                      "octave, and every residual is corrected. The features listed are only what's "
                      "significant; noise gets corrected too.")
+    speaker = profile.kind == "speaker"
+    if speaker:
+        notes.insert(0, "Speaker profile: the curve is averaged over the positions measured, and it's evidence "
+                        "about your ears, so there's no correction. The position spread is assumed, not estimated.")
     out = [f"<h1>Flatiron fit · {html.escape(label)}</h1>",
-           f'<p class="meta">{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} sessions · '
+           f'<p class="meta">{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} {"blocks" if speaker else "sessions"} · '
            + " · ".join(f"{EAR_NAMES[e]} {f.n_trials} trials" for e, f in pf.fits.items())
-           + f" · preamp {corr.preamp_db:+.1f} dB (both channels)</p>"]
+           + ("" if speaker else f" · preamp {corr.preamp_db:+.1f} dB (both channels)") + "</p>"]
     out += [f'<p class="note">{html.escape(n)}</p>' for n in notes]
 
     for e, c in corr.ears.items():
         f = pf.fits[e]
         out.append(f"<h2>{EAR_NAMES[e]} ear</h2>")
-        light = _png(ear_figure(c, c.session_R, "light", st.f_lo, st.f_hi))
-        dark = _png(ear_figure(c, c.session_R, "dark", st.f_lo, st.f_hi))
+        light = _png(ear_figure(c, c.session_R, "light", st.f_lo, st.f_hi, speaker))
+        dark = _png(ear_figure(c, c.session_R, "dark", st.f_lo, st.f_hi, speaker))
         out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
                    f'<img src="{light}" alt="{EAR_NAMES[e]} ear: measured level, residual and correction">'
                    f"</picture></div>")
@@ -165,10 +169,12 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
                       else "(the prior: estimating it needs a profile with 200 trials in this ear), ")
                    + f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
                    f"{'louder' if f.bias_db >= 0 else 'quieter'}; fitted, so it doesn't distort the curve). "
-                   f"Seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
-                   + (f"(estimated from {f.n_groups} sessions)" if f.tau_fitted
-                      else "(the prior: estimating it needs two sessions with 60+ trials for this ear)")
-                   + f". Filter fit: χ² per point {c.fit.chi2:.2f}"
+                   + (f"Position spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
+                      f"(assumed), {f.n_groups} positions" if speaker else
+                      f"Seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
+                      + (f"(estimated from {f.n_groups} sessions)" if f.tau_fitted
+                         else "(the prior: estimating it needs two sessions with 60+ trials for this ear)")
+                      + f". Filter fit: χ² per point {c.fit.chi2:.2f}")
                    + (f"; {c.sessions_checked} sessions in the seating step" if c.sessions_checked else "")
                    + ".</p>")
         out.append('<p class="muted">In the feature tables, level SD says whether a feature is real; seating '
@@ -183,6 +189,12 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
             out.append(f'<p class="note">The baseline is uncertain (SD over {AMBIGUOUS_BASELINE_SD_DB:g} dB) under '
                        f"the feature(s) at {html.escape(where)}: part of each may be tonality rather than a feature, "
                        "or the other way round.</p>")
+        if speaker:
+            for kind, title in ((NARROW, "Narrow features"), (BROAD, "Broad features")):
+                feats = [x for x in c.features if x.kind == kind and (x.accepted or abs(x.z) >= 1.5)]
+                out.append(f"<h3>{title}</h3>")
+                out.append(_features_table(feats, speaker=True) if feats else '<p class="muted">None.</p>')
+            continue
         out.append("<h3>Filters</h3>")
         if c.filters:
             comp = {id(x) for x in c.compensation}

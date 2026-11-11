@@ -70,17 +70,28 @@ def _save_fit(path: Path, fit: ProbitFit) -> None:
     tmp.replace(path)
 
 
+# A speaker's position spread (DESIGN.md, "Positions as random effects"): fixed,
+# not estimated, at 1 dB rising log-linearly to 4 dB from 5 to 12 kHz. With
+# the borrowed noise even slightly off, an estimate soaks up the difference.
+SPEAKER_PRIORS = Priors(tau_lo=1.0, tau_mid=2.1, tau_hi=4.0)
+
+
+def profile_priors(profile: Profile) -> Priors:
+    return SPEAKER_PRIORS if profile.kind == "speaker" else Priors()
+
+
 def cached_fit(profile: Profile, trials: Trials, grid: np.ndarray, noise: Noise,
-               priors: Priors = Priors()) -> ProbitFit:
+               priors: Priors | None = None) -> ProbitFit:
     """The perceptual fit depends only on the trials and the listener's noise,
     so it's cached on disk. The seating spread is estimated here, so it's
     estimated once per set of trials: the first time a fit is wanted after a
     session. This is one ear on its own: what the scheduler works from, and
     where each ear's seating spread comes from."""
+    priors = profile_priors(profile) if priors is None else priors
     path = _cache_path(profile, trials, grid, noise, priors)
     if path.exists():
         return _load_fit(path)
-    fit = fit_hierarchical(trials, grid, priors, noise=noise)
+    fit = fit_hierarchical(trials, grid, priors, noise=noise, fit_tau=profile.kind != "speaker")
     _save_fit(path, fit)
     return fit
 
@@ -304,11 +315,12 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
     fits, keys = {}, {}
     for e in EARS:
         grid = grids.get(e, log_grid())
-        if on_fit is not None and not _cache_path(profile, trials[e], grid, noise[e]).exists():
+        priors = profile_priors(profile)
+        if on_fit is not None and not _cache_path(profile, trials[e], grid, noise[e], priors).exists():
             on_fit()
             on_fit = None
-        fits[e] = cached_fit(profile, trials[e], grid, noise[e])
-        keys[e] = fit_key(trials[e], grid, noise[e])
+        fits[e] = cached_fit(profile, trials[e], grid, noise[e], priors)
+        keys[e] = fit_key(trials[e], grid, noise[e], priors)
     balance = balance_prior(profile)
     if balance is not None:
         fits, keys = cached_balanced(profile, trials, fits, keys, balance)
@@ -441,6 +453,8 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
     """on_fit is called once if a perceptual fit isn't cached and has to be
     computed (it takes a few seconds)."""
     fits, keys, sessions = perceptual_fits(profile, session_ids, on_fit)
+    if profile.kind == "speaker":  # positions are meant to differ: no seating step
+        settings = replace(settings, consistency=False)
     consensus = ear_consensus(profile, settings, fits, keys, on_fit) if settings.consensus else None
     voters = ear_voters(profile, settings, on_fit) if settings.veto else None
     corr = correct(fits, settings, fixed, consensus, voters)

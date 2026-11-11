@@ -26,7 +26,7 @@ from flatiron.paths import data_dir
 FORMAT_VERSION = 1
 fsync = os.fsync  # the tests swap in a no-op: their files are throwaway
 RESERVED = ("none",)  # profile names the CLI uses as keywords
-KINDS = ("headphone", "iem")
+KINDS = ("headphone", "iem", "speaker")
 
 
 LISTENER_ENV = "FLATIRON_LISTENER"  # the listener an unprefixed profile name belongs to
@@ -103,6 +103,8 @@ class Session:
     sweep_marks: dict = field(default_factory=dict)  # ear -> list of {freq, kind}
     sweep_eq: str | None = None  # fit hash of the correction applied during the sweep (it can be toggled)
     tone_marks: list = field(default_factory=list)  # tone-generator marks this session's grid was refined around
+    # Speaker blocks: {open_ear, channel, position: {label, azimuth, elevation}, plugged, block}
+    speaker: dict | None = None
     trials: list[TrialRecord] = field(default_factory=list)
     ended: str | None = None
     version: int = FORMAT_VERSION
