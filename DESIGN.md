@@ -878,6 +878,25 @@ Those are 7 of the 14 alternatives tried. Much heavier and much lighter tails bo
 
 **Hard against easy trials.** A Gaussian listener errs more on hard trials, but that's already in the distribution, so a width fitted separately to each should match. Difficulty was the margin predicted from the other trials, so it's defined by the stimulus rather than by the percept. The ratio of width on hard trials ($\lvert z\rvert < 1$) to easy ones has a geometric mean over ears of 1.11, against 1.17 (5th to 95th percentile 1.04 to 1.42) from simulated Gaussian listeners, and 1.25 (1.04 to 1.69) from simulated listeners who also replay near-zero percepts. The expected ratio is above 1 because the sorting uses an estimated margin. Pooled by margin, observed agreement tracks the prediction, with one exception out of six bins: at a margin of 0.5 to $1\sigma$ there are 16.5 fewer errors than predicted, outside the simulated 5th to 95th percentile range of −7.9 to +16.8.
 
+## Pitch-order bias
+
+Tested on all five profiles (`soundsticks` only in the last row) as a possible cause of the tilt in the measured curves: they slope by +2.5 to +5.3 dB per octave against `diffuse` over 1 to 13 kHz, and +3.1 to +6.0 against ISO 226. The term adds $\gamma \operatorname{sign}(\log f_a - \log f_b)$ to the probit's argument: the higher interval sounds $\gamma$ dB louder. $\gamma$ was scanned as a hyperparameter, with each fit's noise and $\tau_\text{seat}$ held. Refitting the shared noise with $\gamma$ in place barely moved it.
+
+| $\gamma$ | Estimate | $\Delta \log \mathrm{ML}$ against none |
+| --- | --- | --- |
+| Shared over headphones, L | −0.03 ± 0.09 dB | +0.05 |
+| Shared over headphones, R | +0.33 ± 0.12 dB | +4.0 (3.3 from `sundara` R alone) |
+| Shared, both ears | +0.11 ± 0.07 dB | +1.2 |
+| Per profile rather than shared | | under +1 per ear, for 3 more parameters |
+| Shared, both ears, with `soundsticks` | +0.11 ± 0.07 dB | +1.3 |
+
+- **It doesn't explain the tilt.** A 1 dB $\gamma$ lowers a curve's slope by about 3.5 dB per octave, so flattening the tilt would take $\gamma$ of +0.7 to +1.5 dB in every profile.
+- **The tilt is mostly the headphones'.** The raw slopes are −0.2 to +1.4 dB per octave for `ft1` and `hd560`, and +2.2 to +2.7 for `sundara` and `sundaratone`. A bias belonging to the listener would shift every profile alike.
+- **What makes it testable.** Most pairs are 1/8 octave apart, and the roughly 10% at 0.5 to 0.7 octave are what separate a bias of fixed size from a tilt. A bias proportional to the separation is the same thing as a tilt of $L$, and no set of trials can tell them apart.
+- **Pitch direction.** A variant in which a descending pair shifts the time-order bias, $\gamma\, s_t \operatorname{sign}(\log f_a - \log f_b)$, read −0.02 ± 0.04 dB shared, with per-profile values scattered in both directions.
+
+Not adopted.
+
 ## Soft rejection
 
 On `ft1`, `hd560` and pooled `sundara`, comparing the fit with and without treble noise ($r$). The table gives the largest target difference between the two per ear, averaged over six ears on default settings, with "no gate" accepting every narrow lobe.
