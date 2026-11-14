@@ -3,7 +3,7 @@ the consensus half of 10). The rule for passing: the listener's own features are
 never corrected, and only headphone-specific ones are.
 
 The scenarios vary what could fool a reference or a vote: broad differences
-between the headphones, a listener whose contour isn't ISO 226's, and a shared
+between the headphones, a listener whose contour isn't the reference's, and a shared
 peak that sits somewhat differently on each headphone."""
 
 from dataclasses import dataclass, field, replace
@@ -34,7 +34,7 @@ FALSE_DB = 1.5
 
 
 def _contour_deviation(f):
-    """A listener off ISO 226 by about what the real profiles show: a little
+    """A listener off the reference by about what the real profiles show: a little
     under it near 2.5 kHz, far over it at 8 to 10 kHz."""
     x = np.log2(np.asarray(f, float))
     return (-4.0 * np.exp(-0.5 * ((x - np.log2(2500)) / 0.5) ** 2)
@@ -46,7 +46,7 @@ class Scenario:
     name: str
     tilt_scale: float = 1.0
     broad: bool = False  # each headphone has its own broad feature, about an octave wide
-    contour_off: bool = False  # the listener isn't ISO 226
+    contour_off: bool = False  # the listener isn't on the reference
     moved: bool = False  # the 7 kHz peak sits up to 0.2 octave apart between headphones
 
 
@@ -125,8 +125,8 @@ class Config:
     veto_import_db: float = 1.5
 
 
-CONFIGS = (Config("Veto on ISO 226", veto=True),
-           Config("Pointwise veto on ISO 226", veto=True, veto_mode="pointwise"),
+CONFIGS = (Config("Veto on the fixed reference", veto=True),
+           Config("Pointwise veto on the fixed reference", veto=True, veto_mode="pointwise"),
            Config("Consensus of all three, smoothed 1/2 octave", members="all"),
            Config("Consensus of all three, smoothed, with veto", members="all", veto=True),
            Config("Consensus of all three, smoothed, with no-import veto", members="all", veto=True, veto_import_db=0.0),

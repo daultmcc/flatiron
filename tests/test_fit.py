@@ -22,7 +22,7 @@ def bump(fc, fwhm_oct, height):
 
 # -- reference -------------------------------------------------------------
 
-def test_reference_shapes(tmp_path, monkeypatch):
+def test_reference_shapes(tmp_path):
     assert np.allclose(reference("none", G), 0)
     e = reference("iso226", G)
     assert abs(e.mean()) < 1e-9
@@ -31,10 +31,10 @@ def test_reference_shapes(tmp_path, monkeypatch):
     csv.write_text("freq,db\n1000,0\n8000,-6\n")
     r = reference(str(csv), G)
     assert np.allclose(np.diff(r[(G > 1000) & (G < 8000)]) < 0, True)
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr("sys.platform", "linux")
-    with pytest.raises(FileNotFoundError, match="ISO 389-7"):
-        reference("diffuse", G)
+    d = reference("diffuse", G) - e  # ISO 389-7: diffuse loses about 2 dB at 3 kHz, gains about 6 at 8
+    at = lambda hz: d[np.argmin(abs(G - hz))]
+    assert at(8000) - at(3150) > 7
+    assert abs(at(200) - at(300)) < 0.1
 
 
 def test_curve_csv_rejects_garbage(tmp_path):
@@ -276,7 +276,7 @@ def sim_null():
 
 def test_ear_matching_the_reference_gets_no_correction(sim_null):
     lis, fit = sim_null
-    c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
+    c = correct_ear("L", fit, CorrectionSettings(consistency=False, preserve_tonality=False))
     assert np.max(np.abs(response(c.filters, c.freqs))) < 1.5  # FALSE_DB: the agreed 1.5 dB tolerance
 
 
@@ -284,7 +284,7 @@ def test_design_features_are_corrected_in_the_right_direction(sim_design):
     from flatiron.sim.validate import validate
 
     lis, fit = sim_design
-    c = correct_ear("L", fit, CorrectionSettings(reference="iso226", consistency=False, preserve_tonality=False))
+    c = correct_ear("L", fit, CorrectionSettings(consistency=False, preserve_tonality=False))
     v = validate(lis.ears["L"], c)
     # The features well above the seating spread get a correction of the right
     # sign near the right place. With one session the −3 dB dip and +3 dB peak

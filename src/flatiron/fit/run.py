@@ -388,7 +388,7 @@ def _listed_profiles(profile: Profile, slugs, what: str, option: str) -> list[Pr
 def consensus_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
     """The profiles a consensus reference is built from: exactly the ones
     listed, so this profile only if it's listed."""
-    return _listed_profiles(profile, st.consensus, "consensus", "-r iso226")
+    return _listed_profiles(profile, st.consensus, "consensus", "-r diffuse")
 
 
 def veto_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:

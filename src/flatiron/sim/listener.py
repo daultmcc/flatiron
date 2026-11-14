@@ -1,6 +1,7 @@
 """Simulated listener (DESIGN.md, "Simulated listener").
 
-Ground truth per ear = smooth tilt + negated ISO 226 contour + features
+Ground truth per ear = smooth tilt + the default reference's shape (negated ISO
+226 contour plus ISO 389-7's diffuse-field difference) + features
 (peaking-filter shapes, so they match what the correction can represent).
 
 The listener hears each stimulus at its power-averaged level over the
@@ -14,7 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.special import ndtr
 
-from flatiron import iso226
+from flatiron import iso226, iso389_7
 from flatiron.audio.biquad import PeakingFilter, bw_oct_to_q, response_db
 from flatiron.audio.stimulus import StimulusSpec, spectrum_offsets_oct, stimulus_key
 from flatiron.model.probit import noise_sd
@@ -24,6 +25,7 @@ from flatiron.model.probit import noise_sd
 class EarTruth:
     tilt_db_per_oct: float = 0.0
     phon: float | None = 60.0  # None: no equal-loudness contour
+    diffuse: bool = True  # add the diffuse-minus-free-field difference to the contour (the default reference)
     features: list[PeakingFilter] = field(default_factory=list)
     # Extra smooth deviation (e.g. an individual ear vs ISO 226), dB at each freq.
     deviation: object = None
@@ -33,6 +35,8 @@ class EarTruth:
         out = self.tilt_db_per_oct * np.log2(f / 1000.0)
         if self.phon is not None:
             out = out + iso226.perceived_level(f, self.phon)
+            if self.diffuse:
+                out = out + iso389_7.diffuse_minus_free(f)
         if self.features:
             out = out + response_db(self.features, f)
         if self.deviation is not None:

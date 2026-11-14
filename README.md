@@ -88,7 +88,7 @@ There's no separate fit step: `report`, `export`, `audition`, `verify` and the
 sweep compute the fit when they need it, from all the profile's trials and its
 settings (the perceptual fit is cached, so this takes a few seconds only after
 new trials). `config` settings: `--width` (max feature width W, octaves),
-`--reference iso226|diffuse|none|file.csv|consensus:A,B`, `--broad-strength` (how much
+`--reference diffuse|iso226|none|file.csv|consensus:A,B`, `--broad-strength` (how much
 of each broad feature to correct toward the fixed target, %; 0, the default, corrects
 only narrow features and keeps the original broad shape, leaving broad tonal changes to you),
 `--k-narrow`, `--k-broad`, `--soft-margin`, `--bands`, `--max-boost-narrow`,
@@ -114,9 +114,9 @@ adds nothing. The reference and veto can be used together, with or without broad
 `--method features`.
 `--checkpoint` fixes the current filters: later fits keep them, whatever the
 settings, and only add filters (within `--bands`) for what's still
-significant, e.g. after `verify`. `--reset checkpoint` drops it. The design's
-default diffuse-field reference needs the ISO 389-7 table, which isn't sourced
-yet, so `iso226` (free field) is the default for now.
+significant, e.g. after `verify`. `--reset checkpoint` drops it. The default
+reference, `diffuse`, is the ISO 226 equal-loudness contour plus ISO 389-7's
+diffuse-field difference; `iso226` is the frontal free-field contour alone.
 
 `tone` keys: ←/→ frequency (a tap steps; tapping faster glides faster, and a tap
 the other way stops), ↑/↓ tap size, G go to a frequency, E ear (left/right/both), S
@@ -143,4 +143,4 @@ Layout: `audio/` (biquads, stimuli, limiter, devices, playback), `model/`
 (grid, the hierarchical perceptual fit, refinement), `session/` (scheduler, runner, storage,
 sweep), `ui/` (Textual apps: trials, audition, tone generator), `fit/` (reference, baseline, features, filters,
 pipeline, consensus), `export/` (APO text, LSP, EasyEffects, PipeWire, TinCan, truth checks), `report/` (figures, HTML), `sim/` (simulated listener, designs,
-validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours).
+validation), `apo.py` (APO text parsing), `iso226.py` (equal-loudness contours), `iso389_7.py` (diffuse-field difference).

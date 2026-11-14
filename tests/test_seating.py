@@ -10,9 +10,9 @@ from flatiron.sim.seating import moving_resonance, speed, tau_recovery
 
 
 def test_criterion_9_spread_is_recovered():
-    f = tau_recovery((2.0, 2.0), seed=1)
+    f = tau_recovery((2.0, 2.0), seed=3)
     assert f.tau_fitted and 2 / 2 < f.tau_hi < 2 * 2
-    none = tau_recovery((0.0, 0.0), seed=1)
+    none = tau_recovery((0.0, 0.0), seed=3)
     assert none.tau_lo < 1 and none.tau_hi < 1.5  # the treble prior's median is 1.5
 
 

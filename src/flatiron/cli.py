@@ -603,7 +603,7 @@ KHZ = (lambda v: v, lambda v: f"{v / 1000:g}k")
 FIT_OPTIONS = [
     (("-w", "--width"), "max_width_oct", dict(type=float, help="max feature width W in octaves (1/3 to 2)")),
     (("-r", "--reference"), "reference",
-     dict(help="iso226, diffuse, none, a CSV of freq_hz,db, or consensus:A,B,C for the raw curves of those "
+     dict(help="diffuse (default: ISO 226 + ISO 389-7 diffuse field), iso226 (frontal free field), none, a CSV of freq_hz,db, or consensus:A,B,C for the raw curves of those "
                "profiles (this one only if listed)")),
     (("--consensus-width",), "consensus_smooth_oct",
      dict(type=float, help="smoothing (FWHM) of a consensus reference in octaves, up to 2; 0: none. The reference "
@@ -982,8 +982,9 @@ def _print_fit(pf):
         for a, b, m in c.left_out:
             print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
     print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")
-    if corr.settings.reference == "iso226":
-        print("reference: ISO 226 free field (the diffuse-field table isn't sourced yet)")
+    if corr.settings.reference in ("iso226", "diffuse"):
+        print("reference: " + {"iso226": "ISO 226 free field",
+                               "diffuse": "ISO 226 + ISO 389-7 diffuse field"}[corr.settings.reference])
     print("settings: flatiron config")
 
 
@@ -1066,11 +1067,11 @@ def cmd_compare(args):
 
     # A comparison needs a fixed reference; a consensus would mean something different per profile.
     if any(s.consensus for s in own) and args.reference is None:
-        print("A consensus reference isn't used for comparisons: this uses iso226 (pick another with -r).")
+        print("A consensus reference isn't used for comparisons: this uses diffuse (pick another with -r).")
     own = [replace(s, reference=CorrectionSettings().reference) if s.consensus else s for s in own]
     ref, phon = common("reference", args.reference), common("phon", None)
     if ref is None:
-        print("These profiles use different references: pick one with -r (iso226, diffuse, none or a CSV).")
+        print("These profiles use different references: pick one with -r (diffuse, iso226, none or a CSV).")
         return 1
     try:
         st = CorrectionSettings(max_width_oct=args.width or 1.0, reference=ref, phon=phon or CorrectionSettings().phon,

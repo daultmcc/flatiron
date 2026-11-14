@@ -132,9 +132,8 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
 
     notes = []
     if st.reference == "iso226":
-        notes.append("Reference: ISO 226 free-field equal-loudness contour. The design's default (diffuse "
-                     "field) needs the ISO 389-7 table, which hasn't been sourced yet; corrections near "
-                     "3 to 5 kHz depend on this choice.")
+        notes.append("Reference: ISO 226 frontal free-field equal-loudness contour. The default, diffuse "
+                     "field (ISO 389-7), differs most at 2 to 4 and 6 to 12 kHz.")
     if pf.pooled:
         notes.append(f"Pooled: includes the trials of {', '.join(pf.pooled)}.")
     notes += consensus_notes(pf)

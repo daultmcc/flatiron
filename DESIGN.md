@@ -289,8 +289,8 @@ A "feature" throughout is a lobe of the residual: a region between sign changes 
 The steps run per ear. Code comments cite them by number.
 
 1. **Reference.** $D = \hat L - E$, where $E$ is the perceived-level shape a reference-correct headphone would produce, with its mean removed. Options:
-    - `iso226` (the default): the negated ISO 226 frontal free-field contour at 60 phon (configurable).
-    - `diffuse`: ISO 226 plus a diffuse-minus-free-field threshold difference, read from a user-supplied CSV at `reference/diffuse_minus_free_db.csv` in the data folder, because the ISO 389-7 table isn't openly available.
+    - `diffuse` (the default): `iso226` plus ISO 389-7:2019's diffuse-minus-free-field threshold difference $\Delta L = T_f - T'_f$ (Table 1, 125 Hz to 16 kHz, held constant beyond; the 16 kHz point is from one laboratory). It's a perceptual measure, the quantity the reference models. ISO 11904-1's acoustic diffuse- and free-field responses of the ear give nearly the same difference at the ear-canal entrance (open and blocked, 1.0 dB RMS from 389-7 over 850 Hz to 15 kHz, 2.1 dB at most: 11904-1 is 1.5 to 2.4 dB lower at 1.6 to 2 kHz and about 2 dB lower at 11 to 12.5 kHz). Its eardrum column is 5 to 6.5 dB higher from 8 to 12.5 kHz, which 389-7 contradicts.
+    - `iso226`: the negated ISO 226 frontal free-field contour at 60 phon (configurable).
     - `none`.
     - A CSV of perceived-level shape (`freq_hz,db` rows).
     - A consensus of other profiles' raw curves (see "Consensus reference").
@@ -343,7 +343,7 @@ Every setting but the channel balance is downstream of the cached perceptual fit
 | --- | --- | --- |
 | Max feature width $W$ | 1 octave (1/3 to 2) | `-w`/`--width` |
 | Channel balance | 1 (scale on 1.5 and 3 dB; 0: off) | `--balance` |
-| Reference; listening level | `iso226`; 60 phon | `-r`/`--reference`; `--phon` |
+| Reference; listening level | `diffuse`; 60 phon | `-r`/`--reference`; `--phon` |
 | Consensus reference; its smoothing | none; 1/2 octave | `-r consensus:A,B`; `--consensus-width` |
 | Veto against other profiles; mode; import limit | none; `feature`; 1.5 dB | `--veto A,B` (`none`: off); `--veto-mode feature` or `pointwise`; `--veto-import` |
 | Soft veto $\gamma$ | 0.1 (0: all or nothing) | `--veto-softness` |
@@ -438,7 +438,7 @@ With only two profiles, the consensus is their precision-weighted mean, and the 
 
 `compare A B C …` overlays two to eight profiles' raw curves per ear with their consensus, and says what the veto would correct on each. It fits no filters.
 
-**Inputs.** Each profile's cached perceptual fit, $\hat L_p$ with its covariance, from its own sessions and pooling. Settings are shared for the comparison: max feature width $W$ (`-w`, default 1 octave), reference (`-r`) and ear (`--ear L`, `R` or `both`). Without `-r`, the reference the profiles have in common is used; if they differ, Flatiron asks for `-r`. A consensus reference isn't used here: `iso226` stands in, with a note. The listening level and $k$ come from the profiles when they all agree, and every other setting is at its default, including the veto's import limit. Profiles that share trials through pooling get a warning, since they'll agree more than separate measurements would.
+**Inputs.** Each profile's cached perceptual fit, $\hat L_p$ with its covariance, from its own sessions and pooling. Settings are shared for the comparison: max feature width $W$ (`-w`, default 1 octave), reference (`-r`) and ear (`--ear L`, `R` or `both`). Without `-r`, the reference the profiles have in common is used; if they differ, Flatiron asks for `-r`. A consensus reference isn't used here: `diffuse` stands in, with a note. The listening level and $k$ come from the profiles when they all agree, and every other setting is at its default, including the veto's import limit. Profiles that share trials through pooling get a warning, since they'll agree more than separate measurements would.
 
 **What's reported, per ear:**
 
@@ -624,6 +624,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 - `cli.py`: the commands below.
 - `apo.py`: parsing Equalizer APO / AutoEQ text (`Preamp:` and `Filter N: ON` lines of type PK, LSC/LS or HSC/HS; OFF filters are skipped, anything else is an error). Writing it lives with the exporters.
 - `iso226.py`: the ISO 226:2003 equal-loudness contours.
+- `iso389_7.py`: ISO 389-7's diffuse-minus-free-field threshold difference.
 - `paths.py`: the data folder.
 
 ## Commands
@@ -668,7 +669,7 @@ Several people can share one installation. Each listener is a folder of their ow
 - **The first listener** is called `default` (label "Default") until renamed with `listeners rename`, which renames the folder. Nothing in a listener refers to its own name, so renaming touches nothing else.
 - **Moving a profile** (`profiles move`) moves its folder. It's refused while the profile uses, or is used by, another of its listener's profiles through a consensus, veto or pooling, since those would dangle.
 - **Exports** with several listeners carry the listener's name in the preset or node name and the file name, so two people's presets for the same headphones don't collide.
-- **Migration.** The single-listener layout, with `profiles/` at the top, is moved once into `listeners/default/` the first time a command looks for profiles, the noise and consensus caches with it. The comparison report and the `diffuse` reference table stay at the top, since they aren't anyone's.
+- **Migration.** The single-listener layout, with `profiles/` at the top, is moved once into `listeners/default/` the first time a command looks for profiles, the noise and consensus caches with it. The comparison report stays at the top, since it isn't anyone's.
 
 ## Data on disk
 
@@ -677,7 +678,6 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 - `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug`, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
-- `reference/diffuse_minus_free_db.csv`: the user-supplied table for the `diffuse` reference.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
 - `cache/consensus/`: consensus results, shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
 
@@ -708,7 +708,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 
 ## Simulated listener
 
-A simulated listener exercises the scheduler, perceptual fit and correction pipeline. `flatiron simulate` reports how well the perceptual fit recovers it, and `sim/validate.py` checks the criteria below end to end. The ground truth per ear is a smooth tilt, plus the ISO 226 contour, plus a +4 dB excess 1/2 octave wide at 4 kHz, a +5 dB peak at 6.2 kHz (Q 6), a −3 dB dip at 8.4 kHz (Q 10) and a +3 dB peak at 11 kHz (Q 4). Answers come from the same probit model, with $\sigma_0 = 1$ dB, $d_0 = 0.5$ octave and $\lambda = 3\%$.
+A simulated listener exercises the scheduler, perceptual fit and correction pipeline. `flatiron simulate` reports how well the perceptual fit recovers it, and `sim/validate.py` checks the criteria below end to end. The ground truth per ear is a smooth tilt, plus the default reference's shape (the ISO 226 contour and ISO 389-7's diffuse-field difference), plus a +4 dB excess 1/2 octave wide at 4 kHz, a +5 dB peak at 6.2 kHz (Q 6), a −3 dB dip at 8.4 kHz (Q 10) and a +3 dB peak at 11 kHz (Q 4). Answers come from the same probit model, with $\sigma_0 = 1$ dB, $d_0 = 0.5$ octave and $\lambda = 3\%$.
 
 The criteria: each feature recovered within 1/24 octave in frequency and 1.5 dB in depth, and no false correction above 1.5 dB, after 600 trials per ear. The depth tolerances were relaxed from 1 dB, since the listener's own loudness discrimination is the practical limit. These aren't all met yet: very narrow features (Q 12 to 16) and those near the top of the range (around 11 kHz) come out about 1 to 2 dB shallow, and a null ear can get stray filters up to about 1.3 dB.
 
@@ -730,7 +730,7 @@ Ground truth per ear:
 | $\mathrm{spk}_2$ | **NOT BUILT.** Independent random ripple, 3 dB RMS |
 | Positions | $u_g$ with $\tau_\text{pos}$ 1, 2.1 and 4 dB at 5, 8 and 12 kHz; 15 positions per ear, 32 trials each (`sim/speaker.py`; criterion 7 alone, without headphones) |
 
-Each headphone gets its own smooth tilt (−1, +0.5 and −0.3 dB per octave), and every source gets the ISO 226 contour. Headphones get 600 trials per ear, over three sessions of 200, as in the standard validation.
+Each headphone gets its own smooth tilt (−1, +0.5 and −0.3 dB per octave), and every source gets the reference's shape. Headphones get 600 trials per ear, over three sessions of 200, as in the standard validation.
 
 **NOT BUILT:** speaker 1's own peak at 6.3 kHz is there to check that one speaker's colouration never reaches a headphone correction. A variant moves that peak to 9.5 kHz, on top of $\mathrm{cup}$, to check the split-speakers case: one speaker shows a shared headphone feature and the other doesn't.
 
@@ -1007,7 +1007,7 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 - **The shared baseline takes the ears' errors as independent.** The balance prior correlates the two ears' curves, but the fits don't keep that covariance, so the other ear's share of a residual's error bars is approximate.
 - **Broad corrections are only as good as the reference.** With `--broad-strength` above 0, individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
 - **The treble is noisy.** Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
-- **The diffuse-field reference needs a user-supplied ISO 389-7 difference table.**
+- **Findings before 2026-11-14 used ISO 226 as the fixed reference**, and simulated listeners built on it. Since then the default and the simulated listeners' shape are `diffuse`. Results quoted "against ISO 226" weren't rerun.
 - **Equaliser's (macOS) handling of imported Q and filter mode is unverified.**
 - **The veto depends on detection.** Which features exist, and how wide they are, decides what matches, and a feature's own part can stay merged with a neighbour's. The pointwise mode avoids this, but its separate baselines make it sensitive to broad differences between headphones.
 - **Nothing says whether a veto's answer is right for a real ear.** The simulator can only check its own assumptions about what's shared.

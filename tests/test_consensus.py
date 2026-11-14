@@ -685,7 +685,7 @@ def test_a_missing_member_or_voter_says_how_to_fix_it(three_profiles):
 
     one, _, _ = three_profiles
     set_profile_settings(one, CorrectionSettings(reference="consensus:gone"))
-    with pytest.raises(ValueError, match="-r iso226"):
+    with pytest.raises(ValueError, match="-r diffuse"):
         current_fit(one)
     set_profile_settings(one, CorrectionSettings(veto=("gone",)))
     with pytest.raises(ValueError, match="--veto none"):

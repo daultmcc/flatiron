@@ -254,8 +254,8 @@ def test_heard_level_smears_narrow_notches():
 def test_time_order_bias_is_recovered_and_kept_out_of_the_curve():
     g = log_grid()
     truth = design_example()
-    rng = np.random.default_rng(4)
-    lis = SimulatedListener({"L": truth}, seed=4, stimulus=None, order_bias_db=1.2)
+    rng = np.random.default_rng(2)
+    lis = SimulatedListener({"L": truth}, seed=2, stimulus=None, order_bias_db=1.2)
     f_a, f_b, off, _ = uniform_design(g, 1200, rng)
     a_first = rng.random(f_a.size) < 0.5
     y = lis.respond("L", f_a, f_b, off, a_first)

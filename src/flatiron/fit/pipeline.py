@@ -36,7 +36,7 @@ INNER_SMOOTH_OCT = 0.5
 @dataclass(frozen=True)
 class CorrectionSettings:
     max_width_oct: float = 1.0  # W: anything broader is left to the user's EQ
-    reference: str = "iso226"  # iso226 | diffuse | none | path to a CSV | consensus:SLUG,SLUG
+    reference: str = "diffuse"  # diffuse | iso226 | none | path to a CSV | consensus:SLUG,SLUG
     phon: float = 60.0
     baseline_penalty: float = 0.1  # baseline stiffness (tuned in the simulator; 1e-3 absorbed clustered features)
     # robust: the Tukey-weighted spline (pipeline step 2). joint: the posterior
