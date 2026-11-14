@@ -125,7 +125,7 @@ class Scheduler:
         return self.noise is None and n_trials >= self.cfg.min_trials_noise_fit
 
     def load_history(self, ear: str, trials: Trials, grid: np.ndarray | None = None,
-                     fit: ProbitFit | None = None) -> None:
+                     fit: ProbitFit | None = None, refine: bool = False) -> None:
         """Start from earlier sessions' trials (and their final grid), each
         session its own group. This session is a new group. fit: the history's
         full fit if it's already known (it holds the noise and the spread)."""
@@ -143,6 +143,14 @@ class Scheduler:
                                    fit_hyper=self._fits_noise(len(trials)),
                                    fit_tau=self.cfg.estimate_tau, noise=self._noise(ear))
         st.fit = self._refit(st, init=fit)
+        if refine and len(trials) >= self.cfg.block_size:
+            # Sessions shorter than a block (speaker blocks) never reach a
+            # block end, so the grid is refined from the history instead.
+            new = refine_grid(st.fit, self.cfg.refine_k, self.cfg.min_step_oct)
+            if new.size > st.grid.size:
+                st.grid = new
+                st.fit = self._refit(st, grid=new)
+                st.grid = st.fit.grid
         st.since_refit = st.since_block = 0
 
     def _refit(self, st: EarState, grid: np.ndarray | None = None, init: ProbitFit | None = None,

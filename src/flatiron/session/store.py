@@ -26,7 +26,7 @@ from flatiron.paths import data_dir
 FORMAT_VERSION = 1
 fsync = os.fsync  # the tests swap in a no-op: their files are throwaway
 RESERVED = ("none",)  # profile names the CLI uses as keywords
-KINDS = ("headphone", "iem")
+KINDS = ("headphone", "iem", "speaker")
 
 
 LISTENER_ENV = "FLATIRON_LISTENER"  # the listener an unprefixed profile name belongs to
@@ -103,6 +103,8 @@ class Session:
     sweep_marks: dict = field(default_factory=dict)  # ear -> list of {freq, kind}
     sweep_eq: str | None = None  # fit hash of the correction applied during the sweep (it can be toggled)
     tone_marks: list = field(default_factory=list)  # tone-generator marks this session's grid was refined around
+    # Speaker blocks: {open_ear, channel, position: {label, azimuth, elevation}, plugged, block}
+    speaker: dict | None = None
     trials: list[TrialRecord] = field(default_factory=list)
     ended: str | None = None
     version: int = FORMAT_VERSION
@@ -361,13 +363,29 @@ class Profile:
                     return s.level_dbfs if t.level_dbfs is None else t.level_dbfs
         return sessions[-1].level_dbfs if sessions else None
 
+    @staticmethod
+    def groups(sessions: list[Session], ear: str) -> list[list[Session]]:
+        """The fit's groups in one ear, in order of first appearance: a session
+        each, except a speaker's blocks at the same position, which share one
+        (a re-done or relabelled position is the same direction)."""
+        out: dict = {}
+        for s in sessions:
+            if not len(s.trials_for(ear)):
+                continue
+            info = getattr(s, "speaker", None)
+            pos = (info or {}).get("position")
+            key = ("speaker", info["open_ear"], pos.get("azimuth"), pos.get("elevation")) if pos else s.id
+            out.setdefault(key, []).append(s)
+        return list(out.values())
+
     def history(self, sessions: list[Session] | None = None) -> tuple[dict[str, Trials], dict[str, np.ndarray]]:
         """All trials per ear, one group per session with trials in that ear
-        (in the order given), and the most recent grid per ear."""
+        (in the order given; a speaker's: per position), and the most recent
+        grid per ear."""
         sessions = self.sessions() if sessions is None else sessions
         trials = {}
         for e in EARS:
-            parts = [t for t in (s.trials_for(e) for s in sessions) if len(t)]
+            parts = [Trials.concat([s.trials_for(e) for s in g]) for g in self.groups(sessions, e)]
             trials[e] = Trials.grouped(parts) if parts else Trials([], [], [], [])
         grids = {}
         for s in sessions:

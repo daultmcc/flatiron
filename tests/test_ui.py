@@ -390,3 +390,42 @@ async def test_verify_session_ends_at_its_trial_count(tmp_path):
         await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
         assert "Verify session complete" in str(app.screen.query_one("#title").render())
     assert prof.sessions()[0].preview["fit_hash"] == "abc"
+
+
+async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
+    from flatiron.session.speaker import next_block, plan, plan_key
+    from flatiron.ui.app import BlockScreen, LevelScreen
+
+    prof = Profile.open("phone", root=tmp_path)
+    prof.update(kind="speaker", channel="R")
+    runners = []
+
+    def make():
+        pos = next_block(prof)
+        speaker = {"open_ear": pos.ear, "channel": "R", "position": pos.to_json(), "block": 3}
+        runners.append(TrialRunner(prof, RunSettings(speaker=speaker, max_trials=3), config=CFG, seed=len(runners)))
+        return runners[-1]
+
+    app = FlatironApp(make, NullPlayer())
+    async with app.run_test() as pilot:
+        for block in range(2):
+            if block == 0:
+                assert isinstance(app.screen, LevelScreen)
+                await pilot.press("enter")
+                await pilot.pause()
+            assert isinstance(app.screen, BlockScreen)  # no level screen before the second block
+            assert str(app.screen.query_one("#azimuth").value) == str(runners[-1].speaker["position"]["azimuth"])
+            await pilot.press("enter")
+            await wait_for(pilot, lambda: isinstance(app.screen, TrialScreen))
+            scr, runner = app.screen, runners[-1]
+            for k in range(3):
+                await wait_for(pilot, lambda: scr.accepting)
+                assert f"Trial {k + 1} of 3 this block" in str(scr.query_one("#status").render())
+                await pilot.press("left")
+                await wait_for(pilot, lambda: len(runner.session.trials) == k + 1)
+            # No end screen between blocks: the next block's setup says how this one went.
+            await wait_for(pilot, lambda: isinstance(app.screen, BlockScreen))
+            assert "Block saved: 3 trials." in str(app.screen.query_one("#message").render())
+    done = [s for s in prof.sessions() if s.trials]
+    assert len(done) == 2 and {s.speaker["position"]["azimuth"] for s in done} == {x.azimuth for x in plan(plan_key(prof))[:2]}
+    assert all(len(s.trials) == 3 and {t.ear for t in s.trials} == {"L"} for s in done)

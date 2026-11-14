@@ -2,7 +2,9 @@
 
 Flow per session: channel check → optional sweep (first session only) →
 trials until the time limit or Q → end screen (reseat, then next session).
-The fitted curve is never shown during trials.
+Speaker blocks: the level once, then per block the plug and position screen
+→ the block's trials; an end screen only on Q or once the plan is done. The fitted curve is never
+shown during trials.
 """
 
 import random
@@ -14,7 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Static
+from textual.widgets import Digits, Footer, Static
 
 from flatiron import EARS, FS
 from flatiron.audio.limiter import MAX_LEVEL_DB, MIN_LEVEL_DB, db_to_amp, limit, monaural
@@ -39,6 +41,10 @@ Screen { align: center middle; }
 }
 .panel.lit { background: $accent; color: $text; border: heavy $accent-lighten-2; }
 .panel.answerable { border: heavy $success; }
+#where { height: auto; width: 100%; align: center middle; }
+.where { width: auto; height: auto; margin: 0 4; }
+.where Digits { width: auto; }
+.where Static { width: auto; color: $text-muted; }
 ConfirmScreen { align: center middle; background: $background 70%; }
 #confirm { width: 60; height: auto; padding: 1 2; border: heavy $warning; background: $surface; }
 """
@@ -215,6 +221,59 @@ class ChannelCheckScreen(MessageScreen):
     def action_retry(self):
         if self.failed:
             self.start()
+
+
+class BlockScreen(MessageScreen):
+    """A speaker block's setup: the open ear, the earplug and the position.
+    A plugged ear can't be checked by listening, so this is a confirmation."""
+
+    BINDINGS = [
+        Binding("enter", "ready", "Plugged and in position"),
+        Binding("escape", "app.quit", "Quit"),
+    ]
+
+    def __init__(self, runner: TrialRunner, done: int, total: int, switch: bool, last: str = ""):
+        super().__init__()
+        self.runner, self.done, self.total, self.switch, self.last = runner, done, total, switch, last
+        from flatiron.session.speaker import Position
+
+        info = runner.speaker
+        self.pos = Position(info["open_ear"], info["position"]["azimuth"], info["position"]["elevation"])
+
+    def compose(self) -> ComposeResult:
+        # The position in large digits: with the order shuffled, it's the thing to check.
+        pos = self.pos
+        side = EAR_NAMES[pos.ear].lower()
+        across = "straight ahead" if pos.azimuth == 0 else \
+            f"degrees to your {side}" + (" (behind you)" if pos.azimuth > 90 else "")
+        height = "at ear level" if pos.elevation == 0 else \
+            f"degrees {'above' if pos.elevation > 0 else 'below'} ear level"
+        with Vertical():
+            yield Static("", id="title")
+            with Horizontal(id="where"):
+                with Vertical(classes="where"):
+                    yield Digits(str(pos.azimuth), id="azimuth")
+                    yield Static(across)
+                with Vertical(classes="where"):
+                    yield Digits(str(abs(pos.elevation)), id="elevation")
+                    yield Static(height)
+            yield Static("", id="message")
+            yield Static("", id="status")
+        yield Footer()
+
+    def on_mount(self):
+        info = self.runner.speaker
+        pos = self.pos
+        switch = "The open ear changes with this block: move the earplug.\n\n" if self.switch else ""
+        last = f"{self.last}\n\n" if self.last else ""
+        quit_note = f"\n\n{VOLUME_REMINDER}" if self.last else ""
+        self.say(f"Block {self.done + 1} of {self.total} · {EAR_NAMES[pos.ear].lower()} ear · {pos.label}",
+                 last + switch + pos.instructions() + f"\n\n{info['block']} trials, about a minute and a half."
+                 + quit_note,
+                 "Enter when the earplug is in and you're in position   Esc: quit")
+
+    def action_ready(self):
+        self.dismiss(True)
 
 
 class SweepScreen(MessageScreen):
@@ -394,6 +453,12 @@ class TrialScreen(Screen):
     def show_status(self):
         p = self.runner.progress()
         t, lim = int(self.active_seconds()), int(self.limit_s)
+        if self.runner.speaker:  # the scheduler's own blocks would read as the speaker block's end
+            info = self.runner.speaker
+            self.query_one("#status", Static).update(
+                f"Trial {min(p['session_trials'] + 1, info['block'])} of {info['block']} this block · "
+                f"{EAR_NAMES[info['open_ear']].lower()} ear open · level {self.runner.level_dbfs:+.0f} dBFS")
+            return
         tot = " / ".join(f"{e} {p['total'][e]}" for e in EARS)
         self.query_one("#status", Static).update(
             f"Trial {p['session_trials'] + 1} this session · totals {tot} · "
@@ -576,6 +641,9 @@ class SessionEndScreen(MessageScreen):
         p = r.progress()
         acc = r.catch_accuracy()
         acc_s = f"{acc:.0%} of catch trials right" if acc is not None else "no catch trials yet"
+        if r.speaker:
+            self.speaker_end(p)
+            return
         if self.reason == "discarded":
             head, summary = "Session discarded.", "Nothing from it was kept.\n"
         else:
@@ -593,7 +661,29 @@ class SessionEndScreen(MessageScreen):
                  "and put them back on.\nKeep the system volume where it is.\n\n" + VOLUME_REMINDER,
                  "N: start the next session (level and channel check first)   Q: quit")
 
+    def speaker_end(self, p):
+        from flatiron.session.speaker import next_block, progress
+
+        done, total = progress(self.runner.profile.sessions())
+        nxt = next_block(self.runner.profile)
+        head = "Block discarded." if self.reason == "discarded" else "Block saved."
+        summary = "" if self.reason == "discarded" else f"{p['session_trials']} trials this block. "
+        summary += f"{done} of {total} blocks done.\n\n"
+        if nxt is None:
+            self.say(head, summary + "That's the whole plan: every position on both ears.\n\n" + VOLUME_REMINDER,
+                     "Q: quit")
+            return
+        ear = "the same ear" if nxt.ear == self.runner.speaker["open_ear"] else \
+            f"the {EAR_NAMES[nxt.ear].lower()} ear (move the earplug)"
+        self.say(head, summary + f"Next: {ear}, {nxt.label}. Rest your ears for a moment if you like.\n\n"
+                 + VOLUME_REMINDER, "N: next block   Q: quit")
+
     def action_next(self):
+        if self.runner.speaker:
+            from flatiron.session.speaker import next_block
+
+            if next_block(self.runner.profile) is None:
+                return
         self.dismiss("next")
 
 
@@ -621,18 +711,28 @@ class FlatironApp(App):
     def on_mount(self):
         self.start_session()
 
-    def start_session(self):
+    def start_session(self, last: str = ""):
+        last_ear = self.runner.speaker["open_ear"] if self.runner is not None and self.runner.speaker else None
         self.runner = self.make_runner()
         from flatiron.session.store import qualified
 
         self.sub_title = f"{qualified(self.runner.profile)} · session {self.runner.session.id}"
+        if self.runner.speaker and self.sessions_run:  # the level is set once a run
+            self.after_level(self.runner.level_dbfs, switch=last_ear != self.runner.speaker["open_ear"], last=last)
+            return
         self.push_screen(LevelScreen(self.runner.level_dbfs), self.after_level)
 
-    def after_level(self, level):
+    def after_level(self, level, switch: bool = True, last: str = ""):
         if level is None:
             self.exit()
             return
         self.runner.set_level(level)
+        if self.runner.speaker:
+            from flatiron.session.speaker import progress
+
+            done, total = progress(self.runner.profile.sessions())
+            self.push_screen(BlockScreen(self.runner, done, total, switch, last), lambda _: self.start_trials())
+            return
         self.push_screen(ChannelCheckScreen(self.runner), self.after_channel_check)
 
     def after_channel_check(self, ok):
@@ -647,6 +747,14 @@ class FlatironApp(App):
     def after_trials(self, reason):
         self.runner.finish()
         self.sessions_run += 1
+        if self.runner.speaker and reason != "quit":
+            # Straight on to the next block's setup screen, which says how this one went.
+            from flatiron.session.speaker import next_block
+
+            if next_block(self.runner.profile) is not None:
+                n = self.runner.progress()["session_trials"]
+                self.start_session("Block discarded." if reason == "discarded" else f"Block saved: {n} trials.")
+                return
         self.push_screen(SessionEndScreen(self.runner, reason), self.after_end)
 
     def after_end(self, choice):

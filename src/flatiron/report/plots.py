@@ -71,7 +71,8 @@ def _label_end(ax, x, y, text, color, t, dy=0.0):
 
 
 def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, theme: str = "light",
-               f_lo: float = 1000, f_hi: float = 13000) -> bytes:
+               f_lo: float = 1000, f_hi: float = 13000, speaker: bool = False) -> bytes:
+    """speaker: no correction, and the groups are positions, not seatings."""
     t = THEMES[theme]
     with_sessions = bool(session_R) and len(session_R) >= 2
     n = 3 if with_sessions else 2
@@ -106,16 +107,20 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
             ax.axvspan(g[f.lo], g[f.hi], color=t["shade"], linewidth=0, zorder=0)
     ax.fill_between(c.freqs, R_f - sd_f, R_f + sd_f, color=t["s1"], alpha=0.18, linewidth=0)
     ax.plot(c.freqs, R_f, color=t["s1"], linewidth=2)
-    ax.plot(c.freqs, H, color=t["s2"], linewidth=2)
-    ax.plot(c.freqs, R_f + H, color=t["s3"], linewidth=2)
-    ends = sorted([(R_f[-1], "residual", t["s1"]), (H[-1], "correction", t["s2"]),
-                   ((R_f + H)[-1], "after correction", t["s3"])])
+    if speaker:
+        ends = [(R_f[-1], "residual", t["s1"])]
+    else:
+        ax.plot(c.freqs, H, color=t["s2"], linewidth=2)
+        ax.plot(c.freqs, R_f + H, color=t["s3"], linewidth=2)
+        ends = sorted([(R_f[-1], "residual", t["s1"]), (H[-1], "correction", t["s2"]),
+                       ((R_f + H)[-1], "after correction", t["s3"])])
     span = max(np.ptp(np.concatenate([R_f, H])), 4)
     for k, (y, text, col) in enumerate(ends):
         _label_end(ax, c.freqs[-1], y, text, col, t, dy=(k - 1) * span * 0.12)
     for f0 in (f_lo, f_hi):
         ax.axvline(f0, color=t["axis"], linewidth=0.8)
-    ax.set_title(("Residual with the checkpoint filters (±1 SD), added filters and predicted result"
+    ax.set_title("Residual (±1 SD) · shaded: significant features" if speaker else
+                 ("Residual with the checkpoint filters (±1 SD), added filters and predicted result"
                   if c.fixed else "Residual (±1 SD), correction and predicted result")
                  + " · shaded: corrected features", color=t["ink"], fontsize=10, loc="left")
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)
@@ -129,15 +134,17 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
             ax.fill_between(g, lo, hi, color=t["muted"], alpha=0.3, linewidth=0)
             ax.plot(g, c.R, color=t["s1"], linewidth=2)
             _label_end(ax, xr, c.R[-1], "average", t["s1"], t, dy=1.0)
-            _label_end(ax, xr, hi[-1], "90% of sessions", t["muted"], t, dy=1.0)
-            title = f"Residual per reseat session: middle 90% of {len(session_R)} sessions, weighted by trials"
+            _label_end(ax, xr, hi[-1], f"90% of {'positions' if speaker else 'sessions'}", t["muted"], t, dy=1.0)
+            title = (f"Residual per position: middle 90% of {len(session_R)} blocks, weighted by trials" if speaker
+                     else f"Residual per reseat session: middle 90% of {len(session_R)} sessions, weighted by trials")
         else:
             for r in session_R:
                 ax.plot(g, r, color=t["muted"], linewidth=1, alpha=0.8)
             ax.plot(g, c.R, color=t["s1"], linewidth=2)
             _label_end(ax, xr, c.R[-1], "average", t["s1"], t, dy=1.0)
-            _label_end(ax, xr, session_R[-1][-1], "each session", t["muted"], t, dy=-1.0)
-            title = "Residual per reseat session"
+            _label_end(ax, xr, session_R[-1][-1], "each position" if speaker else "each session", t["muted"], t,
+                       dy=-1.0)
+            title = "Residual per position" if speaker else "Residual per reseat session"
         ax.set_title(title, color=t["ink"], fontsize=10, loc="left")
         ax.set_ylabel("dB", color=t["muted"], fontsize=8)
     axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
