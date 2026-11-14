@@ -82,7 +82,7 @@ def test_a_speakers_fit_holds_the_position_spread_and_skips_the_seating_step(dat
     assert "Speaker profile (channel R): 10 of 30 blocks" in out and "PK" not in out and "assumed" in out
 
 
-def test_speaker_commands(data, capsys):
+def test_speaker_commands(data, capsys, monkeypatch):
     from flatiron.session.store import Profile
 
     assert main(["profiles", "new", "Phone", "--kind", "speaker"]) == 1 and Profile.existing("Phone") is None
@@ -93,6 +93,23 @@ def test_speaker_commands(data, capsys):
         assert main(cmd) == 1 and "speaker profile" in capsys.readouterr().out
     assert main(["run", "Phone", "--sweep", "-n"]) == 1
     assert main(["run", "Phone", "--block", "100", "-n"]) == 1
+    launched = []
+    monkeypatch.setattr("flatiron.cli._launch", lambda args, **kw: launched.append(kw) or 0)
+    assert main(["run", "Phone"]) == 0 and launched[0]["max_trials"] == 32  # the default block
     assert main(["profiles", "set", "Phone", "--kind", "headphone"]) == 1  # it has sessions
     assert main(["profiles"]) is None and "speaker, channel R" in capsys.readouterr().out
     assert main(["sessions", "Phone"]) is None and "L ear open, 30° ear level" in capsys.readouterr().out
+
+
+def test_blocks_at_the_same_position_share_one_deviation(data):
+    import flatiron.fit.run as run_mod
+
+    prof = _speaker(data, blocks=6)
+    s = next(x for x in prof.sessions() if x.speaker["position"]["azimuth"] == 30)
+    s.speaker["position"] = Position("L", 0, 0).to_json()  # relabelled to the first block's position
+    prof.save(s)
+    trials, _ = prof.history()
+    assert trials["L"].group.max() == 3 and len(trials["L"]) == 5 * 16
+    pf = run_mod.current_fit(prof)
+    assert pf.fits["L"].n_groups == 4 and len(pf.fits["L"].groups) == 4
+    assert progress(prof.sessions()) == (5, 30) and next_position(prof.sessions()) == Position("L", 30, 0)

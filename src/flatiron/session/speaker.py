@@ -16,15 +16,9 @@ DEFAULT_BLOCK = 32  # trials: 15 positions x 32 = 480 per ear
 MIN_BLOCK, MAX_BLOCK = 16, 60
 CHUNK = 5  # blocks on one ear before switching
 
-# Degrees from straight ahead toward the open ear, and how to get there.
-AZIMUTHS = (
-    (0, "straight in front of you"),
-    (30, "30° toward your open ear"),
-    (60, "60° toward your open ear"),
-    (90, "level with your open ear (side-on)"),
-    (135, "behind your open ear (a rear quarter: turn the chair away)"),
-)
-HEIGHTS = ((0, "at ear level"), (30, "raised, about 30° above ear level"), (-30, "lowered, about 30° below ear level"))
+# Degrees from straight ahead toward the open ear, and above ear level.
+AZIMUTHS = (0, 30, 60, 90, 135)
+HEIGHTS = (0, 30, -30)
 EAR_WORDS = {"L": "left", "R": "right"}
 
 
@@ -43,18 +37,24 @@ class Position:
         return {"label": self.label, "azimuth": self.azimuth, "elevation": self.elevation}
 
     def instructions(self) -> str:
-        az = dict(AZIMUTHS)[self.azimuth]
-        el = dict(HEIGHTS)[self.elevation]
-        other = EAR_WORDS["R" if self.ear == "L" else "L"]
-        return (f"{EAR_WORDS[self.ear].upper()} ear open: put a foam earplug fully into your {other} ear.\n\n"
-                f"Speaker {el}, about 1 m away (at least 0.7 m), facing you.\n"
-                f"Turn your chair or head so the speaker is {az}.")
+        side, other = EAR_WORDS[self.ear], EAR_WORDS["R" if self.ear == "L" else "L"]
+        vert = "at ear level" if self.elevation == 0 else \
+            f"{abs(self.elevation)}° {'above' if self.elevation > 0 else 'below'}"
+        horiz = "straight in front" if self.azimuth == 0 else f"{self.azimuth}° to the {side}"
+        behind = " (behind you)" if self.azimuth > 90 else ""
+        drop = "" if self.elevation == 0 else \
+            f" At 1 m away that's about 0.5 m {'above' if self.elevation > 0 else 'below'} your ears."
+        return (f"{side.upper()} ear open: put a foam earplug fully into your {other} ear.\n\n"
+                f"The speaker should be {vert} and {horiz} of your head{behind}, about 1 m away "
+                f"(at least 0.7 m), pointing at you.{drop}\n"
+                "Angles are from your head facing straight ahead, upright and level: turn the chair "
+                "to change direction, and move the speaker, not your head, to change height.")
 
 
 def plan() -> list[Position]:
     """Every block of a full measurement, in order: each height, an ear's
     five directions, then the other ear's."""
-    return [Position(ear, az, el) for el, _ in HEIGHTS for ear in EARS for az, _ in AZIMUTHS]
+    return [Position(ear, az, el) for el in HEIGHTS for ear in EARS for az in AZIMUTHS]
 
 
 def done_positions(sessions) -> set[Position]:

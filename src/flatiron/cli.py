@@ -242,12 +242,12 @@ def _not_speaker(prof, what: str) -> bool:
 def _launch_speaker(args, prof):
     """Speaker blocks (DESIGN.md, "Speaker sessions"), one after another down the position plan."""
     from flatiron.fit.run import listener_noise
-    from flatiron.session.speaker import MAX_BLOCK, MIN_BLOCK, next_position, progress
+    from flatiron.session.speaker import DEFAULT_BLOCK, MAX_BLOCK, MIN_BLOCK, next_position, progress
 
     if args.sweep:
         print("There's no sweep for speaker profiles.")
         return 1
-    block = args.block
+    block = DEFAULT_BLOCK if args.block is None else args.block
     if not MIN_BLOCK <= block <= MAX_BLOCK:
         print(f"--block must be {MIN_BLOCK} to {MAX_BLOCK} trials")
         return 1

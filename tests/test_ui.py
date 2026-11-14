@@ -416,14 +416,15 @@ async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
             assert isinstance(app.screen, BlockScreen)  # no level screen before the second block
             await pilot.press("enter")
             await wait_for(pilot, lambda: isinstance(app.screen, TrialScreen))
-            scr = app.screen
+            scr, runner = app.screen, runners[-1]
             for k in range(3):
                 await wait_for(pilot, lambda: scr.accepting)
+                assert f"Trial {k + 1} of 3 this block" in str(scr.query_one("#status").render())
                 await pilot.press("left")
-                await wait_for(pilot, lambda: len(runners[-1].session.trials) == k + 1)
-            await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
-            await pilot.press("n")
-            await pilot.pause()
+                await wait_for(pilot, lambda: len(runner.session.trials) == k + 1)
+            # No end screen between blocks: the next block's setup says how this one went.
+            await wait_for(pilot, lambda: isinstance(app.screen, BlockScreen))
+            assert "Block saved: 3 trials." in str(app.screen.query_one("#message").render())
     done = [s for s in prof.sessions() if s.trials]
     assert len(done) == 2 and {s.speaker["position"]["azimuth"] for s in done} == {0, 30}
     assert all(len(s.trials) == 3 and {t.ear for t in s.trials} == {"L"} for s in done)

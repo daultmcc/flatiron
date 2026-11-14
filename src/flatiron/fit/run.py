@@ -325,7 +325,7 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
     if balance is not None:
         fits, keys = cached_balanced(profile, trials, fits, keys, balance)
     for e in EARS:
-        fits[e].groups = [s.id for s in sessions if len(s.trials_for(e))]
+        fits[e].groups = [g[0].id for g in Profile.groups(sessions, e)]
         fits[e].noise_trials = noise[e].n_trials
     return fits, keys, sessions
 

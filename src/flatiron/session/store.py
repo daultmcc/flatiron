@@ -363,13 +363,29 @@ class Profile:
                     return s.level_dbfs if t.level_dbfs is None else t.level_dbfs
         return sessions[-1].level_dbfs if sessions else None
 
+    @staticmethod
+    def groups(sessions: list[Session], ear: str) -> list[list[Session]]:
+        """The fit's groups in one ear, in order of first appearance: a session
+        each, except a speaker's blocks at the same position, which share one
+        (a re-done or relabelled position is the same direction)."""
+        out: dict = {}
+        for s in sessions:
+            if not len(s.trials_for(ear)):
+                continue
+            info = getattr(s, "speaker", None)
+            pos = (info or {}).get("position")
+            key = ("speaker", info["open_ear"], pos.get("azimuth"), pos.get("elevation")) if pos else s.id
+            out.setdefault(key, []).append(s)
+        return list(out.values())
+
     def history(self, sessions: list[Session] | None = None) -> tuple[dict[str, Trials], dict[str, np.ndarray]]:
         """All trials per ear, one group per session with trials in that ear
-        (in the order given), and the most recent grid per ear."""
+        (in the order given; a speaker's: per position), and the most recent
+        grid per ear."""
         sessions = self.sessions() if sessions is None else sessions
         trials = {}
         for e in EARS:
-            parts = [t for t in (s.trials_for(e) for s in sessions) if len(t)]
+            parts = [Trials.concat([s.trials_for(e) for s in g]) for g in self.groups(sessions, e)]
             trials[e] = Trials.grouped(parts) if parts else Trials([], [], [], [])
         grids = {}
         for s in sessions:

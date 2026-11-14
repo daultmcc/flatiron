@@ -52,10 +52,12 @@ together, so a new headphone starts with it.
 
 A speaker can be measured too, as evidence about your own ears: `flatiron
 profiles new Phone --kind speaker --channel R` (the output channel the speaker
-is on), then `flatiron run Phone`. It runs in blocks of about a minute
-(`--block N` trials, 32 by default), each with one ear open and a foam earplug
-in the other, at a position the screen gives: five directions around the open
-ear at three heights, 30 blocks in all, switching ears every five. Stop when
+is on), then `flatiron run Phone`. It runs in blocks of about a minute and
+a half (`--block N` trials, 32 by default), each with one ear open and a foam
+earplug in the other, at a position the screen gives: five directions around
+the open ear at three heights, 30 blocks in all, switching ears every five.
+Angles are from your head facing straight ahead: turn the chair for direction,
+and move the speaker up or down for height, keeping your head upright and level. Stop when
 you like; the next `run` continues the plan. Measure some headphones first if
 you can, since speaker blocks use the noise estimated from them. `report` shows
 a speaker's curve and features, `compare` draws it dashed beside headphones,
