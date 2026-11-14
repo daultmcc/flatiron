@@ -96,12 +96,12 @@ def simulate_speaker_profile(profile, truths: dict[str, EarTruth], blocks: int, 
     """Write speaker blocks into a profile through the real TrialRunner, down
     the position plan, each position with its own deviation."""
     from flatiron.session.runner import RunSettings, TrialRunner
-    from flatiron.session.speaker import next_position
+    from flatiron.session.speaker import next_block
 
     rng = np.random.default_rng(seed)
     channel = profile.read()["channel"]
     for k in range(blocks):
-        pos = next_position(profile.sessions())
+        pos = next_block(profile)
         if pos is None:
             return
         truth = replace(truths[pos.ear], deviation=position_deviation(spread, rng))

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from flatiron.cli import main
-from flatiron.session.speaker import CHUNK, Position, next_position, plan, progress
+from flatiron.session.speaker import CHUNK, Position, next_block, plan, plan_key, progress
 
 
 @pytest.fixture
@@ -22,8 +22,11 @@ def test_the_plan_switches_ears_every_chunk_one_height_at_a_time():
     chunks = [p[i:i + CHUNK] for i in range(0, len(p), CHUNK)]
     assert [c[0].ear for c in chunks] == ["L", "R"] * 3
     for c in chunks:  # one ear and one height, the five directions
-        assert len({(x.ear, x.elevation) for x in c}) == 1 and [x.azimuth for x in c] == [0, 30, 60, 90, 135]
+        assert len({(x.ear, x.elevation) for x in c}) == 1 and sorted(x.azimuth for x in c) == [0, 30, 60, 90, 135]
     assert [c[0].elevation for c in chunks[::2]] == [0, 30, -30]
+    # Shuffled within each chunk, the same way every time for one profile.
+    assert plan("a") == plan("a") and plan("a") != plan("b")
+    assert len({tuple(x.azimuth for x in c) for c in chunks}) > 1
 
 
 def test_criterion_7_the_average_over_positions_is_recovered():
@@ -56,7 +59,7 @@ def test_blocks_play_on_the_speaker_channel_and_follow_the_plan(data):
     assert all(s.speaker["channel"] == "R" and s.speaker["plugged"] for s in sessions)
     assert sorted(len(s.grid) for s in sessions) == [1] * 6
     assert all({t.ear for t in s.trials} == {s.speaker["open_ear"]} for s in sessions)
-    assert progress(sessions) == (6, 30) and next_position(sessions) == Position("R", 30, 0)
+    assert progress(sessions) == (6, 30) and next_block(prof) == plan(plan_key(prof))[6]
     # The left ear is open, but the bursts come from the speaker on the right channel.
     speaker = {"open_ear": "L", "channel": "R", "position": Position("L", 0, 30).to_json(), "block": 16}
     r = TrialRunner(prof, RunSettings(speaker=speaker, max_trials=16), seed=1)
@@ -98,18 +101,19 @@ def test_speaker_commands(data, capsys, monkeypatch):
     assert main(["run", "Phone"]) == 0 and launched[0]["max_trials"] == 32  # the default block
     assert main(["profiles", "set", "Phone", "--kind", "headphone"]) == 1  # it has sessions
     assert main(["profiles"]) is None and "speaker, channel R" in capsys.readouterr().out
-    assert main(["sessions", "Phone"]) is None and "L ear open, 30° ear level" in capsys.readouterr().out
+    assert main(["sessions", "Phone"]) is None and "° ear level]" in capsys.readouterr().out
 
 
 def test_blocks_at_the_same_position_share_one_deviation(data):
     import flatiron.fit.run as run_mod
 
     prof = _speaker(data, blocks=6)
-    s = next(x for x in prof.sessions() if x.speaker["position"]["azimuth"] == 30)
-    s.speaker["position"] = Position("L", 0, 0).to_json()  # relabelled to the first block's position
+    first, second = plan(plan_key(prof))[:2]
+    s = next(x for x in prof.sessions() if x.speaker["position"] == second.to_json())
+    s.speaker["position"] = first.to_json()  # relabelled to the first block's position
     prof.save(s)
     trials, _ = prof.history()
     assert trials["L"].group.max() == 3 and len(trials["L"]) == 5 * 16
     pf = run_mod.current_fit(prof)
     assert pf.fits["L"].n_groups == 4 and len(pf.fits["L"].groups) == 4
-    assert progress(prof.sessions()) == (5, 30) and next_position(prof.sessions()) == Position("L", 30, 0)
+    assert progress(prof.sessions()) == (5, 30) and next_block(prof) == second

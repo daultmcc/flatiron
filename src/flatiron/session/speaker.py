@@ -4,10 +4,11 @@
 A speaker is measured in short blocks, one open ear and one position each,
 with the other ear plugged. The plan covers five directions around the open
 ear at three heights, 15 positions per ear. Ears switch every CHUNK blocks,
-each chunk one height, so the speaker's height changes once a chunk and only
-the chair turns between blocks.
+each chunk one height in a shuffled order, so the speaker's height changes
+once a chunk and only the chair turns between blocks.
 """
 
+import random
 from dataclasses import dataclass
 
 from flatiron import EARS
@@ -51,10 +52,25 @@ class Position:
                 "to change direction, and move the speaker, not your head, to change height.")
 
 
-def plan() -> list[Position]:
+def plan(key: str = "") -> list[Position]:
     """Every block of a full measurement, in order: each height, an ear's
-    five directions, then the other ear's."""
-    return [Position(ear, az, el) for el in HEIGHTS for ear in EARS for az in AZIMUTHS]
+    five directions, then the other ear's. Within each ear's five the order
+    is shuffled, so whatever comes of having just moved the earplug (or of
+    the run's first blocks) doesn't always land on the same directions. The
+    shuffle is fixed by the key (plan_key: one per profile), so a plan
+    resumes in the order it started."""
+    out = []
+    for el in HEIGHTS:
+        for ear in EARS:
+            az = list(AZIMUTHS)
+            random.Random(f"{key}/{ear}/{el}").shuffle(az)
+            out += [Position(ear, a, el) for a in az]
+    return out
+
+
+def plan_key(profile) -> str:
+    info = profile.read()
+    return f"{info.get('slug')}/{info.get('created')}"
 
 
 def done_positions(sessions) -> set[Position]:
@@ -69,10 +85,15 @@ def done_positions(sessions) -> set[Position]:
     return out
 
 
-def next_position(sessions) -> Position | None:
+def next_position(sessions, key: str = "") -> Position | None:
     """The first position of the plan without a block yet (None: the plan is done)."""
     done = done_positions(sessions)
-    return next((p for p in plan() if p not in done), None)
+    return next((p for p in plan(key) if p not in done), None)
+
+
+def next_block(profile) -> Position | None:
+    """A profile's next position."""
+    return next_position(profile.sessions(), plan_key(profile))
 
 
 def progress(sessions) -> tuple[int, int]:

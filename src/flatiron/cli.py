@@ -242,7 +242,7 @@ def _not_speaker(prof, what: str) -> bool:
 def _launch_speaker(args, prof):
     """Speaker blocks (DESIGN.md, "Speaker sessions"), one after another down the position plan."""
     from flatiron.fit.run import listener_noise
-    from flatiron.session.speaker import DEFAULT_BLOCK, MAX_BLOCK, MIN_BLOCK, next_position, progress
+    from flatiron.session.speaker import DEFAULT_BLOCK, MAX_BLOCK, MIN_BLOCK, next_block, progress
 
     if args.sweep:
         print("There's no sweep for speaker profiles.")
@@ -252,7 +252,7 @@ def _launch_speaker(args, prof):
         print(f"--block must be {MIN_BLOCK} to {MAX_BLOCK} trials")
         return 1
     done, total = progress(prof.sessions())
-    if next_position(prof.sessions()) is None:
+    if next_block(prof) is None:
         print(f"All {total} blocks of the position plan are done. See: flatiron report")
         return 0
     noise = listener_noise(prof.dir.parent.parent)
@@ -263,7 +263,7 @@ def _launch_speaker(args, prof):
     channel = prof.read()["channel"]
 
     def speaker():
-        nxt = next_position(prof.sessions())
+        nxt = next_block(prof)
         return {"open_ear": nxt.ear, "channel": channel, "position": nxt.to_json(), "block": block}
 
     return _launch(args, sweep=False, profile=prof, speaker=speaker, max_trials=block)
