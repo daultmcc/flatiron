@@ -2,7 +2,8 @@
 
 Flow per session: channel check → optional sweep (first session only) →
 trials until the time limit or Q → end screen (reseat, then next session).
-Speaker blocks: the level once, then per block the plug and position screen
+Speaker blocks: the level once, then per block the earplug screen (when the
+open ear changes) and the position screen
 → the block's trials; an end screen only on Q or once the plan is done. The fitted curve is never
 shown during trials.
 """
@@ -39,6 +40,8 @@ Screen { align: center middle; }
     width: 1fr; height: 100%; margin: 0 2; border: heavy $panel-lighten-2;
     content-align: center middle; text-style: bold;
 }
+#plug-panels { height: 9; width: 100%; padding: 0 6; }
+.panel.plugged { background: $warning 30%; border: heavy $warning; }
 .panel.lit { background: $accent; color: $text; border: heavy $accent-lighten-2; }
 .panel.answerable { border: heavy $success; }
 #where { height: auto; width: 100%; align: center middle; }
@@ -223,18 +226,57 @@ class ChannelCheckScreen(MessageScreen):
             self.start()
 
 
-class BlockScreen(MessageScreen):
-    """A speaker block's setup: the open ear, the earplug and the position.
-    A plugged ear can't be checked by listening, so this is a confirmation."""
+class EarplugScreen(MessageScreen):
+    """Before a speaker block whose open ear differs from the last one's (and
+    before a run's first block): only the earplug, so a switch isn't missed
+    among the position's details."""
 
     BINDINGS = [
-        Binding("enter", "ready", "Plugged and in position"),
+        Binding("enter", "ready", "Earplug in"),
         Binding("escape", "app.quit", "Quit"),
     ]
 
-    def __init__(self, runner: TrialRunner, done: int, total: int, switch: bool, last: str = ""):
+    def __init__(self, ear: str, first: bool, last: str = ""):
         super().__init__()
-        self.runner, self.done, self.total, self.switch, self.last = runner, done, total, switch, last
+        self.ear, self.first, self.last = ear, first, last
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("", id="title")
+            yield Static("", id="message")
+            with Horizontal(id="plug-panels"):
+                for e in EARS:
+                    yield Static(f"{EAR_NAMES[e]} EAR\n\n" + ("open" if e == self.ear else "EARPLUG"),
+                                 id=f"plug-{e}", classes="panel" + (" plugged" if e != self.ear else ""))
+            yield Static("", id="status")
+        yield Footer()
+
+    def on_mount(self):
+        other = EAR_NAMES["R" if self.ear == "L" else "L"].lower()
+        head = "Earplug" if self.first else "Switch the earplug"
+        what = (f"Put a foam earplug fully into your {other} ear." if self.first else
+                f"Take the earplug out of your {EAR_NAMES[self.ear].lower()} ear and put it (or a fresh one) "
+                f"fully into your {other} ear.")
+        last = f"{self.last}\n\n" if self.last else ""
+        self.say(head, last + what, "Enter when the earplug is in   Esc: quit")
+
+    def action_ready(self):
+        self.dismiss(True)
+
+
+class BlockScreen(MessageScreen):
+    """A speaker block's setup: the position (after EarplugScreen when the
+    open ear changes). A plugged ear can't be checked by listening, so these
+    are confirmations."""
+
+    BINDINGS = [
+        Binding("enter", "ready", "In position"),
+        Binding("escape", "app.quit", "Quit"),
+    ]
+
+    def __init__(self, runner: TrialRunner, done: int, total: int, last: str = ""):
+        super().__init__()
+        self.runner, self.done, self.total, self.last = runner, done, total, last
         from flatiron.session.speaker import Position
 
         info = runner.speaker
@@ -264,13 +306,12 @@ class BlockScreen(MessageScreen):
     def on_mount(self):
         info = self.runner.speaker
         pos = self.pos
-        switch = "The open ear changes with this block: move the earplug.\n\n" if self.switch else ""
         last = f"{self.last}\n\n" if self.last else ""
         quit_note = f"\n\n{VOLUME_REMINDER}" if self.last else ""
         self.say(f"Block {self.done + 1} of {self.total} · {EAR_NAMES[pos.ear].lower()} ear · {pos.label}",
-                 last + switch + pos.instructions() + f"\n\n{info['block']} trials, about a minute and a half."
+                 last + pos.instructions() + f"\n\n{info['block']} trials, about a minute and a half."
                  + quit_note,
-                 "Enter when the earplug is in and you're in position   Esc: quit")
+                 "Enter when you're in position   Esc: quit")
 
     def action_ready(self):
         self.dismiss(True)
@@ -731,7 +772,13 @@ class FlatironApp(App):
             from flatiron.session.speaker import progress
 
             done, total = progress(self.runner.profile.sessions())
-            self.push_screen(BlockScreen(self.runner, done, total, switch, last), lambda _: self.start_trials())
+            block = lambda last: self.push_screen(BlockScreen(self.runner, done, total, last),
+                                                  lambda _: self.start_trials())
+            if switch:  # the earplug gets its own screen, then the position
+                first = self.sessions_run == 0
+                self.push_screen(EarplugScreen(self.runner.speaker["open_ear"], first, last), lambda _: block(""))
+            else:
+                block(last)
             return
         self.push_screen(ChannelCheckScreen(self.runner), self.after_channel_check)
 
