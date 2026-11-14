@@ -394,7 +394,7 @@ async def test_verify_session_ends_at_its_trial_count(tmp_path):
 
 async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
     from flatiron.session.speaker import next_block, plan, plan_key
-    from flatiron.ui.app import BlockScreen, LevelScreen
+    from flatiron.ui.app import BlockScreen, EarplugScreen, LevelScreen
 
     prof = Profile.open("phone", root=tmp_path)
     prof.update(kind="speaker", channel="R")
@@ -413,6 +413,10 @@ async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
                 assert isinstance(app.screen, LevelScreen)
                 await pilot.press("enter")
                 await pilot.pause()
+                assert isinstance(app.screen, EarplugScreen)  # the run's first block: the earplug on its own
+                assert "right ear" in str(app.screen.query_one("#message").render())
+                await pilot.press("enter")
+                await pilot.pause()
             assert isinstance(app.screen, BlockScreen)  # no level screen before the second block
             assert str(app.screen.query_one("#azimuth").value) == str(runners[-1].speaker["position"]["azimuth"])
             await pilot.press("enter")
@@ -429,3 +433,39 @@ async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
     done = [s for s in prof.sessions() if s.trials]
     assert len(done) == 2 and {s.speaker["position"]["azimuth"] for s in done} == {x.azimuth for x in plan(plan_key(prof))[:2]}
     assert all(len(s.trials) == 3 and {t.ear for t in s.trials} == {"L"} for s in done)
+
+
+async def test_switching_the_open_ear_gets_its_own_earplug_screen(tmp_path):
+    from flatiron.session.speaker import next_block
+    from flatiron.sim.listener import design_example
+    from flatiron.sim.speaker import simulate_speaker_profile
+    from flatiron.ui.app import BlockScreen, EarplugScreen, LevelScreen
+
+    prof = Profile.open("phone", root=tmp_path)
+    prof.update(kind="speaker", channel="R")
+    simulate_speaker_profile(prof, {e: design_example(e) for e in "LR"}, blocks=4)  # the left ear's last one next
+
+    def make():
+        pos = next_block(prof)
+        speaker = {"open_ear": pos.ear, "channel": "R", "position": pos.to_json(), "block": 2}
+        return TrialRunner(prof, RunSettings(speaker=speaker, max_trials=2), config=CFG, seed=1)
+
+    app = FlatironApp(make, NullPlayer())
+    async with app.run_test() as pilot:
+        for screen in (LevelScreen, EarplugScreen, BlockScreen):
+            assert isinstance(app.screen, screen)
+            await pilot.press("enter")
+            await pilot.pause()
+        await wait_for(pilot, lambda: isinstance(app.screen, TrialScreen))
+        scr = app.screen
+        for _ in range(2):
+            await wait_for(pilot, lambda: scr.accepting or not isinstance(app.screen, TrialScreen))
+            if isinstance(app.screen, TrialScreen):
+                await pilot.press("left")
+        await wait_for(pilot, lambda: isinstance(app.screen, EarplugScreen))
+        msg = str(app.screen.query_one("#message").render())
+        assert "Block saved: 2 trials." in msg and "out of your right ear" in msg and "into your left ear" in msg
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, BlockScreen)
+        app.runner.discard()
