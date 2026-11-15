@@ -22,7 +22,8 @@ This document describes how Flatiron works as built, the evidence behind its des
 | Consensus reference, veto | Built | "Consensus reference"; "Veto against other profiles" |
 | Smooth and match methods, joint baseline | Built, experimental | "Experimental methods" |
 | Speaker sessions and the position model | Built | "Speaker profiles" |
-| Speaker evidence in a joint model | **NOT BUILT** | "Speaker profiles" |
+| Speakers deciding what the consensus keeps | Built | "Consensus reference" |
+| Speaker evidence in a joint model | Superseded | "Speaker profiles" |
 
 ## Scope
 
@@ -65,7 +66,7 @@ These are numbered because code comments cite them.
 7. **Reseat and repeat.** Treble resonances move when the headphone moves. Sessions are short, with a reseat between them, and each session is a group in a hierarchical model: more trials in a session say more about that seating and little about seatings in general.
 8. **One filter definition everywhere.** The fit, Flatiron's own preview EQ and every export use RBJ-cookbook peaking biquads. Each exporter writes the target's matching mode, and the formats that can be run locally are checked against the real implementation before they're written.
 9. **Lazy fits from per-profile settings.** There is no separate fit step and no saved fit. Every command that needs the correction recomputes it from the profile's trials, settings and checkpoint. The expensive part, the perceptual fit, depends only on the trials and is cached, so a correction takes about 0.1 s once the cache is warm, and a few seconds after new trials.
-10. **Separate the listener from the headphone.** The listener's own ear and hearing appear in every source, headphone or speaker. A headphone's aberrations appear only in that headphone. Over-ear coupling artifacts appear in every headphone but no speaker. The design separates those three while trusting any single setup as little as possible. Comparison, consensus and veto make the first split, between what all headphones share and what belongs to one. The second, using speakers to find coupling artifacts, is **NOT BUILT**.
+10. **Separate the listener from the headphone.** The listener's own ear and hearing appear in every source, headphone or speaker. A headphone's aberrations appear only in that headphone. Over-ear coupling artifacts appear in every headphone but no speaker. The design separates those three while trusting any single setup as little as possible. Comparison, consensus and veto make the first split, between what all headphones share and what belongs to one. Speakers in the consensus make the second: a shared narrow feature no speaker shows is taken out of the reference, as a likely coupling artifact.
 11. **No hard edges where avoidable.** A correction that jumps by decibels when a statistic crosses a threshold is hard to trust and hard to verify by ear. Where a decision would otherwise be all or nothing (significance, the veto's choice of median feature, the baseline's reading of a broad region), Flatiron makes it gradual, and the filter fit tracks the target in plain dB so it doesn't add jumps of its own.
 
 ## Notation
@@ -116,7 +117,14 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 | --- | --- | --- |
 | $p$; $\hat L_p$, $\Sigma_p$ | A profile; its curve and covariance on its own grid | |
 | $A_p$ | The interpolation matrix from the common 1/48-octave grid to profile $p$'s grid | `interp_matrix` |
-| $m(f)$ | The consensus: the soft median of the profiles' curves, on the common grid | |
+| $m(f)$ | A soft median of the profiles' curves (or their parts), on the common grid | |
+| $S_p$; $B_p$, $N_p$ | The 0.75-octave split on profile $p$'s grid; its broad and narrow parts | `split_parts` |
+| $m_B$, $m_N$ | The soft medians of the broad and of the narrow parts | |
+| $k(f)$, $k_\text{hp}(f)$ | The share of $m_N$ kept in a consensus reference; the same from the headphones alone | `EarShare` |
+| $a(f)$ | Prior SD of the listener's own narrow structure | `listener_prior_db` |
+| $v(f)$ | The narrow median's error variance: its fits' covariance plus the members' disagreement | |
+| $g(f)$ | The speakers' gain: their narrow part regressed on $m_N$ | `speaker_gain` |
+| $s_k$ | SD of $k_\text{hp}$ as an estimate of the true share | `consensus_gain_sd` |
 | $\alpha_p$ | Profile $p$'s constant alignment offset in the consensus | |
 | $w_{p,i}$ | The octave width point $i$ of profile $p$ covers, relative to 1/24 octave | |
 | $\tau_\text{hp}$ | Between-headphone spread in the soft median: one value per ear and profile set | |
@@ -127,7 +135,7 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 | $\gamma$ | Veto softness | `veto_softness` |
 | $I$ | Veto import limit, dB | `veto_import_db` |
 
-**Speakers** (all but $\tau_\text{pos}$ belong to the joint model, which is **NOT BUILT**)
+**Speakers** ($\sigma_\text{hp}$ belonged to the joint model, which was superseded; $\sigma_\text{cup}$ and $\sigma_\text{spk}$ are used by the consensus reference)
 
 | Symbol | Meaning |
 | --- | --- |
@@ -135,7 +143,7 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 | $\mathrm{cup}$ | Over-ear coupling structure shared by all headphones |
 | $\mathrm{hp}_h$ | Headphone $h$'s own aberrations |
 | $\mathrm{spk}_j$ | Speaker $j$'s colouration, plus the room |
-| $\sigma_\mathrm{cup}$, $\sigma_\mathrm{hp}$, $\sigma_\mathrm{spk}$ | Prior scales: how large each of those parts is typically assumed to be |
+| $\sigma_\mathrm{cup}$, $\sigma_\mathrm{hp}$, $\sigma_\mathrm{spk}$ | Prior scales: how large each of those parts is typically assumed to be. In the consensus, $\sigma_\text{cup}$ and $\sigma_\text{spk}$ are narrow structure only (`--coupling`, `--speaker-colouration`) |
 | $\tau_\text{pos}(f)$ | How far a speaker position typically departs from the average at $f$ (`SPEAKER_PRIORS`) |
 
 # Measurement
@@ -219,7 +227,7 @@ The curves are then the MAP given these.
 
 - **What's shared.** $\sigma_0$, $d_0$, $r$ and $\lambda$, per ear (the right ear is noisier for every headphone so far). Not the seating spread, which belongs to the headphone, and not the time-order bias $\beta$, which differs between devices (see "Shared noise" under "Findings"). $\beta$ stays a fixed effect of each profile's fit.
 - **The fit.** The summed Laplace evidence of every member, each profile with its own curve and sessions and with $\tau_\text{seat}$ at its prior, is maximised over the four parameters with one prior on them. It always starts from the prior means, so it depends only on the trials. Each profile's fit then uses the result as fixed and estimates its own $\tau_\text{seat}$.
-- **Members.** Every profile of kind `headphone` or `iem` of the listener ("Listeners"), with its own sessions as its fit selects them (`config --sessions`). Pooled sessions count once, toward the profile they belong to. Only a profile with at least 200 trials in the ear counts: in a smaller one the curve absorbs the answers and pulls $\sigma_0$ down, and adding several small profiles together doesn't undo that. Speaker profiles (**NOT BUILT**) won't count, for the same reason at the level of each short block.
+- **Members.** Every profile of kind `headphone` or `iem` of the listener ("Listeners"), with its own sessions as its fit selects them (`config --sessions`). Pooled sessions count once, toward the profile they belong to. Only a profile with at least 200 trials in the ear counts: in a smaller one the curve absorbs the answers and pulls $\sigma_0$ down, and adding several small profiles together doesn't undo that. Speaker profiles don't count, for the same reason at the level of each short block.
 - **Caching.** The result is cached in `cache/noise/`, keyed by every member's trials, and each profile's fit is keyed by the noise as well as its own trials. A session in any profile changes the noise, so every profile refits the next time it's used, which takes a few seconds each with the noise given.
 - **During a session.** The scheduler holds the listener's noise for the whole session. It no longer re-estimates it at block ends.
 
@@ -344,7 +352,9 @@ Every setting but the channel balance is downstream of the cached perceptual fit
 | Max feature width $W$ | 1 octave (1/3 to 2) | `-w`/`--width` |
 | Channel balance | 1 (scale on 1.5 and 3 dB; 0: off) | `--balance` |
 | Reference; listening level | `diffuse`; 60 phon | `-r`/`--reference`; `--phon` |
-| Consensus reference; its smoothing | none; 1/2 octave | `-r consensus:A,B`; `--consensus-width` |
+| Consensus reference | none | `-r consensus:A,B` (speakers may be listed too) |
+| Its prior on the listener's narrow structure; coupling | ×1; 1 dB | `--consensus-prior`; `--coupling` |
+| With speakers: gain window; colouration; SD of the headphones-only share | 0.3 octave; `auto`; `auto` | `--speaker-window`; `--speaker-colouration`; `--gain-sd` |
 | Veto against other profiles; mode; import limit | none; `feature`; 1.5 dB | `--veto A,B` (`none`: off); `--veto-mode feature` or `pointwise`; `--veto-import` |
 | Soft veto $\gamma$ | 0.1 (0: all or nothing) | `--veto-softness` |
 | Significance $k$, $k_\text{broad}$ | 2, 2.5 SD | `-k`/`--k-narrow`, `--k-broad` |
@@ -366,11 +376,13 @@ Some combinations are refused:
 
 - `--veto` and `--baseline joint` need `--method features`.
 - `--method smooth` needs `--broad-strength` 0.
-- `--smooth-width`, `--veto-mode`, `--veto-import` and `--consensus-width` need the setting they modify.
+- `--smooth-width`, `--veto-mode`, `--veto-import`, `--consensus-prior` and `--coupling` need the setting they modify; `--speaker-window`, `--speaker-colouration` and `--gain-sd` need a speaker in the consensus.
+
+`config` warns when the veto and a consensus reference are on together.
 
 `--shared-baseline` is on by default, so it isn't refused with the smooth or match method; it just has no effect there.
 
-Limits: $W$ 1/3 to 2 octaves, `--balance` 0 to 10, `--soft-margin` 0 to 2 SD, `--veto-softness` 0 to 1, `--consensus-width` 0 to 2 octaves, `--smooth-width` 1/8 to 1 octave, `--fit-tolerance` 0.1 to 6 dB, `--broad-strength` 0 to 100%, 1 to 128 bands, and $f_\text{lo}$ below $f_\text{hi}$.
+Limits: $W$ 1/3 to 2 octaves, `--balance` 0 to 10, `--soft-margin` 0 to 2 SD, `--veto-softness` 0 to 1, `--consensus-prior` 0 to 10, `--coupling` 0 to 6 dB, `--speaker-window` 0.1 to 1 octave, `--speaker-colouration` 0 to 6 dB, `--gain-sd` 0.05 to 2, `--smooth-width` 1/8 to 1 octave, `--fit-tolerance` 0.1 to 6 dB, `--broad-strength` 0 to 100%, 1 to 128 bands, and $f_\text{lo}$ below $f_\text{hi}$.
 
 The correction range can only move within the measured range, and the measured range, grid and stimulus are fixed when the trials are collected. Features wider than about an octave are only as well constrained as the longest jumps (1 octave).
 
@@ -394,10 +406,10 @@ Flatiron treats EQ as three layers: any system EQ active while measuring, the co
 **In brief.** A feature every headphone shows on this listener is probably the listener's own (pinna, concha, canal, hearing) and shouldn't be corrected. A feature only one headphone shows probably belongs to that headphone. Flatiron uses that in three separate tools, all built on one robust average of several profiles' curves, the *soft median*:
 
 - **Comparison** (`flatiron compare`) shows the profiles' curves side by side and flags where one stands out. It fits no filters.
-- **Consensus reference** (`config -r consensus:…`) uses the soft median of other profiles' curves in place of ISO 226 as the reference $E$, so whatever is shared is subtracted before detection.
+- **Consensus reference** (`config -r consensus:…`) uses a consensus of profiles' curves in place of the fixed reference $E$: their broad shape in full, and as much of their shared narrow structure as is believed to be the listener's, so that isn't corrected. Speakers listed with them decide how much that is.
 - **Veto** (`config --veto …`) keeps detection as it is, but corrects each feature only by as much as it exceeds the most typical matching feature across the headphones.
 
-The reference and the veto are separate settings, usable alone or together, with or without broad correction. Both exist to avoid correcting what's shared across headphones, so they aren't independent in effect: an unsmoothed consensus reference leaves a veto little to do. Smoothed (the default), the reference carries the broad shape and the veto decides the narrow features.
+The reference and the veto are separate settings, usable alone or together, with or without broad correction. Both exist to avoid correcting what's shared across headphones, so they overlap: the consensus reference already keeps the shared narrow structure it believes, and the veto then mostly makes the correction more conservative. `config` and `report` warn when both are on. The consensus reference is the main tool; the veto is for when one isn't available or trusted.
 
 Profiles of kind `iem` don't count toward a consensus or a veto by default. They lack the pinna and concha, so a peak they lack says nothing about whether it's the listener's.
 
@@ -453,15 +465,39 @@ This replaced an earlier report of residuals and pointwise z-scores. Each profil
 
 ## Consensus reference
 
-`config -r consensus:A,B,C` uses a consensus of raw curves as $E$, in place of a fixed reference (pipeline step 1). Every later step is the same, including the baseline.
+**In brief.** `config -r consensus:A,B,C` uses a consensus of the listed headphones' raw curves as $E$, in place of a fixed reference (pipeline step 1). Each curve is split into a broad part and a narrow part, and each part gets its own soft median. The reference keeps the broad median in full, and only as much of the narrow median, $k(f)$, as is believed to be the listener's own: much of it where the headphones agree and the listener's ear has narrow structure (the treble), little of it low down or where they disagree. Speakers listed in the consensus don't vote. They only decide how much of the headphones' shared narrow structure is kept, so a feature every headphone shows but no speaker does is taken out of the reference and corrected. Every later step is the same, including the baseline.
+
+$$
+E = m_B + k \cdot m_N
+$$
 
 1. **Raw curves.** The sources are the listed profiles' $\hat L_p$, from their own sessions and pooling, with no reference and no baseline. So a consensus depends only on its members' fits, and every profile using the same list shares one cache entry.
-2. **Members.** Exactly the profiles listed, which must be of kind `headphone` and the same listener's. The profile being corrected is included only if it's listed. Leaving it out makes the reference independent of it, but with two others the soft median falls back to their weighted mean, so one's peak reaches the reference at about half height. Listing it as well gives a real median of three. A single profile is allowed (the reference is then that headphone's curve), with a note. Profiles that share trials through pooling can't be used together: pooling means the same headphones measured again, and a consensus needs different ones.
-3. **Alignment.** Each source gets the offset $\alpha_p$, fitted together with the soft median by the same robust loss, so a treble difference in one headphone doesn't shift its whole curve. A mean-based alignment would be pulled by exactly those differences.
-4. **Smoothing.** `--consensus-width` (FWHM, default 1/2 octave; 0: none) smooths $m$ with a local linear fit. Unsmoothed, the reference holds the members' narrow features, so a shared peak disappears before detection, and another headphone's peak reads as a dip here. Smoothed, the reference carries the broad shape, and narrow features go to detection, and to the veto if it's on. About half of a shared peak around 1/4 octave wide stays in the reference at this width, so a feature's height against it is lower than against a fixed reference.
-5. **Covariance.** $\operatorname{Cov}(\hat L - m)$ adds $m$'s error and, for a member, subtracts the correlation its own vote creates. The offsets are treated as fixed.
+2. **Members.** Exactly the profiles listed, of the same listener. Headphones vote; speakers gate (step 7); IEMs can't be listed. At least one headphone is needed. The profile being corrected is included only if it's listed. Leaving it out makes the reference independent of it, but with two others the soft median falls back to their weighted mean, so one's peak reaches the reference at about half height. Listing it as well gives a real median of three. A single headphone is allowed (its narrow part is then kept by the prior alone), with a note. Profiles that share trials through pooling can't be used together: pooling means the same headphones measured again, and a consensus needs different ones.
+3. **Split.** Each headphone's $\hat L_p$, on its own grid, is split by a local linear fit of FWHM 0.75 octave into a broad part $B_p = S_p \hat L_p$ and a narrow part $N_p = (I - S_p)\hat L_p$, each with its covariance. Splitting before the median means broad tonal differences between headphones can't decide which curve the narrow median follows, or read as narrow disagreement. Splitting the median instead (an earlier prototype) let them do both.
+4. **Broad.** $m_B$ is the soft median of the $B_p$, with each member's offset $\alpha_p$ fitted by the same robust loss, so a treble difference in one headphone doesn't shift its whole curve. On the real profiles the soft median and a precision-weighted mean differ by 0.32 and 0.11 dB RMS over 1 to 13 kHz (L and R), reaching 1.4 dB only at the top edge; the soft median keeps one code path and resists one headphone's odd tilt.
+5. **Narrow.** $m_N$ is the soft median of the $N_p$, with its own $\tau_\text{hp}$, and no offsets (the narrow parts have none).
+6. **How much of the narrow part is kept, from the headphones.**
+    $$
+    k_\text{hp} = \frac{a^2}{a^2 + \sigma_\text{cup}^2 + v}
+    $$
+    - $a(f)$ is the prior SD of the listener's own narrow structure: 0.5 dB below 3 kHz, 3 dB above 6 kHz, log-linear between. Narrow pinna structure lives above about 4 kHz; below, the ear's response is broad. `--consensus-prior` scales it (0: keep none of the narrow part).
+    - $\sigma_\text{cup}$ (`--coupling`, default 1 dB) is the SD of narrow structure every headphone's cup adds, which headphones alone can't tell from the listener's. It's what makes $k_\text{hp}$ small low down even where the headphones agree perfectly: there $a$ is small next to it. In the treble, $k_\text{hp}$ is about 0.8 to 0.86.
+    - $v(f)$ is the narrow median's error: its covariance from the members' fits, plus their disagreement beyond their own noise. The disagreement is a sandwich estimate with the soft median's final weights, $\frac{n}{n-1}\sum_p s_p^2 \max(r_p^2 - \sigma_p^2, 0)$, where $r_p$ is member $p$'s residual from $m_N$, $s_p$ its share of the final weights and $\sigma_p^2$ its own variance, smoothed over 1/4 octave. A member far from the other two has a small share, as in the median, so two headphones that agree keep $v$ small: with three, the disagreement only matters where no two agree.
+    - That's the share of $m_N$ a Gaussian listener structure of SD $a$ would explain, if coupling and the median's error were Gaussian too and independent of it.
+7. **Speakers.** Each listed speaker's $\hat L$ (its direction average; see "Speaker profiles") is split the same way. Its broad part is never used: a speaker's broad shape in a room isn't trusted.
+    - The speakers' narrow parts are averaged point by point, each weighted by its own variance plus its colouration $\sigma_\text{spk}^2$ (correlated over 1/12 octave), so two unrelated speakers halve the colouration's variance.
+    - The speaker gain $g(f)$ is the slope of a regression of that average on $m_N$, in a Gaussian window (`--speaker-window`, FWHM, default 0.3 octave) at each frequency. If a speaker were the listener plus independent noise, $g$ would estimate the share of $m_N$ that is the listener's, coupling included, which is what $k_\text{hp}$ guesses from the prior. A window of 0.4 octave blended the real profiles' 9.5 kHz dip into the 11.3 kHz peak; 0.2 to 0.3 separated them at little cost.
+    - Its SD comes from the speakers' covariance with the colouration added, and from $m_N$'s own error, to first order.
+    - $k$ is the precision-weighted mean of $k_\text{hp}$, with SD $s_k$, and $g$ clipped to $[0, 1]$. So speakers can take a shared feature out of the reference, never put in one the headphones lack, and never scale one past its headphone height.
+    - **Colouration** $\sigma_\text{spk}$ (`--speaker-colouration`, default `auto`): with two or more speakers, estimated from how much their narrow parts differ beyond their noise, pooled over pairs and both ears and held within 0.25 to 6 dB; otherwise 1 dB. It's the speaker's own narrow response and the room's, which averaging over positions doesn't remove, since the speaker always faces the listener. One speaker can't estimate it: colouration that happens to match a headphone feature goes straight into $g$, and the report says so.
+    - **The headphones-only share's SD** $s_k$ (`--gain-sd`, default `auto`): estimated from how far $g$ strays from $k_\text{hp}$ beyond $g$'s own SD, at points one window apart over the correction range, both ears pooled (a weighted moment estimate, iterated), held within 0.1 to 1. It only matters when there are speakers, and that's when it can be estimated. On the real profiles it came to 0.33 to 0.35 with no colouration and 0.25 with 1 dB, mostly from 2 to 2.5 kHz, where the speaker shows more structure than the headphones and $\sigma_\text{cup}$ pulls $k_\text{hp}$ down. Fixed values from 0.1 to 1 moved the targets by 0.14 to 0.84 dB RMS against 0.3.
+8. **Covariance.** $E$'s covariance follows from the members' through the final weights, with $k$ and the weights held fixed: $\operatorname{Cov}(E) = \operatorname{Cov}(m_B) + K\operatorname{Cov}(m_N)K + K C + C^{\mathsf T}K$, with $K = \operatorname{diag}(k)$ and $C = \operatorname{Cov}(m_N, m_B)$. $\operatorname{Cov}(\hat L - E)$ adds $E$'s error and, for a member, subtracts the correlation its own vote creates: its weights are $S_p^{\mathsf T}G_{B,p} + (I - S_p)^{\mathsf T}G_{N,p}K$. The offsets and the speakers' effect through $k$ are treated as fixed. Monte Carlo agrees within about 10% (criterion 10).
 
-Raw results are shared in the listener's folder (`cache/consensus/`), keyed by the ear, the members and each member's perceptual-fit hash, and pruned least-recently-used at 200 MB. A new session in any member changes its fit, and so the key. The smoothing is applied after the cache.
+The split consensus (both soft medians, their weights and covariances, the disagreement, and each speaker's narrow part) is cached in the listener's folder (`cache/consensus/`), keyed by the ear, the headphones and speakers and each one's perceptual-fit hash, and pruned least-recently-used at 200 MB. A new session in any of them changes its fit, and so the key. $k$ depends on the settings and is worked out afterwards, which takes milliseconds.
+
+`report` says what the consensus kept: $k$ at 2, 4, 7 and 11 kHz per ear, the speakers, and the colouration and $s_k$ with where each came from.
+
+**With the veto.** The veto still works with a consensus reference, but they overlap: the reference already keeps what the headphones share, and on real listening the veto's corrections were too conservative next to a consensus reference alone with narrow smoothing. `config` and `report` warn when both are on. The veto stays for when a consensus reference isn't available or trusted.
 
 ## Veto against other profiles
 
@@ -620,7 +656,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
 - `report/`: figures, the HTML report, and the comparison report.
 - `ui/`: the trial app (level, channel check, sweep, trials, end screen), audition, and the tone generator.
-- `sim/`: the simulated listener, non-adaptive designs, validation, and the seating and multi-headphone scenarios.
+- `sim/`: the simulated listener, non-adaptive designs, validation, the seating and multi-headphone scenarios, and simulated speakers for the consensus (`sim/consensus.py`).
 - `cli.py`: the commands below.
 - `apo.py`: parsing Equalizer APO / AutoEQ text (`Preamp:` and `Filter N: ON` lines of type PK, LSC/LS or HSC/HS; OFF filters are skipped, anything else is an error). Writing it lives with the exporters.
 - `iso226.py`: the ISO 226:2003 equal-loudness contours.
@@ -645,7 +681,7 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | `report` | Prints filters and features, and notes on the seating spread, noise and bias | `PROFILE`, `-H`/`--html`, `--csv FILE` |
 | `compare` | Compares profiles (see "Comparing profiles") | Two to eight profiles, from any listeners, `-H`/`--html`, `-w`, `-r`, `--ear`, `--include-kind iem` |
 | `export` | Writes the correction | `PROFILE`, `-t`/`--target` (required: `apo`, `lsp`, `easyeffects`, `pipewire` or `tincan`), `-o`/`--output`, `--merge FILE` or `--merge L=FILE --merge R=FILE`, `--preamp safe` or `DB` |
-| `simulate` | Runs a simulated listener (see "Validation") | `--trials-per-ear` (default 600), `--seed`, `--design adaptive` or `uniform`, `--scenario consensus`, `seating` or `speaker`; hidden from help: `--sigma0`, `--lapse` |
+| `simulate` | Runs a simulated listener (see "Validation") | `--trials-per-ear` (default 600), `--seed`, `--design adaptive` or `uniform`, `--scenario consensus`, `consensus-speakers`, `seating` or `speaker`; hidden from help: `--sigma0`, `--lapse` |
 
 `report --csv` writes one row per ear and grid point: `ear,freq_hz,level_db,level_sd,reference_db,baseline_db,residual_db,residual_sd`.
 
@@ -675,11 +711,11 @@ Several people can share one installation. Each listener is a folder of their ow
 
 Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically. Each listener's folder is `listeners/<slug>/`, with a `listener.json` (label, slug, when it was made); the paths below starting with `profiles/` or `cache/noise/` and `cache/consensus/` are inside it.
 
-- `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug`, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
+- `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug` (headphones and speakers together; each one's kind says which), with `auto` settings as null, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
-- `cache/consensus/`: consensus results, shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
+- `cache/consensus/`: split consensus results (see "Consensus reference"), shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
 
 ## Session flow
 
@@ -726,13 +762,13 @@ Ground truth per ear:
 | $\mathrm{hp}_2$ | −4 dB at 8.0 kHz (Q 10) |
 | $\mathrm{hp}_3$ | +3 dB at 10.5 kHz (Q 4), +3 dB at 3.2 kHz (Q 3) |
 | Seatings | `reseat()` moves feature frequencies, and can add a deviation with a set spread and resonances only that seating has |
-| $\mathrm{spk}_1$ | **NOT BUILT.** Random narrow ripple, 3 dB RMS above 3 kHz, plus a +6 dB peak at 6.3 kHz (Q 6) |
-| $\mathrm{spk}_2$ | **NOT BUILT.** Independent random ripple, 3 dB RMS |
-| Positions | $u_g$ with $\tau_\text{pos}$ 1, 2.1 and 4 dB at 5, 8 and 12 kHz; 15 positions per ear, 32 trials each (`sim/speaker.py`; criterion 7 alone, without headphones) |
+| $\mathrm{spk}_1$ | Random narrow ripple (Gaussian correlation, SD 1/12 octave), 3 dB RMS above 3 kHz, plus a +6 dB peak at 6.3 kHz (Q 6) and a tilt of +1.5 dB per octave |
+| $\mathrm{spk}_2$ | Independent random ripple, 3 dB RMS, and a tilt of −2 dB per octave |
+| Positions | $u_g$ with $\tau_\text{pos}$ 1, 2.1 and 4 dB at 5, 8 and 12 kHz; 15 positions per ear, 32 trials each, through the real scheduler (`sim/speaker.py`). Each speaker is $T$ plus its own parts, with no $\mathrm{cup}$ |
 
 Each headphone gets its own smooth tilt (−1, +0.5 and −0.3 dB per octave), and every source gets the reference's shape. Headphones get 600 trials per ear, over three sessions of 200, as in the standard validation.
 
-**NOT BUILT:** speaker 1's own peak at 6.3 kHz is there to check that one speaker's colouration never reaches a headphone correction. A variant moves that peak to 9.5 kHz, on top of $\mathrm{cup}$, to check the split-speakers case: one speaker shows a shared headphone feature and the other doesn't.
+Speaker 1's own peak at 6.3 kHz is there to check that one speaker's colouration never reaches a headphone correction. A variant replaces it with $\mathrm{cup}$'s own peak, to check the split-speakers case: one speaker shows a shared headphone feature and the other doesn't. `--scenario consensus-speakers` runs criteria 3 to 6, with a consensus of all three headphones and the speakers (`SPEAKER_CONFIGS` in `sim/consensus.py`).
 
 Criteria, measured over 14 to 21 simulated listeners for what's built. Code and tests cite them by number.
 
@@ -740,14 +776,14 @@ Criteria, measured over 14 to 21 simulated listeners for what's built. Code and 
 | --- | --- | --- | --- |
 | 1 | **Comparison report.** Every $\mathrm{hp}$ feature is flagged against the right headphone within 1/24 octave. No $T$ or $\mathrm{cup}$ feature is flagged as one headphone standing out. False flags stay at the chosen target rate | 11 of 56 headphone features missed; 1.9 flags per ear on shared features and 0.7 elsewhere | Partly met: flags follow the veto, so they share its limits, including features merged with a neighbour |
 | 2 | **Headphones-only consensus.** Every $\mathrm{hp}$ feature is corrected within 1.5 dB. $T$ and $\mathrm{cup}$ are left alone ($\mathrm{cup}$ is invisible without speakers, as designed). No false correction above 1.5 dB | See the table below | Not met by any configuration |
-| 3 | **Both speakers, medium trust.** As in 2, and $\mathrm{cup}$ is also removed from all three headphones within 2 dB. $T$ and speaker 1's 6.3 kHz peak leave no correction | — | **NOT BUILT** |
-| 4 | **Split-speakers variant.** With speaker 1's peak moved onto $\mathrm{cup}$, $\mathrm{cup}$ is kept, matching the "one shows it, one lacks it" row of the evidence table | — | **NOT BUILT** |
-| 5 | **One speaker.** With speaker 2 only, any removal of $\mathrm{cup}$ is marked in the report as resting on one device | — | **NOT BUILT** |
-| 6 | **Low trust.** Results match criterion 2 within 0.5 dB | — | **NOT BUILT** |
+| 3 | **Both speakers.** As in 2, and $\mathrm{cup}$ is also removed from all three headphones within 2 dB. $T$ and speaker 1's 6.3 kHz peak leave no correction | 0 of 42. $\mathrm{cup}$ is corrected by −0.06 dB (median); $T$ left alone in 40 of 42; nothing above 1.5 dB elsewhere in 21, as without speakers. Even with no narrow part in the reference at all (`--consensus-prior 0`), $\mathrm{cup}$ is corrected by only −0.1 dB (median; −2.4 on $\mathrm{hp}_3$): most of it goes into the broad median, and the baseline takes the rest between $T$'s 8.4 kHz dip and 11 kHz peak, so the speakers' gain has nothing to remove | Not met: speakers only reach the narrow part (see "Known limitations") |
+| 4 | **Split-speakers variant.** With speaker 1's peak moved onto $\mathrm{cup}$, $\mathrm{cup}$ is kept | $\mathrm{cup}$ kept within 1.5 dB in 42 of 42 (as in criterion 3, so this says little); 10 of 42 pass in full, the rest failing on their own features as in criterion 2 | Partly met |
+| 5 | **One speaker.** With speaker 2 only, any removal of $\mathrm{cup}$ is marked in the report as resting on one device | The report says when speaker evidence rests on one device. $\mathrm{cup}$ isn't removed (as in 3). With its 3 dB ripple taken as the default 1 dB, $T$ is left alone in 28 of 42, against 40 with both speakers | Met for the note; one speaker as coloured as this one disturbs $T$ |
+| 6 | **Low trust.** With `--speaker-colouration 6`, results match criterion 2 within 0.5 dB | 41 of 42 (median change 0.01 dB) | Met |
 | 7 | **Speaker model.** $L$ recovers the mean over positions within 1.5 dB RMS from 1 to 13 kHz, at both 20 × 24 and 8 × 60 trials. Its reported SD covers the error about 68% of the time over 50 simulated listeners. It also runs with the fixed $\tau_\text{pos}$ at half the true curve, to show how much a wrong assumption costs | With the listener's noise known (30 listeners): 0.88 dB RMS at 20 × 24 and 1.07 at 8 × 60, coverage 0.72 and 0.68; 0.60 to 0.65 at half the spread (see "Simulations for speakers"). The test runs the default plan, 15 × 32, for two listeners | Met |
 | 8 | **Rule and edge cases.** A two-profile consensus runs and warns, and every row of the veto table comes out as specified (unit tests on the rule alone). Three-headphone cases come out near the worked values | Every row of the table; the worked values; the two-profile warning | Met |
 | 9 | **Seating spread.** With three sessions of about 110 trials per ear, a true $\tau_\text{seat}$ of 2 or 3 dB is recovered within a factor of 1.5, and a true $\tau_\text{seat}$ of zero isn't estimated above 1 dB | Over 40 simulated listeners each, each of the three values within a factor of 1.5 of a true 2 or 3 dB in 63% of cases (the two-value fit, measured the same way: 70%). True 0: $\tau_\text{lo}$ below 1 dB in 82% of runs, $\tau_\text{mid}$ in 32% and $\tau_\text{hi}$ in 52% (the prior's median above 5 kHz is 1.5 dB; the two-value fit's treble value: 67%) | Partly met |
-| 10 | **Coverage.** $L$'s reported SD covers the error about 68% of the time at 1, 3 and 8 sessions, and $m$'s SD does the same for the consensus | $L$'s 1 SD covers 69%, 71% and 73% at 1, 3 and 8 sessions (30 listeners each); the consensus SD is within 1% of Monte Carlo | Met, a little conservative |
+| 10 | **Coverage.** $L$'s reported SD covers the error about 68% of the time at 1, 3 and 8 sessions, and the consensus reference's SD does the same | $L$'s 1 SD covers 69%, 71% and 73% at 1, 3 and 8 sessions (30 listeners each); the consensus reference's SD, with $k$ and the weights held, is 0.95 of Monte Carlo's (median over 14 listeners; 0.92 to 0.99) | Met, a little conservative |
 | 11 | **Moving resonances.** A 9 dB resonance in two seatings of three is corrected within 2 dB of its median level. A resonance in one seating of three is dropped. With one session, a seating-specific resonance of up to about twice the prior's spread isn't corrected as confident | 9 dB in all three seatings: −8.0 dB. Over 20 listeners each: in two of three, median −5.0 dB (within 2 dB of −8 in 25% of runs; the two-value fit, −5.7 dB and 45%). In one of three: median 0.0 dB, with 1 dB or more of correction left in 15% of runs (two-value: 35%). 3 dB in one session: left alone in 80% | Partly met: the Gaussian deviation shrinks on-or-off resonances |
 | 12 | **Speed.** A per-answer refit takes under 100 ms at 8 sessions of 150 trials on a fully refined 199-point grid, and a block-end pause is no longer than before the hierarchical fit | 10 ms per answer at 8 × 150 trials on 199 points; about 1 s at a block end; about 2 s for a full fit. The third seating-spread value made a full fit about 20% slower and changed nothing else | Met |
 
@@ -755,14 +791,16 @@ For criterion 2, the table gives passes out of 42 headphone checks over 14 simul
 
 | Configuration | Standard | Broad | Contour | Moved |
 | --- | --- | --- | --- | --- |
-| Pointwise veto, ISO 226 | 29 | 13 | 2 | 12 |
-| Veto, ISO 226 | 14 | 9 | 2 | 9 |
-| Pointwise veto, consensus of all three | 18 | 7 | 16 | 13 |
-| Veto, consensus of all three | 14 | 4 | 13 | 10 |
-| Veto, consensus of the other two | 10 | 0 | 12 | 8 |
-| Consensus of all three, unsmoothed, no veto | 7 | 3 | 8 | 4 |
-| Consensus of all three, smoothed, no veto | 0 | 0 | 0 | 6 |
-| ISO 226, no veto | 0 | 0 | 0 | 0 |
+| Veto, fixed reference | 13 | 10 | 0 | 8 |
+| Pointwise veto, fixed reference | 15 | 10 | 2 | 7 |
+| Consensus of all three | 9 | 8 | 12 | 5 |
+| Consensus of all three, with veto | 13 | 8 | 13 | 10 |
+| Consensus of all three, with no-import veto | 14 | 9 | 13 | 9 |
+| Consensus of all three, with pointwise veto | 13 | 7 | 19 | 6 |
+| Consensus of the other two | 5 | 5 | 2 | 0 |
+| Consensus of the other two, with veto | 9 | 8 | 9 | 6 |
+
+Re-run on 2026-11-15 for the split consensus, with the `diffuse` fixed reference. Before the split, against ISO 226: the pointwise veto passed 29, 13, 2 and 12 and the veto 14, 9, 2 and 9; a consensus of all three smoothed over 1/2 octave passed 0, 0, 0 and 6, and unsmoothed 7, 3, 8 and 4. The fixed-reference rows changed with the reference (and the fit) since, not with the consensus. The split consensus alone beats the old smoothed and unsmoothed ones in every scenario but *moved*. With a veto on top it scores about as the old one did.
 
 The scoring favours leaving things alone, and can't tell whether a move is right for a real ear. An import limit of 0 scores the same as 1.5 dB, within one pass.
 
@@ -937,6 +975,26 @@ On known curves (40 simulations for each ear of all three profiles, averaged ove
 
 The truth is each setup's own correction of the true curves. So the soft veto helps modestly, and most of the difference between runs is measurement noise. Pointwise scores about as well but corrects about 12% less overall, and it still has a target step of 0.88 dB on the same path.
 
+## Split consensus
+
+On the real profiles (`sundara`, `ft1` and `hd560` as headphones, `soundsticks` as the speaker), first with scratch prototypes and then with the built code, on copies of the data.
+
+- **Splitting first, or the median first.** The earlier prototype took the pointwise median of the raw curves and split that. Its measure of disagreement then included the headphones' broad tonal differences (Sundara sits 2 to 4 dB below the others at 1 to 3 kHz), which is where most of its strong smoothing below 3 kHz came from. Split first, the narrow parts agree well there (the 2 kHz dip is in all three), so the disagreement is small and, with $a(f)$ alone, $k_\text{hp}$ stayed between 0.6 and 0.95 almost everywhere. Hence the coupling term: with $\sigma_\text{cup} = 1$ dB, $k_\text{hp}$ is about 0.18 below 3 kHz and 0.8 to 0.86 in the treble.
+- **What the speaker says.** Its narrow part against the headphones' median: 7 kHz the same (gain 0.84 L, 0.62 R); the 11 kHz peak at about 60 to 75% of the headphones' height (gain about 0.55); the 8.5 to 10 kHz dip and the 4.2 kHz bump almost absent (0 to 0.35); the 2 to 2.5 kHz dip and peak larger than the headphones' (1.5 to 2). So on this evidence the 11 kHz peak is mostly the listener's, and the 9 to 10 kHz dip isn't. That dip may be a pinna notch that moves with elevation: averaging over positions fills it in, as a diffuse field would.
+- **The speaker's colouration** not explained by a locally scaled copy of the headphones' narrow shape: 0.8 dB (L) and 0.24 dB (R) beyond its own noise. That's only a lower bound, since colouration shaped like a headphone feature goes into the gain. 1 dB of colouration moves the targets by at most 0.2 dB RMS.
+- **Against `main`** (each profile's own settings; Sundara with a consensus of all three; targets over 1 to 13 kHz):
+
+    | Profile | Headphones only: target change, RMS (L, R) | With the speaker |
+    | --- | --- | --- |
+    | `ft1` | 0.89, 0.71 dB | 0.73, 0.46 dB |
+    | `hd560` (its veto on) | 0.89, 0.64 dB | 1.11, 0.66 dB (veto off) |
+    | `sundara` | 1.10, 0.80 dB | 1.02, 0.65 dB |
+
+    - The shared 7 kHz peak is no longer corrected on `ft1` L (+1.3 dB before) or `sundara` L (+1.1); `sundara` R's, taller than the others', is still corrected for its excess (+2.9 to +2.0 dB).
+    - The shared 11 kHz peak is no longer corrected on `ft1` L (+2.2 before).
+    - Headphones only, the 9.5 kHz dip that `sundara` and `hd560` share is in `ft1`'s reference, so `ft1` L, which lacks it, gets a +3.7 dB feature at 9.7 kHz to cut: an import. With the speaker, which lacks the dip too, it's gone, and `ft1`'s own 8.4 kHz dip is corrected more (−3.2 dB against −2.6).
+    - `hd560`'s own 8 and 10 kHz features are corrected as before, within about 2 dB.
+
 ## Filter fit
 
 The fit used to weight by 1/SD and stop within 2 SD, so it could drift up to 2.55 dB from the target in the treble, where the SD is largest. Along the path above, over six ears on default settings and `sundara`'s two on its real settings, with soft rejection at width 0.5 and $\gamma = 0.1$, 7 of 9 jumps over 0.5 dB in the narrow filters came with the filter count changing by one. Removing the 0.5 dB minimum, or lowering the compensation threshold, made no difference. Starting each step from the last one's filters cut the 9 to 2, so many nearly equal solutions contribute too.
@@ -1030,6 +1088,9 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 - **Equaliser's (macOS) handling of imported Q and filter mode is unverified.**
 - **The veto depends on detection.** Which features exist, and how wide they are, decides what matches, and a feature's own part can stay merged with a neighbour's. The pointwise mode avoids this, but its separate baselines make it sensitive to broad differences between headphones.
 - **Nothing says whether a veto's answer is right for a real ear.** The simulator can only check its own assumptions about what's shared.
+- **The consensus reference's $k$ is treated as fixed in its error bars.** $k$ depends on the data (through $v$ and the speakers' gain), but $E$'s covariance holds it, and the soft medians' weights, at their values. Monte Carlo with $k$ fixed agrees within about 10%; the extra spread from $k$ itself isn't counted.
+- **Speakers only reach the narrow part.** The 0.75-octave split puts part of any shared feature into the broad median, which speakers can't touch, so a coupling peak about 1/4 octave wide can only be partly removed (criterion 3). Narrowing the split would hand the speakers more, and more of their colouration with it.
+- **One speaker's colouration can pass for the listener's.** Its colouration can't be estimated without a second speaker; it's taken as 1 dB, and a colouration shaped like a headphone feature moves the gain however large it's assumed. The report says when the speaker evidence rests on one device.
 
 # Open questions
 
@@ -1041,9 +1102,9 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 
 # Speaker profiles
 
-**Partly built.** Speaker profiles, the block runner, the position plan and the position model exist (`session/speaker.py`, the runner's speaker mode, `fit/run.py`'s `SPEAKER_PRIORS`, `sim/speaker.py`). The joint model that would let speakers change headphone corrections ("Folding speakers into the reference") is **NOT BUILT**, and so neither are `--speaker-trust` and `--speaker-response`; their only trace is two placeholders, always null, in the consensus cache key. Today a speaker profile is evidence to look at: in `report` and drawn dashed in `compare`. In this section a group $g$ is a speaker block, which is one session.
+**Built.** Speaker profiles, the block runner, the position plan and the position model (`session/speaker.py`, the runner's speaker mode, `fit/run.py`'s `SPEAKER_PRIORS`, `sim/speaker.py`), and speakers in the consensus reference (`fit/consensus.py`; see "Consensus reference"). The joint model planned before ("The joint model (superseded)") was replaced by the consensus's speaker gain, and `--speaker-trust` by `--speaker-colouration`. `--speaker-response` isn't built: a speaker's broad shape is never used. In this section a group $g$ is a speaker block, which is one session.
 
-**In brief.** Speaker profiles answer the same question as the comparison and consensus: which narrow features belong to the listener, and which to the headphone. They'd add one thing the headphones can't show: a feature every headphone shares may still be an over-ear coupling artifact, because no speaker has it. A speaker is measured in many short blocks, each at a different position, with the other ear plugged; the hierarchical model averages the positions into one direction-averaged curve per ear. That curve would then enter a joint model with the headphones, where it can only demote a shared headphone feature to a coupling artifact, never create a correction of its own. Speakers would be downstream of the cached perceptual fits, so like every other setting they could be switched on and off without new trials.
+**In brief.** Speaker profiles answer the same question as the comparison and consensus: which narrow features belong to the listener, and which to the headphone. They add one thing the headphones can't show: a feature every headphone shares may still be an over-ear coupling artifact, because no speaker has it. A speaker is measured in many short blocks, each at a different position, with the other ear plugged; the hierarchical model averages the positions into one direction-averaged curve per ear. Listed in a consensus reference, that curve decides how much of the headphones' shared narrow structure the reference keeps. It can take a shared feature out of the reference, so it's corrected, but never create a correction of its own. Speakers are downstream of the cached perceptual fits, so like every other setting they can be switched on and off without new trials.
 
 ## Speaker sessions
 
@@ -1078,13 +1139,20 @@ This is the perceptual model with blocks as the groups. Per ear, the perceived l
 - With 32 trials a block can't pin down its own $u_g$. The model doesn't need it to: $L$'s uncertainty includes $\tau_\text{pos}^2$ divided by the number of positions. That's what "averaged, not rejected" means in practice.
 - $\tau_\text{pos}$ uses the three seating-spread values, fixed at 1, 2.1 and 4 dB at 5, 8 and 12 kHz (1 dB rising log-linearly to 4 dB). The fixed curve is an assumption, so the report labels it as one. It isn't estimated: with the noise borrowed from the headphones even slightly off, an estimate absorbs the difference (see "Simulations for speakers").
 - The noise, the balance prior and the shared baseline are as for a headphone. The balance prior suits a speaker at least as well: both ears hear the same speaker.
-- The result is a perceptual fit like any other ($\hat L$ with covariance). `report` shows its curve and features, with no filters and no preamp; `export`, `verify`, `audition` and `tone` refuse a speaker profile. In `compare` it's drawn dashed and doesn't count toward the median unless `--include-kind speaker`. It never counts toward a consensus or veto.
+- The result is a perceptual fit like any other ($\hat L$ with covariance). `report` shows its curve and features, with no filters and no preamp; `export`, `verify`, `audition` and `tone` refuse a speaker profile. In `compare` it's drawn dashed and doesn't count toward the median unless `--include-kind speaker`. In a consensus reference it only gates the headphones' narrow part; it never counts toward a veto.
 
 The SD covers the sampling of positions and the judgment noise. It doesn't cover bias from the plan itself: 15 fixed directions aren't a random draw, so if they miss a region, nothing in the error bars shows that.
 
 Averaging in dB fills in a moving notch less than a true diffuse-field (power) average would. "Open questions for speakers" covers whether that's worth correcting.
 
-## Folding speakers into the reference (NOT BUILT)
+## The joint model (superseded)
+
+**Superseded** by the consensus reference's speaker gain (see "Consensus reference"), and kept as a record of the earlier plan. What changed:
+
+- The gain works on the split consensus's narrow part only. The joint model would have estimated $\mathrm{cup}$ at every width below $W$, so it could remove a coupling peak's broad share too; the gain can't, which caps how much of a wide coupling peak speakers can take out (criterion 3).
+- No Student-t priors and no MAP: the speakers' narrow parts are averaged and regressed on the headphones' narrow median, window by window, and the result is precision-weighted with the headphones-only share. A speaker's colouration is a Gaussian noise term of SD $\sigma_\text{spk}$, estimated from two or more speakers.
+- "One shows it, one lacks it" (the evidence table below) comes out about halfway rather than "mostly $T$": the two speakers' narrow parts are averaged before the regression.
+- The rule that speakers never create a correction target, and never import a feature the headphones lack, is kept: $g$ is clipped to $[0, 1]$ and only scales the headphones' own narrow median.
 
 Speakers and headphones go into one joint model. Speakers are evidence about one thing only: whether a feature every headphone shares is really the listener's. They can demote a shared feature to a coupling artifact. They never create a correction target by themselves.
 
@@ -1139,21 +1207,20 @@ How the evidence plays out:
 | `run` | `--block N` (speaker only, 16 to 60, default 32) | Runs speaker blocks down the position plan; refuses `--sweep` |
 | `compare` | `--include-kind speaker` | Lets speakers count toward the median, as `iem` can |
 | `simulate` | `--scenario speaker` | Criterion 7 for one simulated listener |
-| `config` | `--speaker-trust low`, `medium` or `high`; `--speaker-response FILE` | Speaker handling in the joint model (**NOT BUILT**) |
+| `config` | `-r consensus:A,B,SPEAKER`; `--speaker-window`, `--speaker-colouration`, `--gain-sd` | Speakers in a consensus reference (see "Consensus reference"); `--speaker-response FILE` is **NOT BUILT** |
+| `simulate` | `--scenario consensus-speakers` | Criteria 3 to 6 for one simulated listener |
 
 On disk:
 
-- `profile.json`: `kind: speaker` and `channel`. **NOT BUILT:** settings for the speaker trust and response.
+- `profile.json`: `kind: speaker` and `channel`. A headphone profile's consensus reference lists speakers among its slugs, and its settings hold the speaker options.
 - Speaker session files: `speaker`, holding `open_ear`, `channel`, `position` (`label`, `azimuth`, `elevation`), `block` and `plugged`. Trials are unchanged.
 
 Modules:
 
 - `session/speaker.py`: the position plan and its progress; the runner's speaker mode (one ear, the speaker's channel); `ui/app.py`'s block screen; `sim/speaker.py`: positions as draws from the model's prior, blocks through the real scheduler, and criterion 7.
-- **NOT BUILT:** `fit/consensus.py`'s joint $T$/$\mathrm{cup}$/$\mathrm{hp}$/$\mathrm{spk}$ model.
+- `fit/consensus.py`: the speakers' narrow parts in the split consensus, their gain, and the colouration and $s_k$ estimates; `sim/consensus.py`: simulated speakers and criteria 3 to 6.
 
-Build order: steps 1 and 2 are built (the profile kind and block runner; the position model, with criterion 7 as a test). What's left:
-
-3. The joint $T$/$\mathrm{cup}$/$\mathrm{hp}$/$\mathrm{spk}$ model with speaker trust, simulator criteria 3 to 6.
+Build order: all three steps are built (the profile kind and block runner; the position model, with criterion 7 as a test; speakers in the consensus reference, with criteria 3 to 6 in the simulator, in place of the joint model).
 
 ## Simulations for speakers
 
@@ -1173,10 +1240,10 @@ With the noise known and $\tau_\text{pos}$ fixed at the truth:
 - **Noise borrowed and off** (24- and 40-trial blocks, 30 listeners each): with $\tau_\text{pos}$ fixed, giving the fit $\sigma_0$ 25% low, 33% high, or treble noise ×1 against a true ×1.5 left the RMS error at 0.89 to 0.92 dB, and coverage moved only between 0.66 and 0.77. With $\tau_\text{pos}$ estimated (nearly flat prior), it absorbed the difference: $\sigma_0$ 25% low sent the estimates to 1.6 to 4.7 times the truth at 24 trials a block, and treble noise ×1 sent the 12 kHz value to the 15 dB bound, while coverage stayed at 0.69 to 0.85. The estimate would be meaningless as a finding, so $\tau_\text{pos}$ is fixed.
 - **Anchor pairs.** A quarter of each block on a fixed set of pairs 1/6 octave apart, repeated across blocks (six pairs once each, or three twice), changed neither the curve's error (within ±0.1 dB RMS) nor the $\tau_\text{pos}$ estimates. Repeats in a block are what would make positions comparable, and a few per block are too few against a deviation's dozens of free dimensions. They aren't used.
 
-## Open questions for speakers (NOT BUILT)
+## Open questions for speakers
 
 - **dB vs power averaging over positions.** A diffuse field averages power, which fills in moving notches more than averaging perceived dB does. A power average of per-position posteriors is possible, but each position is barely measured, so it'd be noisy. Proposed: dB averaging, with the expected bias at notch frequencies estimated in the simulator before deciding.
-- **The default $\sigma_\mathrm{cup}$, and whether $\mathrm{cup}$'s prior should be Gaussian.** 1.5 dB keeps shared features unless both speakers clearly lack them. Too small, and real coupling artifacts are never caught; too large, and noisy speakers start removing the listener's own features. A rough hand calculation (one frequency, no noise, ignoring $T$'s smoothness prior and $\mathrm{hp}_h$) suggests the bigger problem is the shape of the prior. With both speakers lacking a 4 dB shared peak at medium trust, the best split is about $T = 2.6$ and $\mathrm{cup} = 1.4$ dB, which would miss criterion 3. At 8 dB, $\mathrm{cup}$ only reaches about 1.7 dB, because the Gaussian penalty keeps growing while the speakers' Student-t penalty levels off. Check this in a simulation before building the joint model, and try a heavier-tailed prior on $\mathrm{cup}$. Then tune it, using the real data with `compare` as a sanity check.
+- **The default $\sigma_\text{cup}$.** In the consensus it's 1 dB of narrow structure (`--coupling`), and it mostly sets how little of the headphones' shared narrow structure is kept below about 4 kHz, where $a$ is small. Too small, and a coupling artifact every headphone shows stays in the reference; too large, and the listener's own treble structure is partly corrected even without speakers. (The joint model's open question, whether its Gaussian $\mathrm{cup}$ prior would ever let speakers remove a 4 dB peak, no longer applies.)
 - **Is the assumed $\tau_\text{pos}$ right?** It can't be estimated from the speaker blocks alone without the borrowed noise being exact (see "Simulations for speakers"). Real speaker data, compared across the plan's positions in the per-position panel of the report, are the check.
 - **The open ear.** Earplug attenuation and bone conduction should leave the plugged ear about 30 dB down in the treble, enough for loudness comparisons in the open ear. A block with the "plugged" ear actually open should look different; that check is deferred until there's real speaker data.
 - **Room.** The position spread absorbs room comb filtering along with HRTF variation. A small, reflective room may make $\tau_\text{pos}$ large enough that speakers rarely move a decision. With $\tau_\text{pos}$ fixed, the model can't see that, so whether to estimate it matters here too. The report should show weak speaker evidence as weak, not hide it.

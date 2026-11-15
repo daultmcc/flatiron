@@ -14,8 +14,8 @@ import numpy as np
 
 from flatiron import EARS
 from flatiron.audio.biquad import PeakingFilter
-from flatiron.fit.consensus import KINDS_VOTING, MODEL_VERSION, EarConsensus, SoftMedian, Source, raw_consensus
-from flatiron.fit.pipeline import Correction, CorrectionSettings, correct, ear_reference
+from flatiron.fit.consensus import KINDS_GATING, KINDS_VOTING, MODEL_VERSION, EarConsensus, Source, SplitConsensus, split_consensus
+from flatiron.fit.pipeline import Correction, CorrectionSettings, consensus_references, correct
 from flatiron.model.grid import log_grid
 from flatiron.model.hierarchical import MIN_TRIALS_NOISE_FIT, fit_balanced, fit_hierarchical, fit_shared_noise
 from flatiron.model.probit import BalancePrior, Noise, Priors, ProbitFit, Trials
@@ -350,11 +350,11 @@ def _prune_consensus(root: Path, cap: int = CONSENSUS_CACHE_CAP) -> None:
         p.unlink(missing_ok=True)
 
 
-def _consensus_key(ear: str, member_keys: dict[str, str]) -> str:
-    """The members and each one's fit: a raw consensus depends on nothing else,
-    so every profile using the same list shares it."""
+def _consensus_key(ear: str, member_keys: dict[str, str], speaker_keys: dict[str, str] | None = None) -> str:
+    """The members and each one's fit: a split consensus depends on nothing
+    else, so every profile using the same list shares it."""
     parts = {"version": MODEL_VERSION, "ear": ear, "members": sorted(member_keys.items()),
-             "speaker_trust": None, "speaker_response": None}
+             "speakers": sorted((speaker_keys or {}).items())}
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
@@ -363,7 +363,8 @@ def shares_trials(a: Profile, b: Profile) -> bool:
     return bool(({a.slug} | set(a.read().get("pool") or [])) & ({b.slug} | set(b.read().get("pool") or [])))
 
 
-def _listed_profiles(profile: Profile, slugs, what: str, option: str) -> list[Profile]:
+def _listed_profiles(profile: Profile, slugs, what: str, option: str,
+                     kinds: tuple[str, ...] = KINDS_VOTING) -> list[Profile]:
     """The profiles listed for a consensus or a veto, checked. Profiles that
     share trials through pooling can't be used together: pooling means the same
     headphones measured again, and these need different ones."""
@@ -374,7 +375,7 @@ def _listed_profiles(profile: Profile, slugs, what: str, option: str) -> list[Pr
         if not p.path.exists():
             raise ValueError(f"Profile {slug!r} is in the {what} of {profile.read()['label']!r} but doesn't exist "
                              f"any more: flatiron config {option}")
-        if p.kind not in KINDS_VOTING:
+        if p.kind not in kinds:
             raise ValueError(f"{p.read()['label']!r} is of kind {p.kind}, which doesn't count toward a {what}.")
         for other in [profile, *out]:
             if other.slug != slug and shares_trials(p, other):
@@ -387,8 +388,13 @@ def _listed_profiles(profile: Profile, slugs, what: str, option: str) -> list[Pr
 
 def consensus_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
     """The profiles a consensus reference is built from: exactly the ones
-    listed, so this profile only if it's listed."""
-    return _listed_profiles(profile, st.consensus, "consensus", "-r diffuse")
+    listed, so this profile only if it's listed. Headphones vote; speakers
+    only gate the narrow part."""
+    out = _listed_profiles(profile, st.consensus, "consensus", "-r diffuse", KINDS_VOTING + KINDS_GATING)
+    if out and not any(p.kind in KINDS_VOTING for p in out):
+        raise ValueError("A consensus needs at least one headphone: speakers only decide how much of the "
+                         "headphones' shared narrow structure is kept.")
+    return out
 
 
 def veto_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
@@ -400,42 +406,47 @@ def veto_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
 
 def ear_consensus(profile: Profile, st: CorrectionSettings, own_fits: dict[str, ProbitFit],
                   own_keys: dict[str, str], on_fit: Callable[[], None] | None = None) -> dict[str, EarConsensus]:
-    """Per ear, the raw consensus of the listed profiles as this profile's
-    reference. The raw result is cached, one entry per set of members whichever
-    profile asks first, and a new session in any member changes its fit and so
-    the key; the smoothing depends on the setting, and is applied afterwards."""
+    """Per ear, the consensus of the listed profiles as this profile's
+    reference. The split consensus is cached, one entry per set of members
+    whichever profile asks first, and a new session in any member changes its
+    fit and so the key; how much of its narrow part is kept depends on the
+    settings, and is worked out afterwards."""
     root = profile.dir.parent.parent
-    labels, fits, keys = {}, {}, {}
+    labels, fits, keys, kinds = {}, {}, {}, {}
     for p in consensus_members(profile, st):
-        labels[p.slug] = p.read()["label"]
+        labels[p.slug], kinds[p.slug] = p.read()["label"], p.kind
         if p.slug == profile.slug:
             fits[p.slug], keys[p.slug] = own_fits, own_keys
         else:
             fits[p.slug], keys[p.slug], _ = perceptual_fits(p, profile_session_ids(p), on_fit)
-    order = sorted(fits)
+    order = sorted(s for s in fits if kinds[s] in KINDS_VOTING)
+    speakers = sorted(s for s in fits if kinds[s] in KINDS_GATING)
     own = order.index(profile.slug) if profile.slug in order else None
-    out, used = {}, {}
+    splits, used = {}, {}
     for e in EARS:
-        key = _consensus_key(e, {s: keys[s][e] for s in order})
+        key = _consensus_key(e, {s: keys[s][e] for s in order}, {s: keys[s][e] for s in speakers})
         path = consensus_dir(root) / f"{key}.npz"
         if path.exists():
-            z = np.load(path)
+            sc = SplitConsensus.from_arrays(np.load(path))
             os.utime(path)
-            sm = SoftMedian(z["grid"], z["m"], z["cov"], float(z["tau_hp"]), [z[f"G{i}"] for i in range(len(order))],
-                            bool(z["robust"]), z["offsets"])
+            # Labels can change without changing a fit (`profiles set --label`).
+            sc.members = [labels[s] for s in order]
+            for s, x in zip(speakers, sc.speakers):
+                x.label = labels[s]
         else:
-            sm = raw_consensus([Source(labels[s], fits[s][e].grid, fits[s][e].L, fits[s][e].cov) for s in order])
+            src = lambda s: Source(labels[s], fits[s][e].grid, fits[s][e].L, fits[s][e].cov, kinds[s])
+            sc = split_consensus([src(s) for s in order], [src(s) for s in speakers])
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.stem + ".tmp.npz")
-            np.savez(tmp, grid=sm.grid, m=sm.m, cov=sm.cov, tau_hp=sm.tau_hp, robust=sm.robust, offsets=sm.offsets,
-                     members=np.array(order), **{f"G{i}": g for i, g in enumerate(sm.G)})
+            np.savez(tmp, **sc.arrays())
             tmp.replace(path)
             _prune_consensus(root)
-        out[e] = ear_reference(sm, [labels[s] for s in order], key, st.consensus_smooth_oct, own)
+        splits[e] = sc
         used[e] = key
     (profile.dir / "cache").mkdir(parents=True, exist_ok=True)
     (profile.dir / "cache" / "consensus.json").write_text(json.dumps(used))
-    return out
+    return consensus_references(splits, st, "+".join(used[e] for e in EARS), own,
+                                None if own is None else {e: own_fits[e].grid for e in EARS})
 
 
 def ear_voters(profile: Profile, st: CorrectionSettings,

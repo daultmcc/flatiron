@@ -13,14 +13,15 @@ import numpy as np
 from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.baseline import fit_baseline, fit_shared_baseline, split
 from flatiron.fit.decompose import fit_joint_baseline, fit_shared_joint_baseline
-from flatiron.fit.consensus import EarConsensus, SoftMedian, Source, consensus_of
+from flatiron.fit.consensus import (EarConsensus, Source, SplitConsensus, consensus_of, ear_reference,
+                                    shares)
 from flatiron.fit.features import BROAD, NARROW, Feature, GroupCurve, find_features, seating_step
 from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
 from flatiron.fit.features import weighted_median
 from flatiron.fit.reference import CONSENSUS_PREFIX, reference
 from flatiron.fit.veto import (LOBE_HI_DB, LOBE_LO_DB, MIN_LOBE_DB, OWN_LABEL, OWN_WINS, Candidate, correction,
                                correction_rule, judge, judge_soft, smoothstep, soft_correction)
-from flatiron.model.grid import interp_matrix, log_grid
+from flatiron.model.grid import interp_matrix, local_linear_smoother, log_grid, smoother_matrix
 from flatiron.model.probit import ProbitFit
 
 FINE_STEP_OCT = 1 / 96
@@ -82,10 +83,20 @@ class CorrectionSettings:
     # the reference, tonality included.
     method: str = "features"
     smooth_oct: float = 0.5
-    # A consensus reference (DESIGN.md, "Consensus reference") is smoothed over this
-    # (FWHM, octaves; 0: not at all). Unsmoothed it holds the members' narrow
-    # features too, and a peak in the reference reads as a dip here.
-    consensus_smooth_oct: float = 0.5
+    # A consensus reference (DESIGN.md, "Consensus reference") is broad + k · narrow.
+    # consensus_prior scales a(f), the prior SD of the listener's own narrow
+    # structure (0: keep none of the narrow part). consensus_coupling_db: the SD
+    # of narrow structure every cup adds, which headphones alone can't tell from
+    # the listener's.
+    consensus_prior: float = 1.0
+    consensus_coupling_db: float = 1.0
+    # With speakers in the consensus: the window (FWHM) of their gain's
+    # regression; the SD of a speaker's own narrow colouration (None: estimated
+    # from two or more speakers, else 1 dB); and the SD of the headphones-only
+    # share as an estimate of the true one (None: estimated from the speakers).
+    speaker_window_oct: float = 0.3
+    speaker_colour_db: float | None = None
+    consensus_gain_sd: float | None = None
     # Other profiles whose features decide how each of this one's is corrected (fit/veto.py).
     veto: tuple[str, ...] = ()
     # feature: toward the median feature; pointwise: frequency by frequency, by
@@ -110,8 +121,16 @@ class CorrectionSettings:
             raise ValueError("a consensus reference needs at least one profile")
         if not 0 <= self.soft_width <= 2:
             raise ValueError("the soft width must be 0 to 2 SDs")
-        if not 0 <= self.consensus_smooth_oct <= 2:
-            raise ValueError("consensus smoothing must be 0 to 2 octaves")
+        if not 0 <= self.consensus_prior <= 10:
+            raise ValueError("the consensus prior's scale must be 0 to 10")
+        if not 0 <= self.consensus_coupling_db <= 6:
+            raise ValueError("the coupling SD must be 0 to 6 dB")
+        if not 0.1 - 1e-9 <= self.speaker_window_oct <= 1 + 1e-9:
+            raise ValueError("the speaker window must be 0.1 to 1 octave")
+        if self.speaker_colour_db is not None and not 0 <= self.speaker_colour_db <= 6:
+            raise ValueError("the speaker colouration must be 0 to 6 dB (or auto)")
+        if self.consensus_gain_sd is not None and not 0.05 - 1e-9 <= self.consensus_gain_sd <= 2:
+            raise ValueError("the gain SD must be 0.05 to 2 (or auto)")
         if self.veto and self.method != "features":
             raise ValueError("--veto judges features, so it needs --method features")
         if self.veto_mode not in VETO_MODES:
@@ -642,38 +661,20 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
                          comp, fixed, consensus, base.sd)
 
 
-def ear_reference(sm: SoftMedian, members: list[str], key: str, smooth_oct: float,
-                  own: int | None = None) -> EarConsensus:
-    """A raw consensus as a reference for one profile: smoothed, and with that
-    profile's weights if it's a member (own: its index among the sources)."""
-    g = sm.grid
-    S = np.eye(g.size) if smooth_oct == 0 else local_linear_smoother(g, smooth_oct, np.gradient(np.log2(g)))
-    return EarConsensus(members, key, g, S @ sm.m, S @ sm.cov @ S.T, sm.tau_hp,
-                        None if own is None else sm.G[own] @ S.T, smooth_oct)
-
-
-def smoother_matrix(freqs, fwhm_oct, weights) -> np.ndarray:
-    """Gaussian smoothing in log2 f as a matrix, normalised by `weights` (so
-    the edges average only over what's there)."""
-    x = np.log2(freqs)
-    k = np.exp(-0.5 * ((x[:, None] - x[None, :]) / (fwhm_oct / 2.355)) ** 2) * weights[None, :]
-    return k / np.maximum(k.sum(axis=1, keepdims=True), 1e-12)
+def consensus_references(splits: dict[str, SplitConsensus], settings: CorrectionSettings, key: str = "",
+                         own: int | None = None, own_grids: dict[str, np.ndarray] | None = None) -> dict[str, EarConsensus]:
+    """The consensus reference per ear for one profile, from the cached split
+    consensus and this profile's settings (own: its index among the headphones
+    if it's one of them, with its grids)."""
+    sh = shares(splits, prior_scale=settings.consensus_prior, coupling_db=settings.consensus_coupling_db,
+                window_oct=settings.speaker_window_oct, colour_db=settings.speaker_colour_db,
+                gain_sd=settings.consensus_gain_sd, f_lo=settings.f_lo, f_hi=settings.f_hi)
+    return {e: ear_reference(sc, sh.ears[e], key, None if own is None else own_grids[e], own, sh)
+            for e, sc in splits.items()}
 
 
 def smooth_log(freqs, values, fwhm_oct, weights) -> np.ndarray:
     return smoother_matrix(freqs, fwhm_oct, weights) @ values
-
-
-def local_linear_smoother(freqs, fwhm_oct, weights) -> np.ndarray:
-    """Gaussian-weighted local linear regression in log2 f, as a matrix. Unlike
-    a plain weighted average it has no bias at the ends of the range (a
-    one-sided average lags a slope there, which reads as a feature)."""
-    x = np.log2(freqs)
-    k = np.exp(-0.5 * ((x[:, None] - x[None, :]) / (fwhm_oct / 2.355)) ** 2) * weights[None, :]
-    d = x[None, :] - x[:, None]  # (i, j): x_j − x_i
-    s0, s1, s2 = k.sum(1), (k * d).sum(1), (k * d * d).sum(1)
-    # Row i: weights of the local line's value at x_i.
-    return k * (s2[:, None] - s1[:, None] * d) / np.maximum(s0 * s2 - s1**2, 1e-12)[:, None]
 
 
 COMP_Q_MAX = 1.5  # compensation filters stay broad

@@ -27,12 +27,12 @@ uv run flatiron verify                           # ~150 trials with the correcti
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; --merge preset.txt
 uv run flatiron tone "HD 600"                    # tone generator: glide by hand, mark peaks and dips
 uv run flatiron compare A B C -H                 # several profiles per ear: their curves, what the veto would correct
-uv run flatiron config A -r consensus:B,C        # use B's and C's raw curves as A's reference
+uv run flatiron config A -r consensus:A,B,C      # A's reference: what A, B and C share (add a speaker to the list too)
 uv run flatiron config A --veto B,C              # correct A's features toward the median of A's, B's and C's
 uv run flatiron report --csv curves.csv          # the level, reference, baseline and residual, per ear
 uv run flatiron profiles new "Etude" --kind iem  # or `profiles set NAME --kind ... --label ...`
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
-uv run flatiron simulate --scenario seating      # or consensus: the multi-session and multi-headphone checks
+uv run flatiron simulate --scenario seating      # or consensus, consensus-speakers: multi-session and multi-headphone checks
 uv run pytest                                    # in parallel (pytest-xdist); -n0 for one process
 ```
 
@@ -62,7 +62,10 @@ and move the speaker up or down for height, keeping your head upright and level.
 you like; the next `run` continues the plan. Measure some headphones first if
 you can, since speaker blocks use the noise estimated from them. `report` shows
 a speaker's curve and features, `compare` draws it dashed beside headphones,
-and it has no correction to export.
+and it has no correction to export. List it in a headphone's consensus
+reference (below) and it decides how much of what the headphones share is
+kept: a narrow peak every headphone shows but the speaker doesn't is then
+corrected. Two unrelated speakers count for much more than one.
 
 `run` options: `--new` (start a new profile with this name), `--device N` (an
 index from `devices`, or part of the device's name), `--minutes` (at most 15),
@@ -104,14 +107,19 @@ readings of a broad region well off the reference, shown with its uncertainty in
 then also takes up broad differences between the ears).
 `--reset name,name` returns settings to the defaults (also `sessions`, `checkpoint`, or `all`
 for every setting and the sessions); it can't be combined with other changes.
-`-r consensus:A,B` uses the listed profiles' raw curves as the reference instead of a fixed one, smoothed over
-`--consensus-width OCT` (default 1/2 octave, 0: none). This profile is only in it if you list it, and with three
-headphones you probably want to: two others alone give their mean, not a median. `--veto A,B|none` corrects each
+`-r consensus:A,B` uses the listed profiles as the reference instead of a fixed one: their shared broad shape,
+plus as much of their shared narrow structure as is likely your own ears' (most of it in the treble, little below
+about 4 kHz or where they disagree), so that isn't corrected. This profile is only in it if you list it, and with
+three headphones you probably want to: two others alone give their mean, not a median. Speakers can be listed too:
+they don't vote, but a shared narrow feature they lack is corrected. `--consensus-prior X` (default 1) keeps more
+of the shared narrow structure, or less (0: none); `--coupling DB` (default 1) is how much of it you'd blame on how
+cups sit on your ears. With speakers: `--speaker-window OCT` (default 0.3), `--speaker-colouration DB|auto` (how
+coloured a speaker is; auto estimates it from two or more speakers, else 1 dB) and `--gain-sd SD|auto`. `--veto A,B|none` corrects each
 feature toward the median feature of this profile and those, among features that overlap it, and `--veto-import DB`
 (default 1.5, 0: none) limits what it may add where that median feature is at another frequency.
 `--veto-mode pointwise` instead corrects frequency by frequency, by what exceeds the median of the residuals, and
-adds nothing. The reference and veto can be used together, with or without broad correction; `--veto` needs
-`--method features`.
+adds nothing. The reference and veto can be used together, with or without broad correction (with a warning: the veto is
+then mostly more conservative, and is meant for when you have no consensus); `--veto` needs `--method features`.
 `--checkpoint` fixes the current filters: later fits keep them, whatever the
 settings, and only add filters (within `--bands`) for what's still
 significant, e.g. after `verify`. `--reset checkpoint` drops it. The default

@@ -90,6 +90,23 @@ def _stimulus(text: str) -> StimulusSpec:
     return StimulusSpec(kind="warble", warble_depth_oct=1 / (2 * per_octave))
 
 
+def _auto_float(text: str):
+    if text.strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number or auto: {text!r}") from None
+
+
+def _consensus_speakers(st, root) -> list[str]:
+    """The speakers listed in a consensus reference."""
+    from flatiron.fit.consensus import KINDS_GATING
+    from flatiron.session.store import Profile
+
+    return [s for s in st.consensus if Profile(s, root).path.exists() and Profile(s, root).kind in KINDS_GATING]
+
+
 def _hz(text: str) -> float:
     """A frequency in Hz, or in kHz with a k: 13000, 13k, 12.5k."""
     t = text.strip().lower().removesuffix("hz")
@@ -599,15 +616,34 @@ PERCENT = (lambda v: v / 100, lambda v: v * 100)
 NAMES = (lambda v: () if v == "none" else tuple(x.strip() for x in v.split(",") if x.strip()),
          lambda v: ",".join(v) or "none")
 KHZ = (lambda v: v, lambda v: f"{v / 1000:g}k")
+AUTO = (lambda v: None if v == "auto" else v, lambda v: "auto" if v is None else v)
+CONSENSUS_FIELDS = ("consensus_prior", "consensus_coupling_db", "speaker_window_oct", "speaker_colour_db",
+                    "consensus_gain_sd")
+SPEAKER_FIELDS = ("speaker_window_oct", "speaker_colour_db", "consensus_gain_sd")
 
 FIT_OPTIONS = [
     (("-w", "--width"), "max_width_oct", dict(type=float, help="max feature width W in octaves (1/3 to 2)")),
     (("-r", "--reference"), "reference",
      dict(help="diffuse (default: ISO 226 + ISO 389-7 diffuse field), iso226 (frontal free field), none, a CSV of freq_hz,db, or consensus:A,B,C for the raw curves of those "
                "profiles (this one only if listed)")),
-    (("--consensus-width",), "consensus_smooth_oct",
-     dict(type=float, help="smoothing (FWHM) of a consensus reference in octaves, up to 2; 0: none. The reference "
-                           "then keeps the shape and leaves features narrower than this to detection and --veto")),
+    (("--consensus-prior",), "consensus_prior",
+     dict(type=float, help="with a consensus reference: scale on the prior SD of your own narrow structure (0.5 dB "
+                           "below 3 kHz rising to 3 dB above 6 kHz), 0 to 10. Larger keeps more of what the "
+                           "headphones share in the reference; 0 keeps none of it")),
+    (("--coupling",), "consensus_coupling_db",
+     dict(type=float, help="with a consensus reference: SD of narrow structure every headphone's cup adds, which "
+                           "headphones alone can't tell from yours (dB, 0 to 6). Larger keeps less of what they share")),
+    (("--speaker-window",), "speaker_window_oct",
+     dict(type=float, help="with speakers in the consensus: width (FWHM, octaves, 0.1 to 1) over which a speaker's "
+                           "narrow structure is compared with the headphones'")),
+    (("--speaker-colouration",), "speaker_colour_db",
+     dict(type=_auto_float, metavar="DB|auto",
+          help="with speakers in the consensus: SD of a speaker's own narrow colouration (dB, 0 to 6). auto (the "
+               "default): estimated from two or more speakers, else 1 dB"), AUTO),
+    (("--gain-sd",), "consensus_gain_sd",
+     dict(type=_auto_float, metavar="SD|auto",
+          help="with speakers in the consensus: how far the headphones-only share may be off, as an SD (0.05 to 2). "
+               "auto (the default): estimated from the speakers"), AUTO),
     (("--veto",), "veto",
      dict(metavar="PROFILE[,PROFILE]|none",
           help="correct each feature toward the median of this profile's and those profiles' features there"), NAMES),
@@ -854,8 +890,14 @@ def cmd_config(args):
     if args.veto_import_db is not None and new.veto_mode != "feature":
         print("--veto-import only applies with --veto-mode feature (nothing changed).")
         return 1
-    if args.consensus_smooth_oct is not None and not new.consensus:
-        print("--consensus-width only applies with a consensus reference (nothing changed).")
+    given = [f for f in CONSENSUS_FIELDS if getattr(args, f) is not None]
+    if given and not new.consensus:
+        print("--consensus-prior, --coupling, --speaker-window, --speaker-colouration and --gain-sd only apply with a "
+              "consensus reference (nothing changed).")
+        return 1
+    if any(f in SPEAKER_FIELDS for f in given) and not _consensus_speakers(new, prof.dir.parent.parent):
+        print("--speaker-window, --speaker-colouration and --gain-sd only apply with a speaker in the consensus "
+              "(nothing changed).")
         return 1
     selection = None
     if args.sessions:
@@ -879,13 +921,21 @@ def cmd_config(args):
     if "reference" in changes and new.consensus and new.reference != old.reference:
         from flatiron.session.store import Profile
 
-        print("Consensus of " + ", ".join(Profile(s, prof.dir.parent.parent).read()["label"]
-                                          for s in new.consensus) + ".")
-        if len(new.consensus) == 1:
+        root = prof.dir.parent.parent
+        speakers = _consensus_speakers(new, root)
+        heads = [s for s in new.consensus if s not in speakers]
+        print("Consensus of " + ", ".join(Profile(s, root).read()["label"] for s in heads)
+              + (", with " + ", ".join(Profile(s, root).read()["label"] for s in speakers)
+                 + " deciding how much of their shared narrow structure is kept" if speakers else "") + ".")
+        if len(heads) == 1:
             print("Note: that's a single headphone's curve, not a consensus.")
-        elif len(new.consensus) == 2:
-            print("Note: with two profiles it's their weighted mean, not a median, so one's peak reaches the "
+        elif len(heads) == 2:
+            print("Note: with two headphones it's their weighted mean, not a median, so one's peak reaches the "
                   "reference at about half height.")
+    if new.consensus and new.veto and (not old.consensus or not old.veto):
+        from flatiron.report.html import VETO_WITH_CONSENSUS
+
+        print(VETO_WITH_CONSENSUS)
     if selection is not None:
         pool, used = selection
         prof.update(pool=pool or None, sessions_used=used)
@@ -911,12 +961,14 @@ def cmd_config(args):
         mark = "*" if _show(st, f) != _show(default, f) else " "
         dflt = "" if mark == " " else f"   (default {_show(default, f)})"
         unused = ("   (unused without --method smooth)" if f == "smooth_oct" and st.method != "smooth" else
-                  "   (unused without a consensus reference)" if f == "consensus_smooth_oct" and not st.consensus else
+                  "   (unused without a consensus reference)" if f in CONSENSUS_FIELDS and not st.consensus else
+                  "   (unused without a speaker in the consensus)" if f in SPEAKER_FIELDS
+                  and not _consensus_speakers(st, prof.dir.parent.parent) else
                   "   (unused without --veto)" if f in ("veto_mode", "veto_import_db", "veto_softness") and not st.veto
                   else "")
-        print(f"  {mark} {_option_name(flags):18} {_show(st, f)}{dflt}{unused}")
+        print(f"  {mark} {_option_name(flags):20} {_show(st, f)}{dflt}{unused}")
     print(f"  {'*' if prof.read().get('sessions_used') or prof.read().get('pool') else ' '} "
-          f"{'sessions':18} {_describe_selection(prof)}")
+          f"{'sessions':20} {_describe_selection(prof)}")
     cp = prof.read().get("checkpoint")
     if cp:
         n = " / ".join(f"{e} {len(v)}" for e, v in cp["filters"].items())
@@ -1310,6 +1362,25 @@ def _simulate_consensus(args):
     print(f"\nConsensus SD, reported / observed (criterion 10): {consensus_coverage(fits):.2f}")
 
 
+def _simulate_consensus_speakers(args):
+    from flatiron.sim.consensus import SPEAKER_CONFIGS, check_speakers, headphone_fits, speaker_fits
+
+    fits = headphone_fits(args.seed, trials_per_session=max(args.trials_per_ear // 3, 1))
+    print("Simulating two speakers, and speaker 1 again with its peak on the cup (15 positions x 32 trials each)...",
+          flush=True)
+    speakers = speaker_fits(args.seed)
+    for config in SPEAKER_CONFIGS:
+        print(f"\n{config.label} (criterion {config.criterion}):")
+        for c in check_speakers(fits, speakers, config):
+            print(f"  {c.name}: {'ok' if c.ok else 'NOT MET'}; cup 9500 Hz corrected {c.cup:+.1f} dB; "
+                  f"largest correction elsewhere {c.worst_false_db:.1f} dB; "
+                  f"largest change from headphones only {c.vs_headphones_only_db:.1f} dB")
+            for fc, gain, h in c.own:
+                print(f"    its own {fc:6.0f} Hz {gain:+.1f} dB: corrected {h:+.1f} dB")
+            for fc, h in c.shared:
+                print(f"    listener {fc:5.0f} Hz: corrected {h:+.1f} dB")
+
+
 def _simulate_seating(args):
     from flatiron.sim.seating import coverage, moving_resonance, speed, tau_recovery
 
@@ -1344,6 +1415,8 @@ def cmd_simulate(args):
         return _simulate_speaker(args)
     if args.scenario == "consensus":
         return _simulate_consensus(args)
+    if args.scenario == "consensus-speakers":
+        return _simulate_consensus_speakers(args)
     if args.scenario == "seating":
         return _simulate_seating(args)
     from flatiron.session.scheduler import SchedulerConfig
@@ -1519,9 +1592,10 @@ def main(argv=None):
     s.add_argument("--sigma0", type=float, default=1.0, help=argparse.SUPPRESS)
     s.add_argument("--lapse", type=float, default=0.03, help=argparse.SUPPRESS)
     s.add_argument("--design", choices=("adaptive", "uniform"), default="adaptive")
-    s.add_argument("--scenario", choices=("consensus", "seating", "speaker"),
-                   help="consensus: three headphones on one listener; seating: sessions that differ; "
-                        "speaker: speaker blocks at positions that differ")
+    s.add_argument("--scenario", choices=("consensus", "consensus-speakers", "seating", "speaker"),
+                   help="consensus: three headphones on one listener; consensus-speakers: the same with two "
+                        "speakers in the consensus; seating: sessions that differ; speaker: speaker blocks at "
+                        "positions that differ")
     s.set_defaults(func=cmd_simulate)
 
     args = p.parse_args(argv)

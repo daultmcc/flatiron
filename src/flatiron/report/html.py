@@ -81,18 +81,42 @@ def _features_table(feats, veto=False, speaker=False):
     return _table(head + ["significant" if speaker else "corrected"], rows, numeric)
 
 
+KEPT_AT_HZ = (2000.0, 4000.0, 7000.0, 11000.0)
+VETO_WITH_CONSENSUS = ("Warning: the veto is on as well as a consensus reference. The consensus already keeps what the "
+                       "headphones share, so the veto mostly makes the correction more conservative; it's meant for "
+                       "when a consensus reference isn't available or trusted.")
+
+
 def consensus_notes(pf: ProfileFit) -> list[str]:
     st = pf.correction.settings
     out = []
     if st.consensus:
-        c = next(iter(pf.correction.ears.values())).consensus
-        how = f"smoothed over {c.smooth_oct:g} octave" if c.smooth_oct else "not smoothed"
-        out.append(f"Reference: the raw curves of {', '.join(c.members)}, {how}.")
+        ears = pf.correction.ears
+        c = next(iter(ears.values())).consensus
+        out.append(f"Reference: the consensus of {', '.join(c.members)}: the soft median of their broad parts, plus "
+                   "the share of their narrow parts' soft median believed to be the listener's.")
+        kept = []
+        for e, ec in ears.items():
+            x = ec.consensus
+            at = [(f, float(np.interp(np.log2(f), np.log2(x.grid), x.share.k))) for f in KEPT_AT_HZ
+                  if x.grid[0] <= f <= x.grid[-1]]
+            kept.append(f"{e} " + ", ".join(f"{k:.2f} at {f / 1000:g} kHz" for f, k in at))
+        out.append("Narrow structure kept: " + "; ".join(kept) + ".")
+        sh = c.shares
+        if sh is not None and sh.speakers:
+            out.append(f"Speakers ({', '.join(sh.speakers)}) decide how much is kept, with their own colouration "
+                       f"taken as {sh.colour_db:.2f} dB ({sh.colour_how}) and the headphones-only share's SD as "
+                       f"{sh.gain_sd:.2f} ({sh.gain_sd_how}).")
+            if len(sh.speakers) == 1:
+                out.append("With one speaker, a colouration of its own that happens to match a headphone feature "
+                           "can't be told from the listener's.")
         if len(c.members) == 1:
             out.append("That's a single headphone's curve, not a consensus.")
         elif len(c.members) == 2:
-            out.append("With two profiles it's their weighted mean, not a median, so one's peak reaches the "
+            out.append("With two headphones it's their weighted mean, not a median, so one's peak reaches the "
                        "reference at about half height.")
+        if st.veto:
+            out.append(VETO_WITH_CONSENSUS)
     if st.veto:
         who = ", ".join(st.veto)
         if st.veto_mode == "pointwise":

@@ -61,3 +61,23 @@ def second_difference(grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         d2[i - 1, i] = -s * (1 / h1 + 1 / h2)
         d2[i - 1, i + 1] = s / h2
     return d2, 0.5 * (h[:-1] + h[1:])
+
+
+def smoother_matrix(freqs, fwhm_oct, weights) -> np.ndarray:
+    """Gaussian smoothing in log2 f as a matrix, normalised by `weights` (so
+    the edges average only over what's there)."""
+    x = np.log2(freqs)
+    k = np.exp(-0.5 * ((x[:, None] - x[None, :]) / (fwhm_oct / 2.355)) ** 2) * weights[None, :]
+    return k / np.maximum(k.sum(axis=1, keepdims=True), 1e-12)
+
+
+def local_linear_smoother(freqs, fwhm_oct, weights) -> np.ndarray:
+    """Gaussian-weighted local linear regression in log2 f, as a matrix. Unlike
+    a plain weighted average it has no bias at the ends of the range (a
+    one-sided average lags a slope there, which reads as a feature)."""
+    x = np.log2(freqs)
+    k = np.exp(-0.5 * ((x[:, None] - x[None, :]) / (fwhm_oct / 2.355)) ** 2) * weights[None, :]
+    d = x[None, :] - x[:, None]  # (i, j): x_j − x_i
+    s0, s1, s2 = k.sum(1), (k * d).sum(1), (k * d * d).sum(1)
+    # Row i: weights of the local line's value at x_i.
+    return k * (s2[:, None] - s1[:, None] * d) / np.maximum(s0 * s2 - s1**2, 1e-12)[:, None]

@@ -117,3 +117,21 @@ def test_blocks_at_the_same_position_share_one_deviation(data):
     pf = run_mod.current_fit(prof)
     assert pf.fits["L"].n_groups == 4 and len(pf.fits["L"].groups) == 4
     assert progress(prof.sessions()) == (5, 30) and next_block(prof) == second
+
+
+def test_simulated_speakers_run_through_the_consensus_checks():
+    """Criteria 3 to 6 run end to end (small, so only the plumbing and the
+    low-trust case are judged; the criteria themselves are in DESIGN.md)."""
+    from flatiron.sim.consensus import SPEAKER_CONFIGS, _ripple, check_speakers, headphone_fits, speaker_fit
+
+    r = _ripple(np.random.default_rng(0), 3.0, 3000.0)
+    f = np.geomspace(3500, 15000, 400)
+    assert np.sqrt(np.mean(r(f) ** 2)) == pytest.approx(3.0, rel=0.2) and abs(r(1000.0)) < 1e-9
+    fits = headphone_fits(3, trials_per_session=60)
+    spk = {n: speaker_fit(n.removesuffix("_cup"), 3, on_cup=n.endswith("_cup"), positions=4, block=24)
+           for n in ("spk1", "spk2", "spk1_cup")}
+    for config in SPEAKER_CONFIGS:
+        res = check_speakers(fits, spk, config)
+        assert [c.name for c in res] == list(fits)
+        if config.criterion == 6:
+            assert all(c.vs_headphones_only_db < 1.0 for c in res)
