@@ -221,7 +221,7 @@ def test_one_headphone_standing_out_is_flagged_on_it_alone():
     assert {s.label for s in c.flags} == {"a"}
     s = c.flags[0]
     assert abs(np.log2(s.fc / 5800)) < 1 / 24 and s.correction_db < -3.0 and s.reading == "peak only here"
-    assert c.differ[np.argmin(np.abs(c.consensus.grid - 5800))]
+    assert c.differ[np.argmin(np.abs(c.grid - 5800))]
 
 
 def test_a_feature_every_headphone_shares_is_not_flagged():
@@ -236,7 +236,7 @@ def test_a_broad_difference_shows_in_the_strip_but_is_not_flagged():
     broad = bump(3000, 1.5, 7.0)
     c = compare_ear("L", [_member(broad, "a"), _member(np.zeros(G.size), "b"), _member(np.zeros(G.size), "c")], NONE)
     assert not [s for s in c.flags if abs(np.log2(s.fc / 3000)) < 0.5]
-    assert c.differ[np.argmin(np.abs(c.consensus.grid - 3000))]
+    assert c.differ[np.argmin(np.abs(c.grid - 3000))]
 
 
 def test_a_peak_elsewhere_on_the_others_says_so():
@@ -268,7 +268,30 @@ def test_offsets_align_the_curves():
     fits[0].fits["L"].L = fits[0].fits["L"].L + 6.0
     c = compare_ear("L", fits + [_member(L, "c", "iem")], NONE)
     assert c.offsets["a"] - c.offsets["b"] == pytest.approx(6.0, abs=0.3)
-    assert "c" in c.offsets
+    assert c.offsets["c"] == pytest.approx(c.offsets["b"], abs=0.3)  # an IEM is aligned without voting
+
+
+def test_offsets_ignore_one_headphones_treble_difference():
+    """A mean-based alignment would shift the whole curve; the median one doesn't."""
+    base = bump(3000, 1.0, 5.0)
+    treble = 8.0 * ((G > 8000) * np.minimum((np.log2(G) - np.log2(8000)) * 8, 1.0))
+    c = compare_ear("L", [_member(base + treble, "a"), _member(base, "b"), _member(base, "c")], NONE)
+    k = (c.grid > 1000) & (c.grid < 6000)
+    # Below 6 kHz the three aligned curves coincide.
+    curves = {m: interp_matrix(G, c.grid) @ (L - L.mean()) - c.offsets[m] for m, L in
+              (("a", base + treble), ("b", base), ("c", base))}
+    assert np.max(np.abs(curves["a"] - curves["b"])[k]) < 0.3
+
+
+def test_narrow_parts_are_overlaid_without_a_consensus():
+    peak = bump(7000, 0.15, 6.0)
+    c = compare_ear("L", [_member(peak + bump(3000, 1.5, 6.0), "a"), _member(peak, "b"), _member(np.zeros(G.size), "c")],
+                    NONE)
+    n, sd = c.narrow["a"]
+    i = np.argmin(np.abs(c.grid - 7000))
+    assert n[i] > 3.5 and abs(n[np.argmin(np.abs(c.grid - 3000))]) < 1.0  # the broad bump isn't narrow
+    assert abs(c.narrow["c"][0][i]) < 0.5 and np.all(sd >= 0)
+    assert not hasattr(c, "consensus")
 
 
 def test_other_kinds_are_shown_but_do_not_vote():
@@ -709,9 +732,10 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     capsys.readouterr()
     assert main(["compare", "One", "Two", "Three", "-H", "--ear", "L", "-w", "0.5"]) == 0
     out = capsys.readouterr().out
-    assert "soft median of 3 profiles" in out and "Right ear" not in out
+    assert "3 profiles voting" in out and "soft median" not in out and "Right ear" not in out
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
     assert page.count("<picture>") == 1 and "Left ear" in page and "All features" in page
+    assert "aligned curves, narrow parts" in page and "soft median" not in page
     assert main(["compare", "One", "Two"]) == 0
     assert "differences, not outliers" in capsys.readouterr().out
 
@@ -728,6 +752,8 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["report", "One", "-H"]) == 0
     out = capsys.readouterr().out
     assert "consensus of Three, Two" in out and "Narrow structure kept: L " in out
+    report = (one.dir / "cache" / "report.html").read_text()
+    assert report.count("ear: the reference") == 2
     assert "weighted mean" in out
     assert current_fit(one).correction.ears["L"].consensus.G is None  # it isn't a member
     entries = list(consensus_dir(tmp_path / "flatiron" / "listeners" / "default").glob("*.npz"))

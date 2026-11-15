@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 from flatiron.fit.compare import EarComparison, Member, compare_ear  # noqa: E402
+from flatiron.fit.consensus import SPLIT_OCT  # noqa: E402
 from flatiron.fit.pipeline import CorrectionSettings  # noqa: E402
 from flatiron.model.grid import interp_matrix  # noqa: E402
 from flatiron.report.plots import EAR_NAMES, THEMES, _style  # noqa: E402
@@ -29,34 +30,45 @@ def compare(members: list[Member], settings: CorrectionSettings, ears, voting_ki
 
 def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     """The raw curves, with no reference subtracted (as with -r none), whatever reference
-    the features were judged against: the profiles are compared to each other, not to it."""
+    the features were judged against: the profiles are compared to each other, not to it.
+    Then their narrow parts, overlaid, and where the curves differ."""
     t = THEMES[theme]
     colors = dict(zip([m.label for m in members], SERIES[theme]))
-    common = c.consensus.grid
-    fig, axes = plt.subplots(2, 1, figsize=(8.6, 5.6), sharex=True, facecolor=t["surface"],
-                             gridspec_kw={"hspace": 0.28, "height_ratios": [8, 0.5]})
+    common = c.grid
+    fig, axes = plt.subplots(3, 1, figsize=(8.6, 8.4), sharex=True, facecolor=t["surface"],
+                             gridspec_kw={"hspace": 0.32, "height_ratios": [8, 6, 0.5]})
     for ax in axes:
         _style(ax, t, common[0], common[-1])
 
     ax = axes[0]
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)
-    m = c.consensus.m
-    shift = m.mean()
+    curves = {}
     for mem in members:
         f = mem.fits[c.ear]
-        d = interp_matrix(f.grid, common) @ f.L - c.offsets[mem.label] - shift
+        curves[mem.label] = interp_matrix(f.grid, common) @ f.L - c.offsets[mem.label]
+    shift = np.mean([curves[m.label] for m in members if c.voting[m.label]])
+    for mem in members:
+        f = mem.fits[c.ear]
+        d = curves[mem.label] - shift
         sd = interp_matrix(f.grid, common) @ f.sd
         col = colors[mem.label]
         ax.fill_between(common, d - sd, d + sd, color=col, alpha=0.14, linewidth=0)
         ax.plot(common, d, color=col, linewidth=1.6, linestyle="-" if c.voting[mem.label] else "--", label=mem.label)
-    word = "mean" if c.voters == 2 else "soft median"
-    ax.fill_between(common, m - shift - c.consensus.sd, m - shift + c.consensus.sd, color=t["ink"], alpha=0.18, linewidth=0)
-    ax.plot(common, m - shift, color=t["ink"], linewidth=2.2, label=word)
-    ax.set_title(f"{EAR_NAMES.get(c.ear, c.ear)} ear · raw curves, aligned (±1 SD) · {'black' if theme == 'light' else 'white'}: their "
-                 f"{word}", color=t["ink"], fontsize=10, loc="left")
-    ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"], ncol=min(len(members) + 1, 5))
+    ax.set_title(f"{EAR_NAMES.get(c.ear, c.ear)} ear · raw curves, aligned (±1 SD)", color=t["ink"], fontsize=10,
+                 loc="left")
+    ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"], ncol=min(len(members), 5))
 
     ax = axes[1]
+    ax.set_ylabel("dB", color=t["muted"], fontsize=8)
+    for mem in members:
+        n, sd = c.narrow[mem.label]
+        col = colors[mem.label]
+        ax.fill_between(common, n - sd, n + sd, color=col, alpha=0.12, linewidth=0)
+        ax.plot(common, n, color=col, linewidth=1.6, linestyle="-" if c.voting[mem.label] else "--")
+    ax.set_title(f"Narrow parts: each curve less its {SPLIT_OCT:g}-octave local linear smooth (±1 SD), as a "
+                 "consensus reference splits them", color=t["ink"], fontsize=10, loc="left")
+
+    ax = axes[2]
     ax.fill_between(common, 0, 1, where=c.differ, color=t["muted"], linewidth=0, step="mid")
     ax.set_ylim(0, 1)
     ax.set_yticks([])
@@ -90,9 +102,8 @@ def feature_rows(c: EarComparison, members: list[Member]) -> list[tuple]:
 
 def print_comparison(comparisons: dict[str, EarComparison], members: list[Member]) -> None:
     for e, c in comparisons.items():
-        word = "their mean" if c.voters == 2 else "soft median"
-        print(f"\n{EAR_NAMES.get(e, e)} ear: {word} of {c.voters} profiles, between-headphone spread "
-              f"{c.consensus.tau_hp:.2f} dB")
+        print(f"\n{EAR_NAMES.get(e, e)} ear: {c.voters} profiles voting, between-headphone spread "
+              f"{c.tau_hp:.2f} dB")
         if c.voters == 2:
             print("  Only two profiles: these are differences, not outliers.")
         rows = flag_rows(c)
@@ -119,9 +130,9 @@ def write_comparison(path: Path, comparisons: dict[str, EarComparison], members:
         light = _png(ear_figure(c, members, "light"))
         dark = _png(ear_figure(c, members, "dark"))
         out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
-                   f'<img src="{light}" alt="{EAR_NAMES.get(e, e)} ear: aligned curves and where they differ">'
+                   f'<img src="{light}" alt="{EAR_NAMES.get(e, e)} ear: aligned curves, narrow parts and where they differ">'
                    "</picture></div>")
-        out.append(f'<p class="meta">Between-headphone spread {c.consensus.tau_hp:.2f} dB.</p>')
+        out.append(f'<p class="meta">Between-headphone spread {c.tau_hp:.2f} dB.</p>')
         out.append("<h3>Flagged features</h3>")
         rows = flag_rows(c)
         out.append(_table(["profile", "ear", "centre", "height (dB)", "corrected (dB)", "reading"], rows)

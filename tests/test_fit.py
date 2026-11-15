@@ -316,7 +316,7 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     report = prof.dir / "cache" / "report.html"
     assert opened == [report.as_uri()]
     html = report.read_text()
-    assert html.count("<picture>") == 2 and "Left ear" in html and "Settings" in html
+    assert html.count("<picture>") == 4 and "Left ear" in html and "Settings" in html  # per ear: fit, reference
     assert main(["report"]) == 0 and len(opened) == 1  # no -H: text only
     assert "Fitting" not in capsys.readouterr().out  # cached
 

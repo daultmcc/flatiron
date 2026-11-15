@@ -403,9 +403,9 @@ Flatiron treats EQ as three layers: any system EQ active while measuring, the co
 
 # Several headphones on one listener
 
-**In brief.** A feature every headphone shows on this listener is probably the listener's own (pinna, concha, canal, hearing) and shouldn't be corrected. A feature only one headphone shows probably belongs to that headphone. Flatiron uses that in three separate tools, all built on one robust average of several profiles' curves, the *soft median*:
+**In brief.** A feature every headphone shows on this listener is probably the listener's own (pinna, concha, canal, hearing) and shouldn't be corrected. A feature only one headphone shows probably belongs to that headphone. Flatiron uses that in three separate tools. The consensus reference is built on a robust average of several profiles' curves, the *soft median*; the comparison forms no average at all:
 
-- **Comparison** (`flatiron compare`) shows the profiles' curves side by side and flags where one stands out. It fits no filters.
+- **Comparison** (`flatiron compare`) shows the profiles' curves and their narrow parts side by side, and flags where one stands out. It fits no filters.
 - **Consensus reference** (`config -r consensus:…`) uses a consensus of profiles' curves in place of the fixed reference $E$: their broad shape in full, and as much of their shared narrow structure as is believed to be the listener's, so that isn't corrected. Speakers listed with them decide how much that is.
 - **Veto** (`config --veto …`) keeps detection as it is, but corrects each feature only by as much as it exceeds the most typical matching feature across the headphones.
 
@@ -448,18 +448,19 @@ With only two profiles, the consensus is their precision-weighted mean, and the 
 
 ## Comparing profiles
 
-`compare A B C …` overlays two to eight profiles' raw curves per ear with their consensus, and says what the veto would correct on each. It fits no filters.
+`compare A B C …` overlays two to eight profiles' raw curves and their narrow parts per ear, and says what the veto would correct on each. It fits no filters, and forms no consensus: what a consensus reference keeps depends on a profile's settings (its prior, coupling and speakers), so `report` draws the reference a profile actually uses instead.
 
 **Inputs.** Each profile's cached perceptual fit, $\hat L_p$ with its covariance, from its own sessions and pooling. Settings are shared for the comparison: max feature width $W$ (`-w`, default 1 octave), reference (`-r`) and ear (`--ear L`, `R` or `both`). Without `-r`, the reference the profiles have in common is used; if they differ, Flatiron asks for `-r`. A consensus reference isn't used here: `diffuse` stands in, with a note. The listening level and $k$ come from the profiles when they all agree, and every other setting is at its default, including the veto's import limit. Profiles that share trials through pooling get a warning, since they'll agree more than separate measurements would.
 
 **What's reported, per ear:**
 
-1. **Aligned curves.** Each raw $\hat L_p$, with no reference subtracted whatever `-r` is (as with `-r none`), shifted by its robust offset $\alpha_p$, with ±1 SD bands, and the raw consensus on top with its own. The reference only matters for detection, so the flags and feature tables use it and the figure doesn't. A mean-based alignment would be pulled by a treble difference in one headphone. Broad tonal differences stay visible here, and only here.
-2. **Where the curves differ.** A strip shades frequencies where the aligned curves disagree as a whole (Cochran's Q, $p < 0.01$). It includes broad differences.
-3. **Flags.** A feature is flagged when the veto, in its feature mode, would correct it, so a flag always names something a veto would act on, and a broad difference can't produce one. A flag lists the profile, ear, centre, height, correction, and a reading: "peak only here", "peak elsewhere on the others", or "taller here than on the others", with the words for dips to match. With two profiles the reading is "differs from the other". Flags are sorted by the size of the correction.
-4. **All features.** One row per place, for features that all overlap each other, with each profile's height there and what the veto would correct. A feature missing from one headphone isn't flagged on it; it shows up here as a gap, and in the others' rows.
+1. **Aligned curves.** Each raw $\hat L_p$, with no reference subtracted whatever `-r` is (as with `-r none`), with ±1 SD bands, shifted by a constant offset that makes its precision-weighted median difference from the voters' pointwise median zero (iterated, the voters' offsets summing to zero). The median is used for alignment only, and isn't drawn. The reference only matters for detection, so the flags and feature tables use it and the figure doesn't. A mean-based alignment would be pulled by a treble difference in one headphone. Broad tonal differences stay visible here, and only here.
+2. **Narrow parts.** Each profile's narrow part, $N_p = (I - S_p)\hat L_p$ with the 0.75-octave split a consensus reference uses (see "Consensus reference"), with ±1 SD bands, overlaid. Whatever the headphones and speakers share there is what a consensus reference can keep.
+3. **Where the curves differ.** A strip shades frequencies where the aligned curves disagree as a whole (Cochran's Q, $p < 0.01$). It includes broad differences.
+4. **Flags.** A feature is flagged when the veto, in its feature mode, would correct it, so a flag always names something a veto would act on, and a broad difference can't produce one. A flag lists the profile, ear, centre, height, correction, and a reading: "peak only here", "peak elsewhere on the others", or "taller here than on the others", with the words for dips to match. With two profiles the reading is "differs from the other". Flags are sorted by the size of the correction.
+5. **All features.** One row per place, for features that all overlap each other, with each profile's height there and what the veto would correct. A feature missing from one headphone isn't flagged on it; it shows up here as a gap, and in the others' rows.
 
-Profiles of kind `iem` are drawn dashed and don't count toward the consensus or the veto unless `--include-kind iem`. They're measured against the voters' median without counting toward it, and their offset is a weighted median against the consensus. A comparison needs at least two voters. Profiles of kind `speaker` are treated the same way, with `--include-kind speaker`.
+Profiles of kind `iem` are drawn dashed and don't vote in the veto unless `--include-kind iem`. They're aligned against the voters' median without moving it. A comparison needs at least two voters. Profiles of kind `speaker` are treated the same way, with `--include-kind speaker`.
 
 This replaced an earlier report of residuals and pointwise z-scores. Each profile's baseline makes its own decision about what to reject, so the residuals disagreed more than the raw curves: on HD560, FT1 and Sundara, the RMS spread was 2.97 dB in the residuals against 2.66 dB raw in the left ear, and in the left-ear mids a 4 to 5 dB raw gap became 6 to 10 dB.
 
@@ -495,7 +496,7 @@ $$
 
 The split consensus (both soft medians, their weights and covariances, the disagreement, and each speaker's narrow part) is cached in the listener's folder (`cache/consensus/`), keyed by the ear, the headphones and speakers and each one's perceptual-fit hash, and pruned least-recently-used at 200 MB. A new session in any of them changes its fit, and so the key. $k$ depends on the settings and is worked out afterwards, which takes milliseconds.
 
-`report` says what the consensus kept: $k$ at 2, 4, 7 and 11 kHz per ear, the speakers, and the colouration and $s_k$ with where each came from.
+`report` says what the consensus kept: $k$ at 2, 4, 7 and 11 kHz per ear, the speakers, and the colouration and $s_k$ with where each came from. `report -H` draws, per ear, the broad median, the broad median plus all of the narrow median, and the reference itself (±1 SD), and below them $k$, $k_\text{hp}$ and the speakers' gain (±1 SD).
 
 **With the veto.** The veto still works with a consensus reference, but they overlap: the reference already keeps what the headphones share, and on real listening the veto's corrections were too conservative next to a consensus reference alone with narrow smoothing. `config` and `report` warn when both are on. The veto stays for when a consensus reference isn't available or trusted.
 
@@ -727,7 +728,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
     - Trials until time is up or the listener quits. The fitted curve is never shown during trials.
     - The end screen asks for a reseat before the next session.
     - For a speaker profile, instead: the level screen once per `run`, then per block a screen for the earplug alone when the open ear changes (and before a run's first block), showing which ear is open and which plugged, then a screen with the position, its angles in large digits; the first of these says how the last block went, then the block's trials, whose status line counts the block's trials. There's no end screen between blocks: only on Q, or when the plan is done (see "Speaker sessions").
-3. **Look** (`report`, `report -H`, and `compare` across headphones): per ear, $\hat L$ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the average; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled.
+3. **Look** (`report`, `report -H`, and `compare` across headphones): per ear, $\hat L$ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the average; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled. `report -H` also draws the reference in use, mean removed; for a consensus reference, its parts and $k$ (see "Consensus reference").
 4. **Adjust** (`config`), **listen** (`audition`), **verify** (`verify`, ideally after `config --checkpoint`), and **export**.
 
 # Validation

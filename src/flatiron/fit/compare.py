@@ -1,5 +1,7 @@
-"""Comparing profiles (DESIGN.md, "Comparing profiles"): their raw curves against each
-other, and for every feature what the veto would do with it.
+"""Comparing profiles (DESIGN.md, "Comparing profiles"): their raw curves and their
+narrow parts against each other, and for every feature what the veto would do
+with it. No consensus is formed: what a consensus reference keeps depends on a
+profile's settings, so `report` shows it instead.
 
 The curves show broad differences as they are, and only features can be flagged,
 so a broad difference between headphones can't produce a flag. A flag means the
@@ -10,7 +12,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from flatiron.fit.consensus import KINDS_VOTING, SoftMedian, Source, heterogeneity, raw_consensus
+from flatiron.fit.consensus import KINDS_VOTING, Source, estimate_tau_hp, heterogeneity, split_parts
 from flatiron.fit.features import weighted_median
 from flatiron.fit.pipeline import CorrectionSettings, correct_ear, ear_bases, voter_bases
 from flatiron.fit.veto import VetoResult, overlaps
@@ -59,8 +61,10 @@ class Seen:
 @dataclass
 class EarComparison:
     ear: str
-    consensus: SoftMedian
-    offsets: dict[str, float]  # each profile's level against the consensus
+    grid: np.ndarray  # the common grid
+    tau_hp: float  # between-headphone spread of the aligned curves
+    offsets: dict[str, float]  # each profile's level, for drawing the curves together
+    narrow: dict[str, tuple[np.ndarray, np.ndarray]]  # each profile's narrow part and its SD, on the common grid
     voting: dict[str, bool]
     differ: np.ndarray  # on the common grid: Cochran's Q, broad differences included
     groups: list[list[Seen]]  # overlapping same-sign features, one list per row, by frequency
@@ -74,10 +78,36 @@ class EarComparison:
         return sorted((s for g in self.groups for s in g if s.flagged), key=lambda s: -abs(s.correction_db))
 
 
-def _level_against(m: SoftMedian, f: ProbitFit) -> float:
-    """A profile's offset against a consensus it isn't in, as robustly as the fit's own."""
-    r = f.L - interp_matrix(m.grid, f.grid) @ m.m
-    return weighted_median(r, np.gradient(np.log2(f.grid)) / np.maximum(f.sd, 1e-6) ** 2)
+ALIGN_ITERS = 50
+
+
+def _weighted_median_offset(L: np.ndarray, ref: np.ndarray, grid: np.ndarray, sd: np.ndarray) -> float:
+    return weighted_median(L - ref, np.gradient(np.log2(grid)) / np.maximum(sd, 1e-6) ** 2)
+
+
+def align(voters: list[Source], others: list[Source], common: np.ndarray) -> dict[str, float]:
+    """Constant offsets that draw the curves together: each voter's weighted
+    median difference from the voters' pointwise median is zero (iterated,
+    offsets summing to zero), so one headphone's treble difference doesn't
+    shift its whole curve. Non-voters are aligned against that median without
+    moving it. Only for drawing; nothing else uses the median."""
+    up = {s.label: interp_matrix(s.grid, common) for s in voters + others}
+    Y = {s.label: up[s.label] @ s.R for s in voters}
+    sd = {s.label: up[s.label] @ s.sd for s in voters + others}
+    off = {s.label: 0.0 for s in voters}
+    for _ in range(ALIGN_ITERS):
+        med = np.median([Y[k] - off[k] for k in off], axis=0)
+        new = {k: _weighted_median_offset(Y[k], med, common, sd[k]) for k in off}
+        mean = np.mean(list(new.values()))
+        new = {k: v - mean for k, v in new.items()}
+        done = max(abs(new[k] - off[k]) for k in off) < 1e-3
+        off = new
+        if done:
+            break
+    med = np.median([Y[k] - off[k] for k in off], axis=0)
+    for s in others:
+        off[s.label] = _weighted_median_offset(up[s.label] @ s.R, med, common, sd[s.label])
+    return off
 
 
 def _grouped(seen: list[Seen]) -> list[list[Seen]]:
@@ -98,20 +128,25 @@ def _grouped(seen: list[Seen]) -> list[list[Seen]]:
 
 def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
                 voting_kinds=KINDS_VOTING) -> EarComparison:
-    """Every profile's curve aligned with the raw consensus of those that vote,
-    and every feature it would correct judged by the veto. One that doesn't vote
-    is measured against the voters' median without counting toward it."""
+    """Every profile's curve aligned with the others, its narrow part, and
+    every feature it would correct judged by the veto. One that doesn't vote
+    is aligned against the voters without counting toward anything."""
     voters = [m for m in members if m.kind in voting_kinds]
     if len(voters) < 2:
         raise ValueError(f"comparing needs at least two profiles that vote; "
                          f"{len(voters)} of these do (see --include-kind)")
-    sources = [Source(m.label, m.fits[ear].grid, m.fits[ear].L, m.fits[ear].cov) for m in voters]
-    sm = raw_consensus(sources)
-    offsets = {m.label: float(o) for m, o in zip(voters, sm.offsets)}
+    src = {m.label: Source(m.label, m.fits[ear].grid, m.fits[ear].L, m.fits[ear].cov, m.kind) for m in members}
+    sources = [src[m.label] for m in voters]
+    common = common_grid([s.grid for s in sources])
+    offsets = align(sources, [src[m.label] for m in members if m.kind not in voting_kinds], common)
+    narrow = {}
+    for m in members:
+        _, _, n = split_parts(src[m.label])
+        A = interp_matrix(n.grid, common)
+        narrow[m.label] = (A @ n.R, np.sqrt(np.clip(np.einsum("ij,jk,ik->i", A, n.cov, A), 0, None)))
     seen = []
     for m in members:
         voting = m.kind in voting_kinds
-        offsets.setdefault(m.label, _level_against(sm, m.fits[ear]))
         others = [(o.label, o.fits[ear]) for o in voters if o is not m]
         st = replace(settings, veto=tuple(label for label, _ in others), veto_mode="feature")
         # Shared baselines need both ears; they're cached, so the other ear's pass reuses them.
@@ -122,7 +157,7 @@ def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
             if f.veto is not None:
                 seen.append(Seen(m.label, voting, f.fc, f.width_oct, f.peak_db,
                                  f.veto.correction_db if f.accepted else 0.0, f.veto))
-    aligned = [replace(s, R=s.R - o) for s, o in zip(sources, sm.offsets)]
-    _, p = heterogeneity(aligned, common_grid([s.grid for s in aligned]))
-    return EarComparison(ear, sm, offsets, {m.label: m.kind in voting_kinds for m in members},
-                         p < HETEROGENEITY_P, _grouped(seen))
+    aligned = [replace(s, R=s.R - offsets[s.label]) for s in sources]
+    _, p = heterogeneity(aligned, common)
+    return EarComparison(ear, common, estimate_tau_hp(aligned, common), offsets, narrow,
+                         {m.label: m.kind in voting_kinds for m in members}, p < HETEROGENEITY_P, _grouped(seen))

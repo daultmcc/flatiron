@@ -10,7 +10,7 @@ import numpy as np
 
 from flatiron.fit.features import BROAD, NARROW
 from flatiron.fit.run import ProfileFit
-from flatiron.report.plots import EAR_NAMES, ear_figure
+from flatiron.report.plots import EAR_NAMES, ear_figure, reference_figure
 from flatiron.session.store import Profile
 
 CSS = """
@@ -187,6 +187,11 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
                    f'<img src="{light}" alt="{EAR_NAMES[e]} ear: measured level, residual and correction">'
                    f"</picture></div>")
+        ref = "consensus" if st.consensus else Path(st.reference).name
+        light = _png(reference_figure(c, ref, "light"))
+        dark = _png(reference_figure(c, ref, "dark"))
+        out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
+                   f'<img src="{light}" alt="{EAR_NAMES[e]} ear: the reference"></picture></div>')
         out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse rate {f.lapse:.1%} '
                    + (f"(shared: {f.noise_trials} trials in this ear across profiles), " if f.noise_trials
                       else "(the prior: estimating it needs a profile with 200 trials in this ear), ")

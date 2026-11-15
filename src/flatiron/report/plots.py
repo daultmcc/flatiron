@@ -7,6 +7,8 @@ Panels share a log-frequency axis:
   3. (two or more sessions) each seating's residual against the average;
      above MAX_SESSION_LINES sessions, the range holding the middle 90% of
      them (weighted by their trials) instead of a line each
+A second figure (reference_figure) draws the reference in use; for a consensus,
+its parts and the share of its narrow part kept.
 Colors are the dataviz reference palette's first three categorical slots,
 validated all-pairs in both modes; lines are direct-labelled because the light
 aqua sits under 3:1 contrast.
@@ -149,6 +151,70 @@ def ear_figure(c: EarCorrection, session_R: list[np.ndarray] | None = None, them
         ax.set_ylabel("dB", color=t["muted"], fontsize=8)
     axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
 
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, facecolor=t["surface"], bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def reference_figure(c: EarCorrection, reference_name: str, theme: str = "light") -> bytes:
+    """The reference as used, mean removed. For a consensus: its broad median,
+    the broad median plus all of the shared narrow part, and the reference
+    itself (±1 SD); then how much of the narrow part is kept, k, with what it
+    came from."""
+    t = THEMES[theme]
+    x = c.consensus
+    n = 1 if x is None else 2
+    fig, axes = plt.subplots(n, 1, figsize=(8.2, 2.7 * n + 0.4), sharex=True, facecolor=t["surface"],
+                             gridspec_kw={"hspace": 0.38}, squeeze=False)
+    axes = axes[:, 0]
+    name = EAR_NAMES.get(c.ear, c.ear)
+    ax = axes[0]
+    if x is None:
+        g = c.grid
+        _style(ax, t, g[0], g[-1])
+        ax.plot(g, c.E, color=t["s1"], linewidth=2)
+        ax.set_title(f"{name} ear · reference: {reference_name}", color=t["ink"], fontsize=10, loc="left")
+    else:
+        g = x.grid
+        _style(ax, t, g[0], g[-1])
+        shift = x.m.mean()
+        sd = np.sqrt(np.clip(np.diag(x.cov), 0, None))
+        full = x.broad + x.narrow - shift
+        ax.plot(g, x.broad - shift, color=t["s2"], linewidth=1.6)
+        ax.plot(g, full, color=t["s3"], linewidth=1.4, linestyle="--")
+        ax.fill_between(g, x.m - shift - sd, x.m - shift + sd, color=t["s1"], alpha=0.18, linewidth=0)
+        ax.plot(g, x.m - shift, color=t["s1"], linewidth=2.2)
+        ends = sorted([(x.m[-1] - shift, "reference ±1 SD", t["s1"]), (x.broad[-1] - shift, "broad median", t["s2"]),
+                       (full[-1], "broad + all narrow", t["s3"])])
+        span = max(np.ptp(full), 4)
+        for k, (y, text, col) in enumerate(ends):
+            _label_end(ax, g[-1], y, text, col, t, dy=(k - 1) * span * 0.12)
+        ax.set_title(f"{name} ear · consensus reference of {', '.join(x.members)}: broad + k · narrow",
+                     color=t["ink"], fontsize=10, loc="left")
+
+        ax = axes[1]
+        _style(ax, t, g[0], g[-1])
+        sh = x.share
+        ends = [(sh.k[-1], "k", t["s1"]), (sh.k_hp[-1], "headphones only", t["s2"])]
+        if sh.g is not None:
+            lo, hi = np.clip(sh.g - sh.g_sd, -0.5, 1.5), np.clip(sh.g + sh.g_sd, -0.5, 1.5)
+            ax.fill_between(g, lo, hi, color=t["s3"], alpha=0.15, linewidth=0)
+            ax.plot(g, np.clip(sh.g, -0.5, 1.5), color=t["s3"], linewidth=1.4, linestyle="--")
+            ends.append((float(np.clip(sh.g[-1], -0.5, 1.5)), "speaker gain ±1 SD", t["s3"]))
+        ax.plot(g, sh.k_hp, color=t["s2"], linewidth=1.6)
+        ax.plot(g, sh.k, color=t["s1"], linewidth=2.2)
+        ax.axhline(1, color=t["axis"], linewidth=0.8)
+        ax.set_ylim(-0.5, 1.5)
+        for k, (y, text, col) in enumerate(sorted(ends)):
+            _label_end(ax, g[-1], y, text, col, t, dy=(k - (len(ends) - 1) / 2) * 0.18)
+        speakers = x.shares.speakers if x.shares is not None else []
+        ax.set_title("Share of the narrow median kept, k" + (f" · speakers: {', '.join(speakers)} (gain clipped to "
+                                                             "−0.5..1.5 for display)" if speakers else ""),
+                     color=t["ink"], fontsize=10, loc="left")
+        ax.set_ylabel("share", color=t["muted"], fontsize=8)
+    axes[0].set_ylabel("dB", color=t["muted"], fontsize=8)
+    axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, facecolor=t["surface"], bbox_inches="tight")
     plt.close(fig)
