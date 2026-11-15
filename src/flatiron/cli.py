@@ -1140,10 +1140,13 @@ def cmd_compare(args):
         if announce:
             announce.pop()()
 
+    if args.broad_spread is not None and args.broad_spread < 0:
+        print("--broad-spread can't be negative.")
+        return 1
     try:
         members = [Member(name_of(p), p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
                    for p in profiles]
-        comparisons = compare(members, st, ears, voting)
+        comparisons = compare(members, st, ears, voting, args.broad_spread)
     except (NotEnoughTrials, ValueError) as e:
         print(e)
         return 1
@@ -1555,14 +1558,16 @@ def main(argv=None):
     s.add_argument("--csv", metavar="FILE", help="dump the level, reference, baseline and residual with SDs, per ear")
     s.set_defaults(func=cmd_report)
 
-    s = sub.add_parser("compare", help="compare profiles per ear: their curves, soft median, and where one stands out")
+    s = sub.add_parser("compare", help="compare profiles per ear: their curves, narrow parts, and where one stands out")
     s.add_argument("profiles", nargs="+", metavar="PROFILE", help="two to eight profiles")
     s.add_argument("-H", "--html", action="store_true", help="also open the HTML comparison in a browser")
     s.add_argument("-w", "--width", type=float, help="max feature width W in octaves (default 1)")
     s.add_argument("-r", "--reference", help="reference (default: the one the profiles share)")
     s.add_argument("--ear", choices=("L", "R", "both"), default="both", help="which ear")
     s.add_argument("--include-kind", action="append", choices=("iem", "speaker"),
-                   help="let this kind count toward the consensus (it's drawn dashed either way)")
+                   help="let this kind vote in the veto and the alignment (it's drawn dashed either way)")
+    s.add_argument("--broad-spread", type=float, metavar="DB",
+                   help="shade where the broad parts (tonality) span more than this between profiles (default 4 dB)")
     s.set_defaults(func=cmd_compare)
 
     s = sub.add_parser("export", help="write the current fit's correction for an EQ host")

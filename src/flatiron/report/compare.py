@@ -24,8 +24,9 @@ SERIES = {"light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008
 MAX_PROFILES = len(SERIES["light"])
 
 
-def compare(members: list[Member], settings: CorrectionSettings, ears, voting_kinds) -> dict[str, EarComparison]:
-    return {e: compare_ear(e, members, settings, voting_kinds) for e in ears}
+def compare(members: list[Member], settings: CorrectionSettings, ears, voting_kinds,
+            broad_spread_db: float | None = None) -> dict[str, EarComparison]:
+    return {e: compare_ear(e, members, settings, voting_kinds, broad_spread_db) for e in ears}
 
 
 def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
@@ -68,12 +69,14 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     ax.set_title(f"Narrow parts: each curve less its {SPLIT_OCT:g}-octave local linear smooth (±1 SD), as a "
                  "consensus reference splits them", color=t["ink"], fontsize=10, loc="left")
 
-    for ax, where, what in ((axes[2], c.differ_broad, "broad parts (aligned)"), (axes[3], c.differ_narrow, "narrow parts")):
+    for ax, where, title in ((axes[2], c.differ_broad, f"Where the broad parts (tonality, aligned) span more than "
+                                                      f"{c.broad_spread_db:g} dB"),
+                             (axes[3], c.differ_narrow, "Where the narrow parts differ (Cochran's Q, p < 0.01)")):
         ax.fill_between(common, 0, 1, where=where, color=t["muted"], linewidth=0, step="mid")
         ax.set_ylim(0, 1)
         ax.set_yticks([])
         ax.grid(False)
-        ax.set_title(f"Where the {what} differ (Cochran's Q, p < 0.01)", color=t["ink2"], fontsize=8, loc="left")
+        ax.set_title(title, color=t["ink2"], fontsize=8, loc="left")
     axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, facecolor=t["surface"], bbox_inches="tight")

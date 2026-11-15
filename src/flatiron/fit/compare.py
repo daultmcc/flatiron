@@ -20,6 +20,10 @@ from flatiron.model.grid import common_grid, interp_matrix
 from flatiron.model.probit import ProbitFit
 
 HETEROGENEITY_P = 0.01
+# Broad parts are tonality: they always differ, so what's shaded is where they
+# differ most, by this much from the highest to the lowest (dB). On the real
+# profiles about 10 to 17% of 1 to 13 kHz spans more than this.
+BROAD_SPREAD_DB = 4.0
 
 
 @dataclass
@@ -66,9 +70,11 @@ class EarComparison:
     offsets: dict[str, float]  # each profile's level, for drawing the curves together
     narrow: dict[str, tuple[np.ndarray, np.ndarray]]  # each profile's narrow part and its SD, on the common grid
     voting: dict[str, bool]
-    differ_broad: np.ndarray  # on the common grid: Cochran's Q on the aligned broad parts
-    differ_narrow: np.ndarray  # and on the narrow parts
+    differ_broad: np.ndarray  # on the common grid: where the aligned broad parts span more than broad_spread_db
+    differ_narrow: np.ndarray  # where the narrow parts differ beyond their error bars (Cochran's Q)
     groups: list[list[Seen]]  # overlapping same-sign features, one list per row, by frequency
+    broad_spread: np.ndarray  # highest minus lowest aligned broad part, voters only
+    broad_spread_db: float = BROAD_SPREAD_DB
 
     @property
     def voters(self) -> int:
@@ -128,7 +134,7 @@ def _grouped(seen: list[Seen]) -> list[list[Seen]]:
 
 
 def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
-                voting_kinds=KINDS_VOTING) -> EarComparison:
+                voting_kinds=KINDS_VOTING, broad_spread_db: float | None = None) -> EarComparison:
     """Every profile's curve aligned with the others, its narrow part, and
     every feature it would correct judged by the veto. One that doesn't vote
     is aligned against the voters without counting toward anything."""
@@ -160,9 +166,11 @@ def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
                 seen.append(Seen(m.label, voting, f.fc, f.width_oct, f.peak_db,
                                  f.veto.correction_db if f.accepted else 0.0, f.veto))
     aligned = [replace(s, R=s.R - offsets[s.label]) for s in sources]
-    _, p_broad = heterogeneity([replace(parts[s.label][0], R=parts[s.label][0].R - offsets[s.label]) for s in sources],
-                               common)
+    broad_spread_db = BROAD_SPREAD_DB if broad_spread_db is None else broad_spread_db
+    broad = np.array([interp_matrix(parts[s.label][0].grid, common) @ parts[s.label][0].R - offsets[s.label]
+                      for s in sources])
+    spread = np.ptp(broad, axis=0)
     _, p_narrow = heterogeneity([parts[s.label][1] for s in sources], common)
     return EarComparison(ear, common, estimate_tau_hp(aligned, common), offsets, narrow,
-                         {m.label: m.kind in voting_kinds for m in members}, p_broad < HETEROGENEITY_P,
-                         p_narrow < HETEROGENEITY_P, _grouped(seen))
+                         {m.label: m.kind in voting_kinds for m in members}, spread > broad_spread_db,
+                         p_narrow < HETEROGENEITY_P, _grouped(seen), spread, broad_spread_db)

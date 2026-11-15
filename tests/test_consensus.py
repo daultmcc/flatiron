@@ -240,6 +240,16 @@ def test_a_broad_difference_shows_in_the_strip_but_is_not_flagged():
     assert c.differ_broad[i] and not c.differ_narrow[i]
 
 
+def test_the_broad_strip_marks_the_largest_tonal_differences_only():
+    """Tonality always differs: a fixed span, not significance, decides what's shaded."""
+    small = bump(3000, 1.5, 2.0)
+    members = [_member(small, "a"), _member(np.zeros(G.size), "b"), _member(np.zeros(G.size), "c")]
+    c = compare_ear("L", members, NONE)
+    i = np.argmin(np.abs(c.grid - 3000))
+    assert 1.0 < c.broad_spread[i] < 2.5 and not c.differ_broad.any()  # less what the alignment takes
+    assert compare_ear("L", members, NONE, broad_spread_db=1.0).differ_broad[i]
+
+
 def test_a_peak_elsewhere_on_the_others_says_so():
     here, there = bump(8000, 0.3, 7.0), bump(7000, 0.3, 6.0)
     c = compare_ear("L", [_member(here, "a"), _member(there, "b"), _member(there, "c")], NONE)
@@ -737,6 +747,8 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
     assert page.count("<picture>") == 1 and "Left ear" in page and "All features" in page
     assert "aligned curves, narrow parts" in page and "soft median" not in page
+    assert main(["compare", "One", "Two", "--broad-spread", "-1"]) == 1
+    assert main(["compare", "One", "Two", "--broad-spread", "2"]) == 0
     assert main(["compare", "One", "Two"]) == 0
     assert "differences, not outliers" in capsys.readouterr().out
 
