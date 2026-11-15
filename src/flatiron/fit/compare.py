@@ -66,7 +66,8 @@ class EarComparison:
     offsets: dict[str, float]  # each profile's level, for drawing the curves together
     narrow: dict[str, tuple[np.ndarray, np.ndarray]]  # each profile's narrow part and its SD, on the common grid
     voting: dict[str, bool]
-    differ: np.ndarray  # on the common grid: Cochran's Q, broad differences included
+    differ_broad: np.ndarray  # on the common grid: Cochran's Q on the aligned broad parts
+    differ_narrow: np.ndarray  # and on the narrow parts
     groups: list[list[Seen]]  # overlapping same-sign features, one list per row, by frequency
 
     @property
@@ -139,9 +140,10 @@ def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
     sources = [src[m.label] for m in voters]
     common = common_grid([s.grid for s in sources])
     offsets = align(sources, [src[m.label] for m in members if m.kind not in voting_kinds], common)
-    narrow = {}
+    narrow, parts = {}, {}
     for m in members:
-        _, _, n = split_parts(src[m.label])
+        _, b, n = split_parts(src[m.label])
+        parts[m.label] = (b, n)
         A = interp_matrix(n.grid, common)
         narrow[m.label] = (A @ n.R, np.sqrt(np.clip(np.einsum("ij,jk,ik->i", A, n.cov, A), 0, None)))
     seen = []
@@ -158,6 +160,9 @@ def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
                 seen.append(Seen(m.label, voting, f.fc, f.width_oct, f.peak_db,
                                  f.veto.correction_db if f.accepted else 0.0, f.veto))
     aligned = [replace(s, R=s.R - offsets[s.label]) for s in sources]
-    _, p = heterogeneity(aligned, common)
+    _, p_broad = heterogeneity([replace(parts[s.label][0], R=parts[s.label][0].R - offsets[s.label]) for s in sources],
+                               common)
+    _, p_narrow = heterogeneity([parts[s.label][1] for s in sources], common)
     return EarComparison(ear, common, estimate_tau_hp(aligned, common), offsets, narrow,
-                         {m.label: m.kind in voting_kinds for m in members}, p < HETEROGENEITY_P, _grouped(seen))
+                         {m.label: m.kind in voting_kinds for m in members}, p_broad < HETEROGENEITY_P,
+                         p_narrow < HETEROGENEITY_P, _grouped(seen))

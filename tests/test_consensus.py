@@ -221,7 +221,7 @@ def test_one_headphone_standing_out_is_flagged_on_it_alone():
     assert {s.label for s in c.flags} == {"a"}
     s = c.flags[0]
     assert abs(np.log2(s.fc / 5800)) < 1 / 24 and s.correction_db < -3.0 and s.reading == "peak only here"
-    assert c.differ[np.argmin(np.abs(c.grid - 5800))]
+    assert c.differ_narrow[np.argmin(np.abs(c.grid - 5800))]
 
 
 def test_a_feature_every_headphone_shares_is_not_flagged():
@@ -236,7 +236,8 @@ def test_a_broad_difference_shows_in_the_strip_but_is_not_flagged():
     broad = bump(3000, 1.5, 7.0)
     c = compare_ear("L", [_member(broad, "a"), _member(np.zeros(G.size), "b"), _member(np.zeros(G.size), "c")], NONE)
     assert not [s for s in c.flags if abs(np.log2(s.fc / 3000)) < 0.5]
-    assert c.differ[np.argmin(np.abs(c.grid - 3000))]
+    i = np.argmin(np.abs(c.grid - 3000))
+    assert c.differ_broad[i] and not c.differ_narrow[i]
 
 
 def test_a_peak_elsewhere_on_the_others_says_so():

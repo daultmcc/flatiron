@@ -31,12 +31,12 @@ def compare(members: list[Member], settings: CorrectionSettings, ears, voting_ki
 def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     """The raw curves, with no reference subtracted (as with -r none), whatever reference
     the features were judged against: the profiles are compared to each other, not to it.
-    Then their narrow parts, overlaid, and where the curves differ."""
+    Then their narrow parts, overlaid, and where the broad and the narrow parts differ."""
     t = THEMES[theme]
     colors = dict(zip([m.label for m in members], SERIES[theme]))
     common = c.grid
-    fig, axes = plt.subplots(3, 1, figsize=(8.6, 8.4), sharex=True, facecolor=t["surface"],
-                             gridspec_kw={"hspace": 0.32, "height_ratios": [8, 6, 0.5]})
+    fig, axes = plt.subplots(4, 1, figsize=(8.6, 9.0), sharex=True, facecolor=t["surface"],
+                             gridspec_kw={"hspace": 0.32, "height_ratios": [8, 6, 0.5, 0.5]})
     for ax in axes:
         _style(ax, t, common[0], common[-1])
 
@@ -68,14 +68,13 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     ax.set_title(f"Narrow parts: each curve less its {SPLIT_OCT:g}-octave local linear smooth (±1 SD), as a "
                  "consensus reference splits them", color=t["ink"], fontsize=10, loc="left")
 
-    ax = axes[2]
-    ax.fill_between(common, 0, 1, where=c.differ, color=t["muted"], linewidth=0, step="mid")
-    ax.set_ylim(0, 1)
-    ax.set_yticks([])
-    ax.grid(False)
-    ax.set_title("Where the curves differ, broad differences included (Cochran's Q, p < 0.01)", color=t["ink2"],
-                 fontsize=8, loc="left")
-    ax.set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
+    for ax, where, what in ((axes[2], c.differ_broad, "broad parts (aligned)"), (axes[3], c.differ_narrow, "narrow parts")):
+        ax.fill_between(common, 0, 1, where=where, color=t["muted"], linewidth=0, step="mid")
+        ax.set_ylim(0, 1)
+        ax.set_yticks([])
+        ax.grid(False)
+        ax.set_title(f"Where the {what} differ (Cochran's Q, p < 0.01)", color=t["ink2"], fontsize=8, loc="left")
+    axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, facecolor=t["surface"], bbox_inches="tight")
     plt.close(fig)

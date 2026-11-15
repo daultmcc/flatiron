@@ -198,19 +198,24 @@ def reference_figure(c: EarCorrection, reference_name: str, theme: str = "light"
         sh = x.share
         ends = [(sh.k[-1], "k", t["s1"]), (sh.k_hp[-1], "headphones only", t["s2"])]
         if sh.g is not None:
-            lo, hi = np.clip(sh.g - sh.g_sd, -0.5, 1.5), np.clip(sh.g + sh.g_sd, -0.5, 1.5)
+            lo, hi = np.clip(sh.g - sh.g_sd, 0, 1), np.clip(sh.g + sh.g_sd, 0, 1)
             ax.fill_between(g, lo, hi, color=t["s3"], alpha=0.15, linewidth=0)
-            ax.plot(g, np.clip(sh.g, -0.5, 1.5), color=t["s3"], linewidth=1.4, linestyle="--")
-            ends.append((float(np.clip(sh.g[-1], -0.5, 1.5)), "speaker gain ±1 SD", t["s3"]))
+            ax.plot(g, np.clip(sh.g, 0, 1), color=t["s3"], linewidth=1.4, linestyle="--")
+            ends.append((float(np.clip(sh.g[-1], 0, 1)), "speaker gain ±1 SD", t["s3"]))
         ax.plot(g, sh.k_hp, color=t["s2"], linewidth=1.6)
         ax.plot(g, sh.k, color=t["s1"], linewidth=2.2)
         ax.axhline(1, color=t["axis"], linewidth=0.8)
-        ax.set_ylim(-0.5, 1.5)
-        for k, (y, text, col) in enumerate(sorted(ends)):
-            _label_end(ax, g[-1], y, text, col, t, dy=(k - (len(ends) - 1) / 2) * 0.18)
+        ax.set_ylim(0, 1)
+        ys = [y for y, _, _ in sorted(ends)]
+        pos = np.clip([y + (k - (len(ends) - 1) / 2) * 0.1 for k, y in enumerate(ys)], 0.05, 0.95)
+        for k in range(1, len(pos)):  # clipping can stack them: keep them apart, top down
+            pos[k] = max(pos[k], pos[k - 1] + 0.09)
+        pos = pos - max(pos[-1] - 0.95, 0)
+        for p, (y, text, col) in zip(pos, sorted(ends)):
+            _label_end(ax, g[-1], p, text, col, t)
         speakers = x.shares.speakers if x.shares is not None else []
         ax.set_title("Share of the narrow median kept, k" + (f" · speakers: {', '.join(speakers)} (gain clipped to "
-                                                             "−0.5..1.5 for display)" if speakers else ""),
+                                                             "0..1, as k uses it)" if speakers else ""),
                      color=t["ink"], fontsize=10, loc="left")
         ax.set_ylabel("share", color=t["muted"], fontsize=8)
     axes[0].set_ylabel("dB", color=t["muted"], fontsize=8)
