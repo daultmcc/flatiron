@@ -405,7 +405,7 @@ Flatiron treats EQ as three layers: any system EQ active while measuring, the co
 
 **In brief.** A feature every headphone shows on this listener is probably the listener's own (pinna, concha, canal, hearing) and shouldn't be corrected. A feature only one headphone shows probably belongs to that headphone. Flatiron uses that in three separate tools. The consensus reference is built on a robust average of several profiles' curves, the *soft median*; the comparison forms no average at all:
 
-- **Comparison** (`flatiron compare`) shows the profiles' curves and their narrow parts side by side, and flags where one stands out. It fits no filters.
+- **Comparison** (`flatiron compare`) shows the profiles' curves and their narrow parts overlaid, and shades where they differ most. It fits no filters and uses no reference.
 - **Consensus reference** (`config -r consensus:…`) uses a consensus of profiles' curves in place of the fixed reference $E$: their broad shape in full, and as much of their shared narrow structure as is believed to be the listener's, so that isn't corrected. Speakers listed with them decide how much that is.
 - **Veto** (`config --veto …`) keeps detection as it is, but corrects each feature only by as much as it exceeds the most typical matching feature across the headphones.
 
@@ -415,7 +415,7 @@ Profiles of kind `iem` don't count toward a consensus or a veto by default. They
 
 ## Grids
 
-Each fit stays on its own grid of about 100 to 110 points, and detection, flags and the soft median's misfit are computed there. Interpolating a fit onto a finer grid adds no measurements: the new points are mixes of their neighbours, so a 399-point curve still holds only about 106 independent values. Treating those points as separate data would make the two-point rule meaningless and the error bars too small (see "Grid" under "Findings").
+Each fit stays on its own grid of about 100 to 110 points, and detection and the soft median's misfit are computed there. Interpolating a fit onto a finer grid adds no measurements: the new points are mixes of their neighbours, so a 399-point curve still holds only about 106 independent values. Treating those points as separate data would make the two-point rule meaningless and the error bars too small (see "Grid" under "Findings").
 
 Shared curves such as the consensus live on a common 1/48-octave grid, the finest any fit uses, over the intersection of the measured ranges, and meet a profile on that profile's own grid through $A_p$. The comparison figure is drawn on the common grid. The between-headphone spread $\tau_\text{hp}$ and Cochran's Q are also computed there, point by point from the interpolated curves and variances, so correlated neighbours in the strip below aren't separate evidence. The 1/96-octave grid is used only for the filter fit (with the target and response curves it produces) and to compare feature shapes in the veto.
 
@@ -444,23 +444,24 @@ $$
 
     Per-frequency weights alone ignore the correlation between neighbouring points and make the SD too small (see "Grid" under "Findings"). This treats the final weights as fixed, which criterion 10 tests.
 
-With only two profiles, the consensus is their precision-weighted mean, and the report says so. The flags then show differences, not outliers.
+With only two profiles, the consensus is their precision-weighted mean, and the report says so.
 
 ## Comparing profiles
 
-`compare A B C …` overlays two to eight profiles' raw curves and their narrow parts per ear, and says what the veto would correct on each. It fits no filters, and forms no consensus: what a consensus reference keeps depends on a profile's settings (its prior, coupling and speakers), so `report` draws the reference a profile actually uses instead.
+`compare A B C …` overlays two to eight profiles' raw curves and their narrow parts per ear, and shades where they differ most. It fits no filters, uses no reference, and forms no consensus: what a consensus reference keeps depends on a profile's settings (its prior, coupling and speakers), so `report` draws the reference a profile actually uses instead.
 
-**Inputs.** Each profile's cached perceptual fit, $\hat L_p$ with its covariance, from its own sessions and pooling. Settings are shared for the comparison: max feature width $W$ (`-w`, default 1 octave), reference (`-r`) and ear (`--ear L`, `R` or `both`). Without `-r`, the reference the profiles have in common is used; if they differ, Flatiron asks for `-r`. A consensus reference isn't used here: `diffuse` stands in, with a note. The listening level and $k$ come from the profiles when they all agree, and every other setting is at its default, including the veto's import limit. Profiles that share trials through pooling get a warning, since they'll agree more than separate measurements would.
+**Inputs.** Each profile's cached perceptual fit, $\hat L_p$ with its covariance, from its own sessions and pooling. The only settings are the ear (`--ear L`, `R` or `both`), `--broad-spread` and `--include-kind`. Profiles that share trials through pooling get a warning, since they'll agree more than separate measurements would.
 
-**What's reported, per ear:**
+**What's reported, per ear** (side by side in the HTML page):
 
-1. **Aligned curves.** Each raw $\hat L_p$, with no reference subtracted whatever `-r` is (as with `-r none`), with ±1 SD bands, shifted by a constant offset that makes its precision-weighted median difference from the voters' pointwise median zero (iterated, the voters' offsets summing to zero). The median is used for alignment only, and isn't drawn. The reference only matters for detection, so the flags and feature tables use it and the figure doesn't. A mean-based alignment would be pulled by a treble difference in one headphone. Broad tonal differences stay visible here, and only here.
+1. **Aligned curves.** Each raw $\hat L_p$, with no reference subtracted, with ±1 SD bands, shifted by a constant offset that makes its precision-weighted median difference from the counted profiles' pointwise median zero (iterated, the counted profiles' offsets summing to zero). The median is used for alignment only, and isn't drawn. A mean-based alignment would be pulled by a treble difference in one headphone. Broad tonal differences stay visible here, and only here.
 2. **Narrow parts.** Each profile's narrow part, $N_p = (I - S_p)\hat L_p$ with the 0.75-octave split a consensus reference uses (see "Consensus reference"), with ±1 SD bands, overlaid. Whatever the headphones and speakers share there is what a consensus reference can keep.
-3. **Where they differ most.** Two strips on the common grid. The broad one shades where the voters' aligned broad parts span more than `--broad-spread` (default 4 dB) from highest to lowest. The broad parts are tonality, which always differs between headphones, and their error bars are small (smoothing averages the noise), so a significance test shaded most of the range; what matters is where the differences are largest. On the real profiles about 10 to 17% of 1 to 13 kHz spans more than 4 dB (the median span is about 3 dB). The narrow one shades where the narrow parts differ beyond their error bars (Cochran's Q, $p < 0.01$).
-4. **Flags.** A feature is flagged when the veto, in its feature mode, would correct it, so a flag always names something a veto would act on, and a broad difference can't produce one. A flag lists the profile, ear, centre, height, correction, and a reading: "peak only here", "peak elsewhere on the others", or "taller here than on the others", with the words for dips to match. With two profiles the reading is "differs from the other". Flags are sorted by the size of the correction.
-5. **All features.** One row per place, for features that all overlap each other, with each profile's height there and what the veto would correct. A feature missing from one headphone isn't flagged on it; it shows up here as a gap, and in the others' rows.
+3. **Where they differ most.** Two strips on the common grid, also printed as frequency ranges. The broad one shades where the counted profiles' aligned broad parts span more than `--broad-spread` (default 4 dB) from highest to lowest. The broad parts are tonality, which always differs between headphones, and their error bars are small (smoothing averages the noise), so a significance test shaded most of the range; what matters is where the differences are largest. On the real profiles about 10 to 17% of 1 to 13 kHz spans more than 4 dB (the median span is about 3 dB). The narrow one shades where the narrow parts differ beyond their error bars (Cochran's Q, $p < 0.01$).
+4. **Spread.** The between-profile spread $\tau_\text{hp}$ of the aligned curves, as the consensus estimates it.
 
-Profiles of kind `iem` are drawn dashed and don't vote in the veto unless `--include-kind iem`. They're aligned against the voters' median without moving it. A comparison needs at least two voters. Profiles of kind `speaker` are treated the same way, with `--include-kind speaker`.
+Profiles of kind `iem` and `speaker` are drawn dashed and don't count toward the alignment, the spread or the strips unless `--include-kind iem` (or `speaker`). They're aligned against the counted profiles' median without moving it. With fewer than two profiles of a counted kind, all of them count, and the report says so.
+
+An earlier version also listed every feature with what the veto, in its feature mode, would correct on each headphone, and flagged the ones it would correct (criterion 1). That needed a shared reference and two voters, and the lists weren't found useful in practice, so it was removed; `config --veto` still does the same on a real fit.
 
 This replaced an earlier report of residuals and pointwise z-scores. Each profile's baseline makes its own decision about what to reject, so the residuals disagreed more than the raw curves: on HD560, FT1 and Sundara, the RMS spread was 2.97 dB in the residuals against 2.66 dB raw in the left ear, and in the left-ear mids a 4 to 5 dB raw gap became 6 to 10 dB.
 
@@ -496,7 +497,7 @@ $$
 
 The split consensus (both soft medians, their weights and covariances, the disagreement, and each speaker's narrow part) is cached in the listener's folder (`cache/consensus/`), keyed by the ear, the headphones and speakers and each one's perceptual-fit hash, and pruned least-recently-used at 200 MB. A new session in any of them changes its fit, and so the key. $k$ depends on the settings and is worked out afterwards, which takes milliseconds.
 
-`report` says what the consensus kept: $k$ at 2, 4, 7 and 11 kHz per ear, the speakers, and the colouration and $s_k$ with where each came from. `report -H` draws, per ear, the broad median, the broad median plus all of the narrow median, and the reference itself (±1 SD), and below them $k$, $k_\text{hp}$ and the speakers' gain (±1 SD), all on $[0, 1]$, the gain clipped as $k$ uses it.
+`report` says what the consensus kept: $k$ at 2, 4, 7 and 11 kHz per ear, the speakers, and the colouration and $s_k$ with where each came from. `report`'s HTML page draws, per ear, the broad median, the broad median plus all of the narrow median, and the reference itself (±1 SD), and below them $k$, $k_\text{hp}$ and the speakers' gain (±1 SD), all on $[0, 1]$, the gain clipped as $k$ uses it.
 
 **With the veto.** The veto still works with a consensus reference, but they overlap: the reference already keeps what the headphones share, and on real listening the veto's corrections were too conservative next to a consensus reference alone with narrow smoothing. `config` and `report` warn when both are on. The veto stays for when a consensus reference isn't available or trusted.
 
@@ -653,7 +654,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 - `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
 - `model/`: grids (with the common grid and the interpolation $A_p$), the trials and fit types, the hierarchical fit (one ear, and both under the balance prior), and grid refinement.
 - `session/`: the adaptive scheduler, the trial runner (scheduler, stimuli and session file, without UI), storage (listeners, profiles and sessions, and the one-off migration), and the sweep.
-- `fit/`: reference, baseline (robust, and joint in `decompose.py`), features, filter fitting, the correction pipeline, the consensus, the comparison's flags and rows, the veto, and the per-profile fit (cache, settings, pooling, consensus, checkpoint).
+- `fit/`: reference, baseline (robust, and joint in `decompose.py`), features, filter fitting, the correction pipeline, the consensus, the comparison's alignment and strips, the veto, and the per-profile fit (cache, settings, pooling, consensus, checkpoint).
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
 - `report/`: figures, the HTML report, and the comparison report.
 - `ui/`: the trial app (level, channel check, sweep, trials, end screen), audition, and the tone generator.
@@ -679,8 +680,8 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | `profiles` | Lists profiles (sessions, trials per ear, last date and level, sessions not closed), grouped by listener when there are several, or changes them | `new NAME --kind headphone`, `iem` or `speaker` (with `--channel L` or `R`); `set NAME --kind … --label …`, which affects no trials; `move NAME --to LISTENER` |
 | `sessions` | Lists sessions: trials per ear, minutes, catch-trial accuracy, fast answers, share choosing the first interval, EQ context, verify and not-closed marks | `PROFILE`, `--delete ID` (a session left open by a crash, say), `-y`/`--yes` |
 | `config` | Shows or changes settings (see "Settings") | `PROFILE`, the options in "Settings", `--reset NAME,NAME` or `all`, `--checkpoint` |
-| `report` | Prints filters and features, and notes on the seating spread, noise and bias | `PROFILE`, `-H`/`--html`, `--csv FILE` |
-| `compare` | Compares profiles (see "Comparing profiles") | Two to eight profiles, from any listeners, `-H`/`--html`, `-w`, `-r`, `--ear`, `--include-kind iem`, `--broad-spread DB` |
+| `report` | Prints filters and features, and notes on the seating spread, noise and bias; writes the HTML report and opens it | `PROFILE`, `-H`/`--no-html` (write it but don't open it), `--csv FILE` |
+| `compare` | Compares profiles (see "Comparing profiles"); writes the HTML page and opens it | Two to eight profiles, from any listeners, `-H`/`--no-html`, `--ear`, `--include-kind iem`, `--broad-spread DB` |
 | `export` | Writes the correction | `PROFILE`, `-t`/`--target` (required: `apo`, `lsp`, `easyeffects`, `pipewire` or `tincan`), `-o`/`--output`, `--merge FILE` or `--merge L=FILE --merge R=FILE`, `--preamp safe` or `DB` |
 | `simulate` | Runs a simulated listener (see "Validation") | `--trials-per-ear` (default 600), `--seed`, `--design adaptive` or `uniform`, `--scenario consensus`, `consensus-speakers`, `seating` or `speaker`; hidden from help: `--sigma0`, `--lapse` |
 
@@ -728,7 +729,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
     - Trials until time is up or the listener quits. The fitted curve is never shown during trials.
     - The end screen asks for a reseat before the next session.
     - For a speaker profile, instead: the level screen once per `run`, then per block a screen for the earplug alone when the open ear changes (and before a run's first block), showing which ear is open and which plugged, then a screen with the position, its angles in large digits; the first of these says how the last block went, then the block's trials, whose status line counts the block's trials. There's no end screen between blocks: only on Q, or when the plan is done (see "Speaker sessions").
-3. **Look** (`report`, `report -H`, and `compare` across headphones): per ear, $\hat L$ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the average; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled. `report -H` also draws the reference in use, mean removed; for a consensus reference, its parts and $k$ (see "Consensus reference").
+3. **Look** (`report` and `compare` across headphones; each writes an HTML page and opens it unless `-H`, with the ears side by side): per ear, $\hat L$ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, and the predicted corrected curve. With two or more sessions, each session's residual is drawn against the average; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled. `report`'s page has four sections: *Measured response* (those figures, with the noise, bias and seating spread), *Features* (the filters and the feature tables), *Reference* (what the reference is, in words, and the reference in use drawn with its mean removed; for a consensus reference, its parts and $k$, see "Consensus reference") and *Settings*.
 4. **Adjust** (`config`), **listen** (`audition`), **verify** (`verify`, ideally after `config --checkpoint`), and **export**.
 
 # Validation
@@ -775,7 +776,7 @@ Criteria, measured over 14 to 21 simulated listeners for what's built. Code and 
 
 | # | Criterion | Result | Status |
 | --- | --- | --- | --- |
-| 1 | **Comparison report.** Every $\mathrm{hp}$ feature is flagged against the right headphone within 1/24 octave. No $T$ or $\mathrm{cup}$ feature is flagged as one headphone standing out. False flags stay at the chosen target rate | 11 of 56 headphone features missed; 1.9 flags per ear on shared features and 0.7 elsewhere | Partly met: flags follow the veto, so they share its limits, including features merged with a neighbour |
+| 1 | **Comparison report.** Every $\mathrm{hp}$ feature is flagged against the right headphone within 1/24 octave. No $T$ or $\mathrm{cup}$ feature is flagged as one headphone standing out. False flags stay at the chosen target rate | When last run: 11 of 56 headphone features missed; 1.9 flags per ear on shared features and 0.7 elsewhere | Retired (2026-11-16): `compare` no longer flags features (see "Comparing profiles") |
 | 2 | **Headphones-only consensus.** Every $\mathrm{hp}$ feature is corrected within 1.5 dB. $T$ and $\mathrm{cup}$ are left alone ($\mathrm{cup}$ is invisible without speakers, as designed). No false correction above 1.5 dB | See the table below | Not met by any configuration |
 | 3 | **Both speakers.** As in 2, and $\mathrm{cup}$ is also removed from all three headphones within 2 dB. $T$ and speaker 1's 6.3 kHz peak leave no correction | 0 of 42. $\mathrm{cup}$ is corrected by −0.06 dB (median); $T$ left alone in 40 of 42; nothing above 1.5 dB elsewhere in 21, as without speakers. Even with no narrow part in the reference at all (`--consensus-prior 0`), $\mathrm{cup}$ is corrected by only −0.1 dB (median; −2.3 on $\mathrm{hp}_3$), and splitting at 1 or 1.5 octaves instead of 0.75 changes nothing. Between $T$'s 8.4 kHz dip and 11 kHz peak, $\mathrm{cup}$ is a shoulder: its narrow part is +1.9 to +2.5 dB in the truth, and the fits read +0.9 to +1.6 dB with an SD of 0.8 to 1, below detection. The speakers' gain has nothing to remove | Not met: the measurements can't resolve $\mathrm{cup}$ here, whatever the reference |
 | 4 | **Split-speakers variant.** With speaker 1's peak moved onto $\mathrm{cup}$, $\mathrm{cup}$ is kept | $\mathrm{cup}$ kept within 1.5 dB in 42 of 42 (as in criterion 3, so this says little); 10 of 42 pass in full, the rest failing on their own features as in criterion 2 | Partly met |
@@ -1140,7 +1141,7 @@ This is the perceptual model with blocks as the groups. Per ear, the perceived l
 - With 32 trials a block can't pin down its own $u_g$. The model doesn't need it to: $L$'s uncertainty includes $\tau_\text{pos}^2$ divided by the number of positions. That's what "averaged, not rejected" means in practice.
 - $\tau_\text{pos}$ uses the three seating-spread values, fixed at 1, 2.1 and 4 dB at 5, 8 and 12 kHz (1 dB rising log-linearly to 4 dB). The fixed curve is an assumption, so the report labels it as one. It isn't estimated: with the noise borrowed from the headphones even slightly off, an estimate absorbs the difference (see "Simulations for speakers").
 - The noise, the balance prior and the shared baseline are as for a headphone. The balance prior suits a speaker at least as well: both ears hear the same speaker.
-- The result is a perceptual fit like any other ($\hat L$ with covariance). `report` shows its curve and features, with no filters and no preamp; `export`, `verify`, `audition` and `tone` refuse a speaker profile. In `compare` it's drawn dashed and doesn't count toward the median unless `--include-kind speaker`. In a consensus reference it only gates the headphones' narrow part; it never counts toward a veto.
+- The result is a perceptual fit like any other ($\hat L$ with covariance). `report` shows its curve and features, with no filters and no preamp; `export`, `verify`, `audition` and `tone` refuse a speaker profile. In `compare` it's drawn dashed and doesn't count toward the alignment unless `--include-kind speaker` (or fewer than two headphones are compared). In a consensus reference it only gates the headphones' narrow part; it never counts toward a veto.
 
 The SD covers the sampling of positions and the judgment noise. It doesn't cover bias from the plan itself: 15 fixed directions aren't a random draw, so if they miss a region, nothing in the error bars shows that.
 
@@ -1206,7 +1207,7 @@ How the evidence plays out:
 | --- | --- | --- |
 | `profiles new` | `--kind speaker --channel L` or `R` | A speaker profile, and the channel that drives the speaker |
 | `run` | `--block N` (speaker only, 16 to 60, default 32) | Runs speaker blocks down the position plan; refuses `--sweep` |
-| `compare` | `--include-kind speaker` | Lets speakers count toward the median, as `iem` can |
+| `compare` | `--include-kind speaker` | Lets speakers count toward the alignment and strips, as `iem` can |
 | `simulate` | `--scenario speaker` | Criterion 7 for one simulated listener |
 | `config` | `-r consensus:A,B,SPEAKER`; `--speaker-window`, `--speaker-colouration`, `--gain-sd` | Speakers in a consensus reference (see "Consensus reference"); `--speaker-response FILE` is **NOT BUILT** |
 | `simulate` | `--scenario consensus-speakers` | Criteria 3 to 6 for one simulated listener |

@@ -310,14 +310,19 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
                      config=SchedulerConfig(min_trials_noise_fit=10_000))
     opened = []
     monkeypatch.setattr("webbrowser.open", opened.append)
-    assert main(["report", "-H"]) == 0  # the only profile; the fit is computed on demand
+    assert main(["report"]) == 0  # the only profile; the fit is computed on demand
     out = capsys.readouterr().out
     assert "Fitting the new trials" in out and "L ear: 160 trials" in out and "preamp" in out
     report = prof.dir / "cache" / "report.html"
     assert opened == [report.as_uri()]
     html = report.read_text()
-    assert html.count("<picture>") == 4 and "Left ear" in html and "Settings" in html  # per ear: fit, reference
-    assert main(["report"]) == 0 and len(opened) == 1  # no -H: text only
+    assert html.count("<picture>") == 4 and "Left ear" in html  # per ear: fit, reference
+    sections = ["Measured response", "Features", "Reference", "Settings"]
+    assert [html.index(f"<h2>{h}</h2>") for h in sections] == sorted(html.index(f"<h2>{h}</h2>") for h in sections)
+    assert "ISO 389-7 diffuse-field difference" in html.split("<h2>Reference</h2>")[1]
+    report.unlink()
+    assert main(["report", "-H"]) == 0 and len(opened) == 1  # -H: written, not opened
+    assert report.exists()
     assert "Fitting" not in capsys.readouterr().out  # cached
 
     # Settings live in the profile; only changes from the defaults are stored.

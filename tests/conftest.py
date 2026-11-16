@@ -16,3 +16,12 @@ def pytest_xdist_auto_num_workers(config):
 import flatiron.session.store  # noqa: E402
 
 flatiron.session.store.fsync = lambda fd: None
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_browser(monkeypatch):
+    """report and compare open their HTML unless -H: never in tests."""
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)

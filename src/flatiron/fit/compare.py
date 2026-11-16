@@ -1,11 +1,7 @@
 """Comparing profiles (DESIGN.md, "Comparing profiles"): their raw curves and their
-narrow parts against each other, and for every feature what the veto would do
-with it. No consensus is formed: what a consensus reference keeps depends on a
+narrow parts against each other, and where they differ most. No reference is
+used and no consensus is formed: what a consensus reference keeps depends on a
 profile's settings, so `report` shows it instead.
-
-The curves show broad differences as they are, and only features can be flagged,
-so a broad difference between headphones can't produce a flag. A flag means the
-veto would correct that feature on that headphone.
 """
 
 from dataclasses import dataclass, replace
@@ -14,8 +10,6 @@ import numpy as np
 
 from flatiron.fit.consensus import KINDS_VOTING, Source, estimate_tau_hp, heterogeneity, split_parts
 from flatiron.fit.features import weighted_median
-from flatiron.fit.pipeline import CorrectionSettings, correct_ear, ear_bases, voter_bases
-from flatiron.fit.veto import VetoResult, overlaps
 from flatiron.model.grid import common_grid, interp_matrix
 from flatiron.model.probit import ProbitFit
 
@@ -34,55 +28,22 @@ class Member:
 
 
 @dataclass
-class Seen:
-    """A profile's feature, and what the veto does with it."""
-    label: str
-    voting: bool
-    fc: float
-    width_oct: float
-    height_db: float
-    correction_db: float  # 0: left alone
-    veto: VetoResult
-
-    @property
-    def flagged(self) -> bool:
-        return self.correction_db != 0.0
-
-    @property
-    def reading(self) -> str:
-        v = self.veto
-        peak = self.height_db > 0
-        kind = "peak" if peak else "dip"
-        if v.median is None:
-            return f"{kind} only here"
-        if v.moved:
-            return f"{kind} elsewhere on the others"
-        more = abs(self.height_db) > abs(v.median.height_db)
-        word = ("taller" if more else "shorter") if peak else ("deeper" if more else "shallower")
-        return f"{word} here than on the others"
-
-
-@dataclass
 class EarComparison:
     ear: str
     grid: np.ndarray  # the common grid
-    tau_hp: float  # between-headphone spread of the aligned curves
+    tau_hp: float  # between-profile spread of the aligned curves, counted profiles only
     offsets: dict[str, float]  # each profile's level, for drawing the curves together
     narrow: dict[str, tuple[np.ndarray, np.ndarray]]  # each profile's narrow part and its SD, on the common grid
-    voting: dict[str, bool]
+    counted: dict[str, bool]  # whether it counts toward the alignment, the spread and the strips
     differ_broad: np.ndarray  # on the common grid: where the aligned broad parts span more than broad_spread_db
     differ_narrow: np.ndarray  # where the narrow parts differ beyond their error bars (Cochran's Q)
-    groups: list[list[Seen]]  # overlapping same-sign features, one list per row, by frequency
-    broad_spread: np.ndarray  # highest minus lowest aligned broad part, voters only
+    broad_spread: np.ndarray  # highest minus lowest aligned broad part, counted profiles only
     broad_spread_db: float = BROAD_SPREAD_DB
+    fallback: bool = False  # fewer than two were of a counted kind, so all of them count
 
     @property
-    def voters(self) -> int:
-        return sum(self.voting.values())
-
-    @property
-    def flags(self) -> list[Seen]:
-        return sorted((s for g in self.groups for s in g if s.flagged), key=lambda s: -abs(s.correction_db))
+    def n_counted(self) -> int:
+        return sum(self.counted.values())
 
 
 ALIGN_ITERS = 50
@@ -92,16 +53,16 @@ def _weighted_median_offset(L: np.ndarray, ref: np.ndarray, grid: np.ndarray, sd
     return weighted_median(L - ref, np.gradient(np.log2(grid)) / np.maximum(sd, 1e-6) ** 2)
 
 
-def align(voters: list[Source], others: list[Source], common: np.ndarray) -> dict[str, float]:
-    """Constant offsets that draw the curves together: each voter's weighted
-    median difference from the voters' pointwise median is zero (iterated,
+def align(counted: list[Source], others: list[Source], common: np.ndarray) -> dict[str, float]:
+    """Constant offsets that draw the curves together: each counted profile's
+    weighted median difference from their pointwise median is zero (iterated,
     offsets summing to zero), so one headphone's treble difference doesn't
-    shift its whole curve. Non-voters are aligned against that median without
+    shift its whole curve. The others are aligned against that median without
     moving it. Only for drawing; nothing else uses the median."""
-    up = {s.label: interp_matrix(s.grid, common) for s in voters + others}
-    Y = {s.label: up[s.label] @ s.R for s in voters}
-    sd = {s.label: up[s.label] @ s.sd for s in voters + others}
-    off = {s.label: 0.0 for s in voters}
+    up = {s.label: interp_matrix(s.grid, common) for s in counted + others}
+    Y = {s.label: up[s.label] @ s.R for s in counted}
+    sd = {s.label: up[s.label] @ s.sd for s in counted + others}
+    off = {s.label: 0.0 for s in counted}
     for _ in range(ALIGN_ITERS):
         med = np.median([Y[k] - off[k] for k in off], axis=0)
         new = {k: _weighted_median_offset(Y[k], med, common, sd[k]) for k in off}
@@ -117,54 +78,29 @@ def align(voters: list[Source], others: list[Source], common: np.ndarray) -> dic
     return off
 
 
-def _grouped(seen: list[Seen]) -> list[list[Seen]]:
-    """One group per place: features that all overlap each other. Requiring only
-    an overlap with some member would chain peaks an octave apart into one."""
-    groups: list[list[Seen]] = []
-    for s in sorted(seen, key=lambda s: s.fc):
-        hit = next((g for g in reversed(groups)
-                    if s.label not in {o.label for o in g}
-                    and all(np.sign(o.height_db) == np.sign(s.height_db)
-                            and overlaps(o.fc, o.width_oct, s.fc, s.width_oct) for o in g)), None)
-        if hit is None:
-            groups.append([s])
-        else:
-            hit.append(s)
-    return groups
-
-
-def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
-                voting_kinds=KINDS_VOTING, broad_spread_db: float | None = None) -> EarComparison:
-    """Every profile's curve aligned with the others, its narrow part, and
-    every feature it would correct judged by the veto. One that doesn't vote
-    is aligned against the voters without counting toward anything."""
-    voters = [m for m in members if m.kind in voting_kinds]
-    if len(voters) < 2:
-        raise ValueError(f"comparing needs at least two profiles that vote; "
-                         f"{len(voters)} of these do (see --include-kind)")
+def compare_ear(ear: str, members: list[Member], counted_kinds=KINDS_VOTING,
+                broad_spread_db: float | None = None) -> EarComparison:
+    """Every profile's curve aligned with the others, its narrow part, and where
+    they differ. Profiles of kinds outside counted_kinds are aligned against the
+    rest without counting toward anything, unless fewer than two would count:
+    then all of them do."""
+    if len(members) < 2:
+        raise ValueError("comparing needs at least two profiles")
+    counted = [m for m in members if m.kind in counted_kinds]
+    fallback = len(counted) < 2
+    if fallback:
+        counted = list(members)
+    names = {m.label for m in counted}
     src = {m.label: Source(m.label, m.fits[ear].grid, m.fits[ear].L, m.fits[ear].cov, m.kind) for m in members}
-    sources = [src[m.label] for m in voters]
+    sources = [src[m.label] for m in counted]
     common = common_grid([s.grid for s in sources])
-    offsets = align(sources, [src[m.label] for m in members if m.kind not in voting_kinds], common)
+    offsets = align(sources, [src[m.label] for m in members if m.label not in names], common)
     narrow, parts = {}, {}
     for m in members:
         _, b, n = split_parts(src[m.label])
         parts[m.label] = (b, n)
         A = interp_matrix(n.grid, common)
         narrow[m.label] = (A @ n.R, np.sqrt(np.clip(np.einsum("ij,jk,ik->i", A, n.cov, A), 0, None)))
-    seen = []
-    for m in members:
-        voting = m.kind in voting_kinds
-        others = [(o.label, o.fits[ear]) for o in voters if o is not m]
-        st = replace(settings, veto=tuple(label for label, _ in others), veto_mode="feature")
-        # Shared baselines need both ears; they're cached, so the other ear's pass reuses them.
-        base = (ear_bases(m.fits, st) or {}).get(ear)
-        vb = voter_bases({e: [(o.label, o.fits[e]) for o in voters if o is not m and e in o.fits] for e in m.fits}, st)
-        c = correct_ear(ear, m.fits[ear], st, voters=others, own_votes=voting, base=base, voter_base=vb.get(ear))
-        for f in c.features:
-            if f.veto is not None:
-                seen.append(Seen(m.label, voting, f.fc, f.width_oct, f.peak_db,
-                                 f.veto.correction_db if f.accepted else 0.0, f.veto))
     aligned = [replace(s, R=s.R - offsets[s.label]) for s in sources]
     broad_spread_db = BROAD_SPREAD_DB if broad_spread_db is None else broad_spread_db
     broad = np.array([interp_matrix(parts[s.label][0].grid, common) @ parts[s.label][0].R - offsets[s.label]
@@ -172,5 +108,17 @@ def compare_ear(ear: str, members: list[Member], settings: CorrectionSettings,
     spread = np.ptp(broad, axis=0)
     _, p_narrow = heterogeneity([parts[s.label][1] for s in sources], common)
     return EarComparison(ear, common, estimate_tau_hp(aligned, common), offsets, narrow,
-                         {m.label: m.kind in voting_kinds for m in members}, spread > broad_spread_db,
-                         p_narrow < HETEROGENEITY_P, _grouped(seen), spread, broad_spread_db)
+                         {m.label: m.label in names for m in members}, spread > broad_spread_db,
+                         p_narrow < HETEROGENEITY_P, spread, broad_spread_db, fallback)
+
+
+def spans(grid: np.ndarray, mask: np.ndarray) -> list[tuple[float, float]]:
+    """The frequency ranges where mask holds, as (low, high) in Hz."""
+    out, start = [], None
+    for i, on in enumerate(mask):
+        if on and start is None:
+            start = i
+        if start is not None and (not on or i == len(mask) - 1):
+            out.append((float(grid[start]), float(grid[i if on else i - 1])))
+            start = None
+    return out

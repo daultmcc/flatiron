@@ -18,7 +18,7 @@ uv run flatiron run "HD 600" --new --sweep       # first session of a new profil
 uv run flatiron run                              # later sessions (the profile can go when there's only one)
 uv run flatiron sessions                         # trial counts, catch accuracy, fast answers
 uv run flatiron sessions --delete <id>           # e.g. a session left open by a crash
-uv run flatiron report -H                        # the current fit's filters; -H opens the HTML report
+uv run flatiron report                           # the current fit's filters, and the HTML report (-H: don't open it)
 uv run flatiron config                           # show the profile's fit settings
 uv run flatiron config --broad-strength 50       # change them (every fit uses them from now on)
 uv run flatiron audition                         # the fit on/off: pink noise, sweep, or --source song.wav
@@ -26,7 +26,7 @@ uv run flatiron config --checkpoint              # fix the current filters; late
 uv run flatiron verify                           # ~150 trials with the correction applied; reports leftovers
 uv run flatiron export -t lsp -o sundara.cfg     # or -t apo / easyeffects / pipewire / tincan; --merge preset.txt
 uv run flatiron tone "HD 600"                    # tone generator: glide by hand, mark peaks and dips
-uv run flatiron compare A B C -H                 # several profiles per ear: curves, narrow parts, what the veto would correct
+uv run flatiron compare A B C                    # several profiles per ear: curves, narrow parts, where they differ
 uv run flatiron config A -r consensus:A,B,C      # A's reference: what A, B and C share (add a speaker to the list too)
 uv run flatiron config A --veto B,C              # correct A's features toward the median of A's, B's and C's
 uv run flatiron report --csv curves.csv          # the level, reference, baseline and residual, per ear
@@ -114,7 +114,7 @@ three headphones you probably want to: two others alone give their mean, not a m
 they don't vote, but a shared narrow feature they lack is corrected. `--consensus-prior X` (default 1) keeps more
 of the shared narrow structure, or less (0: none); `--coupling DB` (default 1) is how much of it you'd blame on how
 cups sit on your ears. With speakers: `--speaker-window OCT` (default 0.3), `--speaker-colouration DB|auto` (how
-coloured a speaker is; auto estimates it from two or more speakers, else 1 dB) and `--gain-sd SD|auto`. `report -H`
+coloured a speaker is; auto estimates it from two or more speakers, else 1 dB) and `--gain-sd SD|auto`. `report`'s HTML
 draws the reference in use, and for a consensus how much of the shared narrow structure it kept. `--veto A,B|none` corrects each
 feature toward the median feature of this profile and those, among features that overlap it, and `--veto-import DB`
 (default 1.5, 0: none) limits what it may add where that median feature is at another frequency.

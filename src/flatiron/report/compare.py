@@ -1,7 +1,7 @@
 """The comparison report (DESIGN.md, "Comparing profiles"): several profiles against each
 other, per ear. Colors follow the profile (the reference palette's categorical
-slots in fixed order, the same as the single-profile figures); non-voting kinds
-are also dashed, so identity is never color alone. Every line is in the legend."""
+slots in fixed order, the same as the single-profile figures); kinds that don't
+count (IEMs and speakers, by default) are also dashed, so identity is never color alone. Every line is in the legend."""
 
 import html
 import io
@@ -13,9 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from flatiron.fit.compare import EarComparison, Member, compare_ear  # noqa: E402
+from flatiron.fit.compare import EarComparison, Member, compare_ear, spans  # noqa: E402
 from flatiron.fit.consensus import SPLIT_OCT  # noqa: E402
-from flatiron.fit.pipeline import CorrectionSettings  # noqa: E402
 from flatiron.model.grid import interp_matrix  # noqa: E402
 from flatiron.report.plots import EAR_NAMES, THEMES, _style  # noqa: E402
 
@@ -24,15 +23,15 @@ SERIES = {"light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008
 MAX_PROFILES = len(SERIES["light"])
 
 
-def compare(members: list[Member], settings: CorrectionSettings, ears, voting_kinds,
-            broad_spread_db: float | None = None) -> dict[str, EarComparison]:
-    return {e: compare_ear(e, members, settings, voting_kinds, broad_spread_db) for e in ears}
+def compare(members: list[Member], ears, counted_kinds, broad_spread_db: float | None = None
+            ) -> dict[str, EarComparison]:
+    return {e: compare_ear(e, members, counted_kinds, broad_spread_db) for e in ears}
 
 
 def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
-    """The raw curves, with no reference subtracted (as with -r none), whatever reference
-    the features were judged against: the profiles are compared to each other, not to it.
-    Then their narrow parts, overlaid, and where the broad and the narrow parts differ."""
+    """The raw curves, with no reference subtracted (as with -r none): the profiles are
+    compared to each other, not to a reference. Then their narrow parts, overlaid, and
+    where the broad and the narrow parts differ."""
     t = THEMES[theme]
     colors = dict(zip([m.label for m in members], SERIES[theme]))
     common = c.grid
@@ -47,14 +46,14 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     for mem in members:
         f = mem.fits[c.ear]
         curves[mem.label] = interp_matrix(f.grid, common) @ f.L - c.offsets[mem.label]
-    shift = np.mean([curves[m.label] for m in members if c.voting[m.label]])
+    shift = np.mean([curves[m.label] for m in members if c.counted[m.label]])
     for mem in members:
         f = mem.fits[c.ear]
         d = curves[mem.label] - shift
         sd = interp_matrix(f.grid, common) @ f.sd
         col = colors[mem.label]
         ax.fill_between(common, d - sd, d + sd, color=col, alpha=0.14, linewidth=0)
-        ax.plot(common, d, color=col, linewidth=1.6, linestyle="-" if c.voting[mem.label] else "--", label=mem.label)
+        ax.plot(common, d, color=col, linewidth=1.6, linestyle="-" if c.counted[mem.label] else "--", label=mem.label)
     ax.set_title(f"{EAR_NAMES.get(c.ear, c.ear)} ear · raw curves, aligned (±1 SD)", color=t["ink"], fontsize=10,
                  loc="left")
     ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"], ncol=min(len(members), 5))
@@ -65,7 +64,7 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
         n, sd = c.narrow[mem.label]
         col = colors[mem.label]
         ax.fill_between(common, n - sd, n + sd, color=col, alpha=0.12, linewidth=0)
-        ax.plot(common, n, color=col, linewidth=1.6, linestyle="-" if c.voting[mem.label] else "--")
+        ax.plot(common, n, color=col, linewidth=1.6, linestyle="-" if c.counted[mem.label] else "--")
     ax.set_title(f"Narrow parts: each curve less its {SPLIT_OCT:g}-octave local linear smooth (±1 SD), as a "
                  "consensus reference splits them", color=t["ink"], fontsize=10, loc="left")
 
@@ -84,65 +83,51 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     return buf.getvalue()
 
 
-def flag_rows(c: EarComparison) -> list[tuple]:
-    return [(s.label, EAR_NAMES.get(c.ear, c.ear), f"{s.fc:,.0f} Hz", f"{s.height_db:+.1f}", f"{s.correction_db:+.1f}",
-             s.reading if c.voters > 2 else "differs from the other") for s in c.flags]
+def _hz(f: float) -> str:
+    return f"{round(f / 1000, 1):g}"
 
 
-def feature_rows(c: EarComparison, members: list[Member]) -> list[tuple]:
-    """One row per group of overlapping features: what each profile has there,
-    and what the veto would correct."""
-    rows = []
-    for g in c.groups:
-        by = {s.label: s for s in g}
-        lo, hi = min(s.fc for s in g), max(s.fc for s in g)
-        rows.append((f"{lo:,.0f}–{hi:,.0f} Hz" if hi > lo else f"{lo:,.0f} Hz",
-                     *(f"{by[m.label].height_db:+.1f}" if m.label in by else "–" for m in members),
-                     "; ".join(f"{s.label} {s.correction_db:+.1f}" for s in g if s.flagged) or "nothing"))
-    return rows
+def _ranges(c: EarComparison, mask) -> str:
+    """Where mask holds, as kHz ranges."""
+    out = [f"{_hz(a)}–{_hz(b)} kHz" if _hz(b) != _hz(a) else f"{_hz(a)} kHz" for a, b in spans(c.grid, mask)]
+    return ", ".join(out) or "nowhere"
+
+
+def _summary(c: EarComparison) -> list[str]:
+    return [f"{c.n_counted} profiles counted" + (" (fewer than two of a counted kind, so all of them)"
+                                                 if c.fallback else "")
+            + f", between-profile spread {c.tau_hp:.2f} dB",
+            f"broad parts span more than {c.broad_spread_db:g} dB: {_ranges(c, c.differ_broad)}",
+            f"narrow parts differ: {_ranges(c, c.differ_narrow)}"]
 
 
 def print_comparison(comparisons: dict[str, EarComparison], members: list[Member]) -> None:
+    c = next(iter(comparisons.values()))
+    print("Comparing " + ", ".join(m.label + ("" if c.counted[m.label] else f" ({m.kind}, not counted)")
+                                   for m in members) + ".")
     for e, c in comparisons.items():
-        print(f"\n{EAR_NAMES.get(e, e)} ear: {c.voters} profiles voting, between-headphone spread "
-              f"{c.tau_hp:.2f} dB")
-        if c.voters == 2:
-            print("  Only two profiles: these are differences, not outliers.")
-        rows = flag_rows(c)
-        if not rows:
-            print("  No feature stands out.")
-        for label, _, at, height, corr, reading in rows:
-            print(f"  {label:<20} {at:<12} {height:>6} dB, the veto corrects {corr:>6} dB  {reading}")
+        print(f"\n{EAR_NAMES.get(e, e)} ear: " + "\n  ".join(_summary(c)))
 
 
-def write_comparison(path: Path, comparisons: dict[str, EarComparison], members: list[Member],
-                     settings: CorrectionSettings) -> Path:
-    from flatiron.report.html import CSS, _png, _table
+def write_comparison(path: Path, comparisons: dict[str, EarComparison], members: list[Member]) -> Path:
+    from flatiron.report.html import CSS, _columns, _png
 
     names = ", ".join(m.label for m in members)
     out = [f"<h1>Flatiron comparison · {html.escape(names)}</h1>",
-           f'<p class="meta">Max feature width {settings.max_width_oct:g} octave · reference '
-           f"{html.escape(settings.reference)} for features (the figures subtract none) · features judged by the veto, with an import limit of "
-           f"{settings.veto_import_db:g} dB</p>"]
+           '<p class="meta">Raw curves: no reference is subtracted.'
+           + (" Dashed: profiles that don't count toward the alignment, the spread or the strips."
+              if not all(all(c.counted.values()) for c in comparisons.values()) else "") + "</p>"]
+    cols = []
     for e, c in comparisons.items():
-        out.append(f"<h2>{EAR_NAMES.get(e, e)} ear</h2>")
-        if c.voters == 2:
-            out.append('<p class="note">With two profiles the median is their average, and the tables show '
-                       "differences, not outliers.</p>")
         light = _png(ear_figure(c, members, "light"))
         dark = _png(ear_figure(c, members, "dark"))
-        out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
-                   f'<img src="{light}" alt="{EAR_NAMES.get(e, e)} ear: aligned curves, narrow parts and where they differ">'
-                   "</picture></div>")
-        out.append(f'<p class="meta">Between-headphone spread {c.tau_hp:.2f} dB.</p>')
-        out.append("<h3>Flagged features</h3>")
-        rows = flag_rows(c)
-        out.append(_table(["profile", "ear", "centre", "height (dB)", "corrected (dB)", "reading"], rows)
-                   if rows else '<p class="muted">No feature stands out.</p>')
-        out.append("<h3>All features</h3>")
-        rows = feature_rows(c, members)
-        out.append(_table(["range", *[m.label for m in members], "the veto corrects (dB)"], rows)
-                   if rows else '<p class="muted">None.</p>')
+        s = _summary(c)
+        cols.append(f"<h2>{EAR_NAMES.get(e, e)} ear</h2>"
+                    f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
+                    f'<img src="{light}" alt="{EAR_NAMES.get(e, e)} ear: aligned curves, narrow parts and where they '
+                    'differ"></picture></div>'
+                    '<p class="meta">' + "<br>".join(html.escape(x[0].upper() + x[1:] + ".") for x in s) + "</p>")
+    out.append(_columns(cols))
     doc = ('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1">'
            f"<title>Flatiron comparison · {html.escape(names)}</title><style>{CSS}</style></head>"

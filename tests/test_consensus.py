@@ -212,30 +212,22 @@ def _member(L, name, kind="headphone", sd=0.3):
     return Member(name, kind, {"L": ProbitFit(G, L - L.mean(), np.eye(G.size) * sd**2, 1.0, 0.5, 0.02, 600, 0.0, True)})
 
 
-NONE = CorrectionSettings(reference="none", consistency=False)
-
-
-def test_one_headphone_standing_out_is_flagged_on_it_alone():
+def test_one_headphone_standing_out_shows_in_the_narrow_strip():
     c = compare_ear("L", [_member(bump(5800, 0.2, 5.0), "a"), _member(np.zeros(G.size), "b"),
-                          _member(np.zeros(G.size), "c")], NONE)
-    assert {s.label for s in c.flags} == {"a"}
-    s = c.flags[0]
-    assert abs(np.log2(s.fc / 5800)) < 1 / 24 and s.correction_db < -3.0 and s.reading == "peak only here"
+                          _member(np.zeros(G.size), "c")])
     assert c.differ_narrow[np.argmin(np.abs(c.grid - 5800))]
+    assert not c.differ_narrow[np.argmin(np.abs(c.grid - 2000))]
 
 
-def test_a_feature_every_headphone_shares_is_not_flagged():
+def test_a_feature_every_headphone_shares_does_not_differ():
     shared = bump(7000, 0.15, 6.0)
-    c = compare_ear("L", [_member(shared, n) for n in "abc"], NONE)
-    assert not c.flags
-    assert len(c.groups) >= 1 and any(len(g) == 3 for g in c.groups)
+    c = compare_ear("L", [_member(shared, n) for n in "abc"])
+    assert not c.differ_narrow.any() and not c.differ_broad.any()
 
 
-def test_a_broad_difference_shows_in_the_strip_but_is_not_flagged():
-    """The reason the comparison stopped using residuals."""
+def test_a_broad_difference_shows_in_the_broad_strip_only():
     broad = bump(3000, 1.5, 7.0)
-    c = compare_ear("L", [_member(broad, "a"), _member(np.zeros(G.size), "b"), _member(np.zeros(G.size), "c")], NONE)
-    assert not [s for s in c.flags if abs(np.log2(s.fc / 3000)) < 0.5]
+    c = compare_ear("L", [_member(broad, "a"), _member(np.zeros(G.size), "b"), _member(np.zeros(G.size), "c")])
     i = np.argmin(np.abs(c.grid - 3000))
     assert c.differ_broad[i] and not c.differ_narrow[i]
 
@@ -244,49 +236,34 @@ def test_the_broad_strip_marks_the_largest_tonal_differences_only():
     """Tonality always differs: a fixed span, not significance, decides what's shaded."""
     small = bump(3000, 1.5, 2.0)
     members = [_member(small, "a"), _member(np.zeros(G.size), "b"), _member(np.zeros(G.size), "c")]
-    c = compare_ear("L", members, NONE)
+    c = compare_ear("L", members)
     i = np.argmin(np.abs(c.grid - 3000))
     assert 1.0 < c.broad_spread[i] < 2.5 and not c.differ_broad.any()  # less what the alignment takes
-    assert compare_ear("L", members, NONE, broad_spread_db=1.0).differ_broad[i]
+    assert compare_ear("L", members, broad_spread_db=1.0).differ_broad[i]
 
 
-def test_a_peak_elsewhere_on_the_others_says_so():
-    here, there = bump(8000, 0.3, 7.0), bump(7000, 0.3, 6.0)
-    c = compare_ear("L", [_member(here, "a"), _member(there, "b"), _member(there, "c")], NONE)
-    assert next(s for s in c.flags if s.label == "a").reading == "peak elsewhere on the others"
+def test_spans_reads_a_mask_as_ranges():
+    from flatiron.fit.compare import spans
 
-
-def test_a_dip_is_described_as_a_dip():
-    dip, less = bump(5000, 0.2, -6.0), bump(5000, 0.2, -3.0)
-    c = compare_ear("L", [_member(dip, "a"), _member(less, "b"), _member(less, "c")], NONE)
-    assert next(s for s in c.flags if s.label == "a").reading == "deeper here than on the others"
-
-
-def test_rows_do_not_chain_features_far_apart():
-    """Each overlaps the next, but the first and last are an octave apart."""
-    from flatiron.fit.compare import Seen, _grouped
-
-    seen = [Seen(n, True, fc, 0.6, 5.0, 0.0, None) for n, fc in (("a", 4000.0), ("b", 5600.0), ("c", 8000.0))]
-    assert sorted(len(g) for g in _grouped(seen)) == [1, 2]
-    assert len(_grouped([Seen(n, True, 7000.0, 0.2, 5.0, 0.0, None) for n in "abc"])) == 1
-    # A profile only appears once per row.
-    assert len(_grouped([Seen("a", True, fc, 0.6, 5.0, 0.0, None) for fc in (7000.0, 7100.0)])) == 2
+    g = np.array([1000.0, 2000, 3000, 4000, 5000])
+    assert spans(g, np.array([True, True, False, False, True])) == [(1000.0, 2000.0), (5000.0, 5000.0)]
+    assert spans(g, np.zeros(5, bool)) == []
 
 
 def test_offsets_align_the_curves():
     L = bump(3000, 1.0, 5.0)
     fits = [_member(L, n) for n in "ab"]
     fits[0].fits["L"].L = fits[0].fits["L"].L + 6.0
-    c = compare_ear("L", fits + [_member(L, "c", "iem")], NONE)
+    c = compare_ear("L", fits + [_member(L, "c", "iem")])
     assert c.offsets["a"] - c.offsets["b"] == pytest.approx(6.0, abs=0.3)
-    assert c.offsets["c"] == pytest.approx(c.offsets["b"], abs=0.3)  # an IEM is aligned without voting
+    assert c.offsets["c"] == pytest.approx(c.offsets["b"], abs=0.3)  # an IEM is aligned without counting
 
 
 def test_offsets_ignore_one_headphones_treble_difference():
     """A mean-based alignment would shift the whole curve; the median one doesn't."""
     base = bump(3000, 1.0, 5.0)
     treble = 8.0 * ((G > 8000) * np.minimum((np.log2(G) - np.log2(8000)) * 8, 1.0))
-    c = compare_ear("L", [_member(base + treble, "a"), _member(base, "b"), _member(base, "c")], NONE)
+    c = compare_ear("L", [_member(base + treble, "a"), _member(base, "b"), _member(base, "c")])
     k = (c.grid > 1000) & (c.grid < 6000)
     # Below 6 kHz the three aligned curves coincide.
     curves = {m: interp_matrix(G, c.grid) @ (L - L.mean()) - c.offsets[m] for m, L in
@@ -296,8 +273,7 @@ def test_offsets_ignore_one_headphones_treble_difference():
 
 def test_narrow_parts_are_overlaid_without_a_consensus():
     peak = bump(7000, 0.15, 6.0)
-    c = compare_ear("L", [_member(peak + bump(3000, 1.5, 6.0), "a"), _member(peak, "b"), _member(np.zeros(G.size), "c")],
-                    NONE)
+    c = compare_ear("L", [_member(peak + bump(3000, 1.5, 6.0), "a"), _member(peak, "b"), _member(np.zeros(G.size), "c")])
     n, sd = c.narrow["a"]
     i = np.argmin(np.abs(c.grid - 7000))
     assert n[i] > 3.5 and abs(n[np.argmin(np.abs(c.grid - 3000))]) < 1.0  # the broad bump isn't narrow
@@ -305,17 +281,18 @@ def test_narrow_parts_are_overlaid_without_a_consensus():
     assert not hasattr(c, "consensus")
 
 
-def test_other_kinds_are_shown_but_do_not_vote():
+def test_other_kinds_are_shown_but_do_not_count():
     a, b = bump(7000, 0.15, 6.0), np.zeros(G.size)
-    c = compare_ear("L", [_member(a, "x"), _member(a, "y"), _member(b, "iem", "iem")], NONE)
-    assert c.voters == 2 and c.voting == {"x": True, "y": True, "iem": False}
-    # It's measured against them without counting: its own peak isn't shared by voting for itself.
-    c = compare_ear("L", [_member(b, "x"), _member(b, "y"), _member(a, "iem", "iem")], NONE)
-    assert [s.label for s in c.flags] == ["iem"] and c.flags[0].correction_db < -3.0
-    with pytest.raises(ValueError, match="include-kind"):
-        compare_ear("L", [_member(a, "x"), _member(b, "iem", "iem")], NONE)
-    assert compare_ear("L", [_member(a, "x"), _member(b, "iem", "iem")], NONE,
-                       voting_kinds=("headphone", "iem")).voters == 2
+    c = compare_ear("L", [_member(a, "x"), _member(a, "y"), _member(b, "iem", "iem")])
+    assert c.n_counted == 2 and c.counted == {"x": True, "y": True, "iem": False} and not c.fallback
+    assert not c.differ_narrow.any()  # the IEM's missing peak doesn't count
+    # With fewer than two of a counted kind, all of them count.
+    c = compare_ear("L", [_member(a, "x"), _member(b, "iem", "iem")])
+    assert c.n_counted == 2 and c.fallback
+    c = compare_ear("L", [_member(a, "x"), _member(b, "iem", "iem")], counted_kinds=("headphone", "iem"))
+    assert c.n_counted == 2 and not c.fallback
+    with pytest.raises(ValueError, match="two profiles"):
+        compare_ear("L", [_member(a, "x")])
 
 
 # -- the raw consensus ---------------------------------------------------------
@@ -741,16 +718,19 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["compare", "One"]) == 1
     assert main(["compare", "One", "Nope"]) == 1
     capsys.readouterr()
-    assert main(["compare", "One", "Two", "Three", "-H", "--ear", "L", "-w", "0.5"]) == 0
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    assert main(["compare", "One", "Two", "Three", "-H", "--ear", "L"]) == 0
     out = capsys.readouterr().out
-    assert "3 profiles voting" in out and "soft median" not in out and "Right ear" not in out
+    assert "3 profiles counted" in out and "narrow parts differ:" in out and "Right ear" not in out
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
-    assert page.count("<picture>") == 1 and "Left ear" in page and "All features" in page
-    assert "aligned curves, narrow parts" in page and "soft median" not in page
+    assert page.count("<picture>") == 1 and "Left ear" in page and "All features" not in page
+    assert "aligned curves, narrow parts" in page and not opened  # -H: written, not opened
     assert main(["compare", "One", "Two", "--broad-spread", "-1"]) == 1
     assert main(["compare", "One", "Two", "--broad-spread", "2"]) == 0
-    assert main(["compare", "One", "Two"]) == 0
-    assert "differences, not outliers" in capsys.readouterr().out
+    assert len(opened) == 1
+    page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
+    assert page.count("<picture>") == 2 and page.index("Left ear") < page.index("Right ear")
 
     csv = tmp_path / "out.csv"
     assert main(["report", "One", "--csv", str(csv)]) == 0
@@ -845,7 +825,6 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["config", "One", "-r", "consensus:Two,Three"]) == 0
     capsys.readouterr()
     assert main(["compare", "One", "Two"]) == 0
-    assert "isn't used for comparisons" in capsys.readouterr().out
     assert main(["config", "One", "-r", "none"]) == 0
     assert profile_settings(one).consensus == () and profile_settings(one).reference == "none"
     assert main(["config", "Three", "--reset", "reference"]) == 0

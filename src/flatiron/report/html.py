@@ -22,9 +22,15 @@ CSS = """
 }
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--page); color: var(--ink);
        margin: 0; padding: 2rem; line-height: 1.45; }
-main { max-width: 60rem; margin: 0 auto; }
-h1 { font-size: 1.4rem; margin: 0 0 .25rem; } h2 { font-size: 1.15rem; margin-top: 2.5rem; }
-h3 { font-size: 1rem; margin: 1.5rem 0 .5rem; color: var(--ink2); }
+main { max-width: 124rem; margin: 0 auto; }
+h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.15rem; margin-top: 2.5rem; padding-bottom: .3rem; border-bottom: 1px solid var(--hair); }
+h3 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+h4 { font-size: .95rem; margin: 1.25rem 0 .5rem; color: var(--ink2); }
+.cols { display: grid; gap: 0 2rem; align-items: start; }
+.cols > div { min-width: 0; }
+.wide { overflow-x: auto; }
+@media (max-width: 70rem) { .cols { grid-template-columns: 1fr !important; } }
 .meta { color: var(--ink2); font-size: .9rem; }
 .card { background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 1rem 1.25rem; }
 img { max-width: 100%; height: auto; display: block; }
@@ -48,7 +54,18 @@ def _table(head, rows, num_cols=()):
         body += "<tr>" + "".join(
             f'<td class="num">{html.escape(str(v))}</td>' if i in num_cols else f"<td>{html.escape(str(v))}</td>"
             for i, v in enumerate(r)) + "</tr>"
-    return f"<table><thead><tr>{h}</tr></thead><tbody>{body}</tbody></table>"
+    return f'<div class="wide"><table><thead><tr>{h}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def _columns(cols: list[str]) -> str:
+    """Side by side, one column each (the ears), stacked on a narrow window."""
+    return (f'<div class="cols" style="grid-template-columns: repeat({len(cols)}, minmax(0, 1fr))">'
+            + "".join(f"<div>{c}</div>" for c in cols) + "</div>")
+
+
+def _picture(data_light: bytes, data_dark: bytes, alt: str) -> str:
+    return (f'<div class="card"><picture><source srcset="{_png(data_dark)}" media="(prefers-color-scheme: dark)">'
+            f'<img src="{_png(data_light)}" alt="{html.escape(alt)}"></picture></div>')
 
 
 def veto_line(f) -> str:
@@ -88,6 +105,26 @@ VETO_WITH_CONSENSUS = ("Warning: the veto is on as well as a consensus reference
 
 
 def consensus_notes(pf: ProfileFit) -> list[str]:
+    """For the terminal: the reference's notes, then the method's."""
+    return reference_notes(pf) + method_notes(pf)
+
+
+def reference_description(st) -> str | None:
+    """A fixed reference in a sentence (a consensus is described by reference_notes)."""
+    if st.consensus:
+        return None
+    if st.reference == "diffuse":
+        return (f"Reference: the ISO 226 frontal free-field equal-loudness contour at {st.phon:g} phon, plus the "
+                "ISO 389-7 diffuse-field difference (the default).")
+    if st.reference == "iso226":
+        return (f"Reference: the ISO 226 frontal free-field equal-loudness contour at {st.phon:g} phon. The "
+                "default, diffuse field (ISO 389-7), differs most at 2 to 4 and 6 to 12 kHz.")
+    if st.reference == "none":
+        return "Reference: none. The measured curve is taken as it is, ear gain and all."
+    return f"Reference: the curve in {st.reference}."
+
+
+def reference_notes(pf: ProfileFit) -> list[str]:
     st = pf.correction.settings
     out = []
     if st.consensus:
@@ -115,8 +152,14 @@ def consensus_notes(pf: ProfileFit) -> list[str]:
         elif len(c.members) == 2:
             out.append("With two headphones it's their weighted mean, not a median, so one's peak reaches the "
                        "reference at about half height.")
-        if st.veto:
-            out.append(VETO_WITH_CONSENSUS)
+    return out
+
+
+def method_notes(pf: ProfileFit) -> list[str]:
+    st = pf.correction.settings
+    out = []
+    if st.consensus and st.veto:
+        out.append(VETO_WITH_CONSENSUS)
     if st.veto:
         who = ", ".join(st.veto)
         if st.veto_mode == "pointwise":
@@ -153,14 +196,16 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     now = datetime.now()
     path = path or profile.dir / "cache" / "report.html"  # overwritten each time
     path.parent.mkdir(parents=True, exist_ok=True)
+    speaker = profile.kind == "speaker"
+    ears = list(corr.ears.items())
 
     notes = []
-    if st.reference == "iso226":
-        notes.append("Reference: ISO 226 frontal free-field equal-loudness contour. The default, diffuse "
-                     "field (ISO 389-7), differs most at 2 to 4 and 6 to 12 kHz.")
+    if speaker:
+        notes.append("Speaker profile: the curve is averaged over the positions measured, and it's evidence "
+                     "about your ears, so there's no correction. The position spread is assumed, not estimated.")
     if pf.pooled:
         notes.append(f"Pooled: includes the trials of {', '.join(pf.pooled)}.")
-    notes += consensus_notes(pf)
+    notes += method_notes(pf)
     if st.method == "features" and st.baseline == "joint":
         notes.append("Experimental joint baseline: the baseline is the posterior mean of the tonality under a "
                      "model of tonality plus features, drawn with its SD. Where that band is wide, the data "
@@ -169,77 +214,84 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         notes.append(f"Experimental smooth method: the baseline is the curve smoothed over {st.smooth_oct:g} "
                      "octave, and every residual is corrected. The features listed are only what's "
                      "significant; noise gets corrected too.")
-    speaker = profile.kind == "speaker"
-    if speaker:
-        notes.insert(0, "Speaker profile: the curve is averaged over the positions measured, and it's evidence "
-                        "about your ears, so there's no correction. The position spread is assumed, not estimated.")
     out = [f"<h1>Flatiron fit · {html.escape(label)}</h1>",
            f'<p class="meta">{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} {"blocks" if speaker else "sessions"} · '
            + " · ".join(f"{EAR_NAMES[e]} {f.n_trials} trials" for e, f in pf.fits.items())
            + ("" if speaker else f" · preamp {corr.preamp_db:+.1f} dB (both channels)") + "</p>"]
     out += [f'<p class="note">{html.escape(n)}</p>' for n in notes]
 
-    for e, c in corr.ears.items():
+    out.append("<h2>Measured response</h2>")
+    cols = []
+    for e, c in ears:
         f = pf.fits[e]
-        out.append(f"<h2>{EAR_NAMES[e]} ear</h2>")
-        light = _png(ear_figure(c, c.session_R, "light", st.f_lo, st.f_hi, speaker))
-        dark = _png(ear_figure(c, c.session_R, "dark", st.f_lo, st.f_hi, speaker))
-        out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
-                   f'<img src="{light}" alt="{EAR_NAMES[e]} ear: measured level, residual and correction">'
-                   f"</picture></div>")
-        ref = "consensus" if st.consensus else Path(st.reference).name
-        light = _png(reference_figure(c, ref, "light"))
-        dark = _png(reference_figure(c, ref, "dark"))
-        out.append(f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
-                   f'<img src="{light}" alt="{EAR_NAMES[e]} ear: the reference"></picture></div>')
-        out.append(f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse rate {f.lapse:.1%} '
-                   + (f"(shared: {f.noise_trials} trials in this ear across profiles), " if f.noise_trials
-                      else "(the prior: estimating it needs a profile with 200 trials in this ear), ")
-                   + f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
-                   f"{'louder' if f.bias_db >= 0 else 'quieter'}; fitted, so it doesn't distort the curve). "
-                   + (f"Position spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
-                      f"(assumed), {f.n_groups} positions" if speaker else
-                      f"Seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
-                      + (f"(estimated from {f.n_groups} sessions)" if f.tau_fitted
-                         else "(the prior: estimating it needs two sessions with 60+ trials for this ear)")
-                      + f". Filter fit: χ² per point {c.fit.chi2:.2f}")
-                   + (f"; {c.sessions_checked} sessions in the seating step" if c.sessions_checked else "")
-                   + ".</p>")
-        out.append('<p class="muted">In the feature tables, level SD says whether a feature is real; seating '
-                   "spread says how far off the correction will be on a typical seating.</p>")
-        if c.left_out:
-            spans = ", ".join(f"{a:,.0f}–{b:,.0f} Hz (up to {m:.1f} dB)" for a, b, m in c.left_out)
-            out.append(f'<p class="note">The band budget ({st.bands}) ran out. Left uncorrected: '
-                       f"{html.escape(spans)}.</p>")
-        unsure = ambiguous_features(c)
-        if unsure:
-            where = ", ".join(f"{x.fc:,.0f} Hz" for x in unsure)
-            out.append(f'<p class="note">The baseline is uncertain (SD over {AMBIGUOUS_BASELINE_SD_DB:g} dB) under '
-                       f"the feature(s) at {html.escape(where)}: part of each may be tonality rather than a feature, "
-                       "or the other way round.</p>")
-        if speaker:
-            for kind, title in ((NARROW, "Narrow features"), (BROAD, "Broad features")):
-                feats = [x for x in c.features if x.kind == kind and (x.accepted or abs(x.z) >= 1.5)]
-                out.append(f"<h3>{title}</h3>")
-                out.append(_features_table(feats, speaker=True) if feats else '<p class="muted">None.</p>')
-            continue
-        out.append("<h3>Filters</h3>")
-        if c.filters:
-            comp = {id(x) for x in c.compensation}
-            kept = {id(x) for x in c.fixed}
-            rows = [(f"{flt.fc:,.0f}", f"{flt.gain_db:+.1f}", f"{flt.q:.2f}",
-                     "checkpoint" if id(flt) in kept else
-                     "tonality compensation" if id(flt) in comp else f"{ctb:.2f}")
-                    for flt, ctb in zip(c.filters, c.fit.contributions)]
-            out.append(_table(["Fc (Hz)", "gain (dB)", "Q", "χ² if removed"], rows, (0, 1, 2)))
-        else:
-            out.append('<p class="muted">No correction needed: nothing significant left after the reference '
-                       "and baseline.</p>")
-        for kind, title in ((NARROW, "Narrow features"), (BROAD, "Broad features (ear-gain region: "
-                                                                  "depends on the reference)")):
+        cols.append(
+            f"<h3>{EAR_NAMES[e]} ear</h3>"
+            + _picture(ear_figure(c, c.session_R, "light", st.f_lo, st.f_hi, speaker),
+                       ear_figure(c, c.session_R, "dark", st.f_lo, st.f_hi, speaker),
+                       f"{EAR_NAMES[e]} ear: measured level, residual and correction")
+            + f'<p class="meta">Listener noise σ₀ {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse '
+            f"rate {f.lapse:.1%} "
+            + (f"(shared: {f.noise_trials} trials in this ear across profiles), " if f.noise_trials
+               else "(the prior: estimating it needs a profile with 200 trials in this ear), ")
+            + f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (the first interval sounds "
+            f"{'louder' if f.bias_db >= 0 else 'quieter'}; fitted, so it doesn't distort the curve). "
+            + (f"Position spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
+               f"(assumed), {f.n_groups} positions." if speaker else
+               f"Seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
+               + (f"(estimated from {f.n_groups} sessions)." if f.tau_fitted
+                  else "(the prior: estimating it needs two sessions with 60+ trials for this ear)."))
+            + "</p>")
+    out.append(_columns(cols))
+
+    out.append("<h2>Features</h2>")
+    out.append(f'<p class="muted">Level SD says whether a feature is real; {"position" if speaker else "seating"} '
+               "spread says how far off the correction will be on a typical "
+               f"{'position' if speaker else 'seating'}.</p>")
+    cols = []
+    for e, c in ears:
+        col = [f"<h3>{EAR_NAMES[e]} ear</h3>"]
+        if not speaker:
+            col.append("<h4>Filters</h4>")
+            if c.filters:
+                comp = {id(x) for x in c.compensation}
+                kept = {id(x) for x in c.fixed}
+                rows = [(f"{flt.fc:,.0f}", f"{flt.gain_db:+.1f}", f"{flt.q:.2f}",
+                         "checkpoint" if id(flt) in kept else
+                         "tonality compensation" if id(flt) in comp else f"{ctb:.2f}")
+                        for flt, ctb in zip(c.filters, c.fit.contributions)]
+                col.append(_table(["Fc (Hz)", "gain (dB)", "Q", "χ² if removed"], rows, (0, 1, 2)))
+            else:
+                col.append('<p class="muted">No correction needed: nothing significant left after the reference '
+                           "and baseline.</p>")
+            col.append(f'<p class="meta">Filter fit: χ² per point {c.fit.chi2:.2f}'
+                       + (f"; {c.sessions_checked} sessions in the seating step" if c.sessions_checked else "")
+                       + ".</p>")
+            if c.left_out:
+                spans = ", ".join(f"{a:,.0f}–{b:,.0f} Hz (up to {m:.1f} dB)" for a, b, m in c.left_out)
+                col.append(f'<p class="note">The band budget ({st.bands}) ran out. Left uncorrected: '
+                           f"{html.escape(spans)}.</p>")
+            unsure = ambiguous_features(c)
+            if unsure:
+                where = ", ".join(f"{x.fc:,.0f} Hz" for x in unsure)
+                col.append(f'<p class="note">The baseline is uncertain (SD over {AMBIGUOUS_BASELINE_SD_DB:g} dB) '
+                           f"under the feature(s) at {html.escape(where)}: part of each may be tonality rather than "
+                           "a feature, or the other way round.</p>")
+        broad_title = "Broad features" if speaker else "Broad features (ear-gain region: depends on the reference)"
+        for kind, title in ((NARROW, "Narrow features"), (BROAD, broad_title)):
             feats = [x for x in c.features if x.kind == kind and (x.accepted or abs(x.z) >= 1.5)]
-            out.append(f"<h3>{title}</h3>")
-            out.append(_features_table(feats, bool(st.veto) and st.veto_mode == "feature") if feats else '<p class="muted">None.</p>')
+            col.append(f"<h4>{title}</h4>")
+            col.append(_features_table(feats, not speaker and bool(st.veto) and st.veto_mode == "feature",
+                                       speaker) if feats else '<p class="muted">None.</p>')
+        cols.append("".join(col))
+    out.append(_columns(cols))
+
+    out.append("<h2>Reference</h2>")
+    desc = reference_description(st)
+    out += [f'<p class="meta">{html.escape(n)}</p>' for n in ([desc] if desc else []) + reference_notes(pf)]
+    ref = "consensus" if st.consensus else Path(st.reference).name
+    out.append(_columns([f"<h3>{EAR_NAMES[e]} ear</h3>"
+                         + _picture(reference_figure(c, ref, "light"), reference_figure(c, ref, "dark"),
+                                    f"{EAR_NAMES[e]} ear: the reference") for e, c in ears]))
 
     out.append("<h2>Settings</h2>")
     out.append(_table(["setting", "value"], [(k, v) for k, v in asdict(st).items()]))

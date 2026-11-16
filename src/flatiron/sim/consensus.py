@@ -1,4 +1,4 @@
-"""The multi-headphone scenario (DESIGN.md, "Seating and multi-headphone scenarios", criteria 1 to 6, 8 and
+"""The multi-headphone scenario (DESIGN.md, "Seating and multi-headphone scenarios", criteria 2 to 6, 8 and
 the consensus half of 10). The rule for passing: the listener's own features are
 never corrected, and only headphone-specific ones are.
 
@@ -6,12 +6,11 @@ The scenarios vary what could fool a reference or a vote: broad differences
 between the headphones, a listener whose contour isn't the reference's, and a shared
 peak that sits somewhat differently on each headphone."""
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from flatiron.audio.biquad import PeakingFilter as Pk
-from flatiron.fit.compare import Member, compare_ear
 from flatiron.fit.consensus import (Source, ear_reference, shares, soft_median, split_consensus, split_parts)
 from flatiron.fit.filters import response
 from flatiron.fit.pipeline import CorrectionSettings, consensus_references, correct_ear
@@ -29,7 +28,6 @@ HEADPHONES = {"hp1": [Pk(5800.0, 5.0, 5.0)],
 TILTS = {"hp1": -1.0, "hp2": 0.5, "hp3": -0.3}
 BROAD = {"hp1": [Pk(1600.0, -5.0, 1.0)], "hp2": [Pk(2500.0, 4.0, 1.0)], "hp3": [Pk(4000.0, -4.0, 1.0)]}
 MOVED_OCT = {"hp1": -0.2, "hp2": 0.0, "hp3": 0.2}
-NEAR_OCT = 1 / 24
 FALSE_DB = 1.5
 
 
@@ -80,38 +78,6 @@ def headphone_fits(seed: int, sessions: int = 3, trials_per_session: int = 200,
 
 def _raw_sources(fits: dict[str, ProbitFit]) -> list[Source]:
     return [Source(name, f.grid, f.L, f.cov) for name, f in fits.items()]
-
-
-@dataclass
-class CompareCheck:
-    """Criterion 1."""
-    missed: list[tuple[str, float]] = field(default_factory=list)  # (headphone, feature fc)
-    on_shared: list[tuple[str, float]] = field(default_factory=list)  # flagged on a listener or cup feature
-    false_flags: int = 0  # away from anything the headphone really has
-
-    @property
-    def ok(self) -> bool:
-        return not self.missed and not self.on_shared
-
-
-def check_compare(fits: dict[str, ProbitFit], settings: CorrectionSettings = CorrectionSettings()) -> CompareCheck:
-    members = [Member(n, "headphone", {"L": f}) for n, f in fits.items()]
-    c = compare_ear("L", members, settings)
-    out = CompareCheck()
-    near = lambda s, fc: abs(np.log2(s.fc / fc)) <= max(s.width_oct / 2, NEAR_OCT)
-    for name in fits:
-        flags = [s for s in c.flags if s.label == name]
-        own = [p.fc for p in HEADPHONES[name]]
-        out.missed += [(name, fc) for fc in own if not any(near(s, fc) for s in flags)]
-        for s in flags:
-            if any(near(s, fc) for fc in own):
-                continue
-            shared = [p.fc for p in LISTENER + CUP if near(s, p.fc)]
-            if shared:
-                out.on_shared.append((name, shared[0]))
-            else:
-                out.false_flags += 1
-    return out
 
 
 @dataclass(frozen=True)

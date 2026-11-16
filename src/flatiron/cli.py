@@ -1060,7 +1060,7 @@ def _print_speaker(prof, pf):
             print(f"  {kind} features: " + (", ".join(f"{x.fc:.0f} Hz ({x.peak_db:+.1f} dB)" for x in acc)
                                             if acc else "none significant"))
     print("\nTo see it beside your headphones: flatiron compare HEADPHONE ... SPEAKER (a speaker is drawn dashed "
-          "and doesn't count toward the median)")
+          "and, beside two or more headphones, doesn't count toward the alignment)")
 
 
 def _correction_of(f) -> float:
@@ -1070,17 +1070,12 @@ def _correction_of(f) -> float:
 
 
 def cmd_compare(args):
-    from dataclasses import replace
-
     from flatiron import EARS as ALL_EARS
     from flatiron.fit.compare import Member
     from flatiron.fit.consensus import KINDS_VOTING
-    from flatiron.fit.pipeline import CorrectionSettings
-    from flatiron.fit.reference import reference
-    from flatiron.fit.run import NotEnoughTrials, perceptual_fits, profile_session_ids, profile_settings
+    from flatiron.fit.run import NotEnoughTrials, perceptual_fits, profile_session_ids
     from flatiron.paths import data_dir
     from flatiron.report.compare import MAX_PROFILES, compare, print_comparison, write_comparison
-    from flatiron.session.store import Profile
 
     if len(args.profiles) < 2:
         print("compare needs at least two profiles.")
@@ -1111,29 +1106,8 @@ def cmd_compare(args):
         if shares_trials(a, b):
             print(f"Warning: {name_of(a)} and {name_of(b)} share trials through pooling, so they'll "
                   "agree more than separate measurements would.")
-    own = [profile_settings(p) for p in profiles]
-
-    def common(what, value):
-        vals = {getattr(s, what) for s in own}
-        return value if value is not None else (vals.pop() if len(vals) == 1 else None)
-
-    # A comparison needs a fixed reference; a consensus would mean something different per profile.
-    if any(s.consensus for s in own) and args.reference is None:
-        print("A consensus reference isn't used for comparisons: this uses diffuse (pick another with -r).")
-    own = [replace(s, reference=CorrectionSettings().reference) if s.consensus else s for s in own]
-    ref, phon = common("reference", args.reference), common("phon", None)
-    if ref is None:
-        print("These profiles use different references: pick one with -r (diffuse, iso226, none or a CSV).")
-        return 1
-    try:
-        st = CorrectionSettings(max_width_oct=args.width or 1.0, reference=ref, phon=phon or CorrectionSettings().phon,
-                                k=common("k", None) or CorrectionSettings().k)
-        reference(st.reference, [1000.0], st.phon)
-    except (ValueError, FileNotFoundError) as e:
-        print(e)
-        return 1
     ears = ALL_EARS if args.ear == "both" else (args.ear,)
-    voting = tuple(KINDS_VOTING) + tuple(args.include_kind or ())
+    counted = tuple(KINDS_VOTING) + tuple(args.include_kind or ())
     announce = [lambda: print("Fitting the new trials (a few seconds)...", flush=True)]
 
     def on_fit():
@@ -1146,16 +1120,16 @@ def cmd_compare(args):
     try:
         members = [Member(name_of(p), p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
                    for p in profiles]
-        comparisons = compare(members, st, ears, voting, args.broad_spread)
+        comparisons = compare(members, ears, counted, args.broad_spread)
     except (NotEnoughTrials, ValueError) as e:
         print(e)
         return 1
     print_comparison(comparisons, members)
-    if args.html:
+    path = write_comparison(data_dir() / "cache" / "comparison.html", comparisons, members)
+    print(f"report: {path}")
+    if not args.no_html:
         import webbrowser
 
-        path = write_comparison(data_dir() / "cache" / "comparison.html", comparisons, members, st)
-        print(f"report: {path}")
         webbrowser.open(path.as_uri())
     return 0
 
@@ -1185,13 +1159,13 @@ def cmd_report(args):
 
         write_csv(args.csv, pf)
         print(f"csv: {args.csv}")
-    if args.html:
+    from flatiron.report.html import write_report
+
+    path = write_report(prof, pf)
+    print(f"report: {path}")
+    if not args.no_html:
         import webbrowser
 
-        from flatiron.report.html import write_report
-
-        path = write_report(prof, pf)
-        print(f"report: {path}")
         webbrowser.open(path.as_uri())
     return 0
 
@@ -1347,14 +1321,11 @@ def cmd_export(args):
 
 
 def _simulate_consensus(args):
-    from flatiron.sim.consensus import CONFIGS, check_compare, check_corrections, consensus_coverage, headphone_fits
+    from flatiron.sim.consensus import CONFIGS, check_corrections, consensus_coverage, headphone_fits
 
     fits = headphone_fits(args.seed, trials_per_session=max(args.trials_per_ear // 3, 1))
-    cmp = check_compare(fits)
-    print(f"Comparison (criterion 1): {'ok' if cmp.ok else 'NOT MET'}; missed {cmp.missed or 'nothing'}, flagged on "
-          f"shared features {cmp.on_shared or 'nothing'}, {cmp.false_flags} other false flags")
-    for config in CONFIGS:
-        print(f"\n{config.label}:")
+    for n, config in enumerate(CONFIGS):
+        print(("\n" if n else "") + f"{config.label}:")
         for c in check_corrections(fits, config):
             print(f"  {c.name} (criterion 2): {'ok' if c.ok else 'NOT MET'}")
             for fc, gain, h in c.own:
@@ -1552,20 +1523,21 @@ def main(argv=None):
                         "(e.g. before a verify session)")
     s.set_defaults(func=cmd_config)
 
-    s = sub.add_parser("report", help="the current fit: filters and features (and an HTML report with -H)")
+    s = sub.add_parser("report", help="the current fit: filters and features, and the HTML report with figures")
     profile_arg(s)
-    s.add_argument("-H", "--html", action="store_true", help="also open the HTML report (figures) in a browser")
+    s.add_argument("-H", "--no-html", action="store_true",
+                   help="don't open the HTML report in a browser (it's still written)")
     s.add_argument("--csv", metavar="FILE", help="dump the level, reference, baseline and residual with SDs, per ear")
     s.set_defaults(func=cmd_report)
 
-    s = sub.add_parser("compare", help="compare profiles per ear: their curves, narrow parts, and where one stands out")
+    s = sub.add_parser("compare", help="compare profiles per ear: their curves, narrow parts, and where they differ most")
     s.add_argument("profiles", nargs="+", metavar="PROFILE", help="two to eight profiles")
-    s.add_argument("-H", "--html", action="store_true", help="also open the HTML comparison in a browser")
-    s.add_argument("-w", "--width", type=float, help="max feature width W in octaves (default 1)")
-    s.add_argument("-r", "--reference", help="reference (default: the one the profiles share)")
+    s.add_argument("-H", "--no-html", action="store_true",
+                   help="don't open the HTML comparison in a browser (it's still written)")
     s.add_argument("--ear", choices=("L", "R", "both"), default="both", help="which ear")
     s.add_argument("--include-kind", action="append", choices=("iem", "speaker"),
-                   help="let this kind vote in the veto and the alignment (it's drawn dashed either way)")
+                   help="count this kind in the alignment, the spread and the strips (it's drawn dashed either way; "
+                        "with fewer than two profiles of counted kinds, all of them count)")
     s.add_argument("--broad-spread", type=float, metavar="DB",
                    help="shade where the broad parts (tonality) span more than this between profiles (default 4 dB)")
     s.set_defaults(func=cmd_compare)
