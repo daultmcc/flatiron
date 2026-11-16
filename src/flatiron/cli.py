@@ -409,11 +409,45 @@ def _references_to(prof):
     return users, used
 
 
+def _rename_references(root, old: str, new: str) -> list[str]:
+    """Point every reference to profile slug `old` among the listener's
+    profiles (consensus, veto, pooling, session selection) at `new`. The
+    labels of the other profiles changed."""
+    import copy
+
+    from flatiron.fit.pipeline import CONSENSUS_PREFIX
+    from flatiron.session.store import Profile
+
+    sub = lambda xs: [new if x == old else x for x in xs]
+    changed = []
+    for p in Profile.all(root):
+        d = p.read()
+        e = copy.deepcopy(d)
+        st = e.get("settings") or {}
+        ref = st.get("reference")
+        if isinstance(ref, str) and ref.startswith(CONSENSUS_PREFIX):
+            st["reference"] = CONSENSUS_PREFIX + ",".join(sub(ref[len(CONSENSUS_PREFIX):].split(",")))
+        for holder, k in ((st, "veto"), (e, "pool"), (e, "sessions_used")):
+            if holder.get(k):
+                holder[k] = sub(holder[k])
+        if e != d:
+            p.update(**e)
+            if p.slug != new:
+                changed.append(d["label"])
+    return changed
+
+
+def _trial_count(profiles) -> int:
+    return sum(len(s.trials) for p in profiles for s in p.sessions())
+
+
 def cmd_profiles(args):
-    from flatiron.session.store import Listener, Profile, current_listener
+    import shutil
+
+    from flatiron.session.store import RESERVED, Listener, Profile, current_listener, slugify
 
     action = getattr(args, "action", None)
-    if action in ("new", "set", "move"):
+    if action in ("new", "set", "move", "rename", "delete"):
         found = _named(args.name)
         if found is None:
             return 1
@@ -442,7 +476,7 @@ def cmd_profiles(args):
         if args.kind == "speaker":
             print(f"Measure it with: flatiron run {args.name!r} (blocks of one ear and one position each)")
         return 0
-    if action in ("set", "move") and prof is None:
+    if action in ("set", "move", "rename", "delete") and prof is None:
         print(f"No profile {args.name!r}. See: flatiron profiles")
         return 1
     if action == "set":
@@ -459,6 +493,45 @@ def cmd_profiles(args):
         if args.label:
             prof.update(label=args.label)
         return 0
+    if action == "rename":
+        try:
+            slug = slugify(args.new)
+        except ValueError as e:
+            print(e)
+            return 1
+        old = prof.slug
+        if slug != old:
+            if slug in RESERVED:
+                print(f"{args.new!r} can't be a profile name: `config --veto none` uses it.")
+                return 1
+            if Profile(slug, listener.root).dir.exists():
+                print(f"There's already a profile {slug!r}.")
+                return 1
+            prof.dir.rename(Profile(slug, listener.root).dir)
+            prof = Profile(slug, listener.root)
+            for sess in prof.sessions():
+                sess.profile = slug
+                prof.save(sess)
+        old_label = prof.read()["label"]
+        prof.update(label=args.new, slug=slug)
+        users = _rename_references(listener.root, old, slug) if slug != old else []
+        print(f"Renamed {old_label!r} to {args.new!r}" + (f" ({slug})" if slug != args.new else "") + "."
+              + (f" Updated {', '.join(users)}, which refer to it." if users else ""))
+        return 0
+    if action == "delete":
+        users, _ = _references_to(prof)
+        if users:
+            print(f"Not deleted: {', '.join(users)} use{'s' if len(users) == 1 else ''} it (consensus, veto or "
+                  "pooled sessions). Change their settings first.")
+            return 1
+        n_s, n_t = len(prof.sessions()), _trial_count([prof])
+        if _confirm(f"Delete profile {prof.read()['label']!r} of {listener.slug!r} ({n_s} sessions, {n_t} trials)? "
+                    "This can't be undone.", args.yes):
+            shutil.rmtree(prof.dir)
+            print("Deleted. The listener's noise is refitted the next time it's needed.")
+        else:
+            print("Not deleted.")
+        return 0
     if action == "move":
         to = Listener.find(args.to)
         if to is None:
@@ -468,8 +541,7 @@ def cmd_profiles(args):
             print(f"{args.name!r} already belongs to {to.slug!r}.")
             return 1
         if Profile(prof.slug, to.root).path.exists():
-            print(f"{to.slug!r} already has a profile {prof.slug!r}: rename one first (profiles set --label "
-                  "changes only the label, so move into a listener without that name).")
+            print(f"{to.slug!r} already has a profile {prof.slug!r}: rename one first (flatiron profiles rename).")
             return 1
         users, used = _references_to(prof)
         if users or used:
@@ -532,6 +604,24 @@ def cmd_listeners(args):
         env = os.environ.get(LISTENER_ENV)
         if env and slugify(env) == x.slug and new.slug != x.slug:
             print(f"Note: {LISTENER_ENV} still names {env!r}.")
+        return 0
+    if action == "delete":
+        import shutil
+
+        x = Listener.find(args.name)
+        if x is None:
+            print(f"No listener {args.name!r}. See: flatiron listeners")
+            return 1
+        profiles = x.profiles()
+        if _confirm(f"Delete listener {x.slug!r} ({x.label}) with {len(profiles)} profiles and "
+                    f"{_trial_count(profiles)} trials? This can't be undone.", args.yes):
+            shutil.rmtree(x.root)
+            print("Deleted.")
+            env = os.environ.get(LISTENER_ENV)
+            if env and slugify(env) == x.slug:
+                print(f"Note: {LISTENER_ENV} still names {env!r}.")
+        else:
+            print("Not deleted.")
         return 0
     everyone = Listener.all()
     if not everyone:
@@ -1429,7 +1519,7 @@ def main(argv=None):
                    help="what to play (repeatable; default: pink noise and the slow sweep)")
     s.set_defaults(func=cmd_audition)
 
-    s = sub.add_parser("listeners", help="list listeners, add one, or rename one")
+    s = sub.add_parser("listeners", help="list listeners, add, rename or delete one")
     s.set_defaults(func=cmd_listeners)
     actions = s.add_subparsers(dest="action")
     n = actions.add_parser("new", help="add a listener")
@@ -1437,8 +1527,11 @@ def main(argv=None):
     n = actions.add_parser("rename", help="rename a listener (its folder, and how its profiles are named)")
     n.add_argument("name")
     n.add_argument("new")
+    n = actions.add_parser("delete", help="delete a listener and all their profiles and sessions (asks first)")
+    n.add_argument("name")
+    n.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
 
-    s = sub.add_parser("profiles", help="list headphone profiles, add one, or change one's kind or label")
+    s = sub.add_parser("profiles", help="list headphone profiles, add, change, rename, move or delete one")
     s.set_defaults(func=cmd_profiles)
     actions = s.add_subparsers(dest="action")
     n = actions.add_parser("new", help="create a profile")
@@ -1453,6 +1546,12 @@ def main(argv=None):
     n = actions.add_parser("move", help="move a profile to another listener")
     n.add_argument("name")
     n.add_argument("--to", required=True, metavar="LISTENER")
+    n = actions.add_parser("rename", help="rename a profile (its label and folder; references to it follow)")
+    n.add_argument("name")
+    n.add_argument("new")
+    n = actions.add_parser("delete", help="delete a profile and all its sessions (asks first)")
+    n.add_argument("name")
+    n.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
 
     s = sub.add_parser("sessions", help="list a profile's sessions, or delete one")
     profile_arg(s)

@@ -91,6 +91,58 @@ def test_moving_a_profile_between_listeners(data, capsys):
     assert [p.slug for p in Listener.find("default").profiles()] == ["a"]
 
 
+
+def test_renaming_a_profile_carries_references_with_it(data, capsys):
+    from flatiron.fit.run import profile_session_ids, profile_settings
+    from flatiron.session.store import Profile
+
+    _sim(Profile.open("A"))
+    _sim(Profile.open("B"), seed=2)
+    _sim(Profile.open("C"), seed=3)
+    _sim(Profile.open("D"), seed=4)
+    assert main(["config", "A", "--sessions", "A,B"]) == 0  # A pools B
+    assert main(["config", "C", "--veto", "B"]) == 0
+    assert main(["config", "D", "-r", "consensus:B,C,D"]) == 0
+    capsys.readouterr()
+    assert main(["profiles", "rename", "B", "A"]) == 1 and "already a profile" in capsys.readouterr().out
+    assert main(["profiles", "rename", "B", "none"]) == 1
+    assert main(["profiles", "rename", "B", "HD 600"]) == 0
+    assert "Updated A, C, D" in capsys.readouterr().out
+    assert [p.slug for p in Profile.all()] == ["a", "c", "d", "hd-600"]
+    b = Profile("hd-600")
+    assert b.read()["label"] == "HD 600" and b.read()["slug"] == "hd-600"
+    assert {s.profile for s in b.sessions()} == {"hd-600"}
+    assert Profile("a").read()["pool"] == ["hd-600"] and profile_session_ids(Profile("a")) is None
+    assert profile_settings(Profile("c")).veto == ("hd-600",)
+    assert profile_settings(Profile("d")).reference == "consensus:hd-600,c,d"
+    assert main(["report", "d", "-H"]) == 0  # the consensus still resolves
+    assert main(["profiles", "rename", "hd-600", "hd 600"]) == 0  # same folder, new label
+    assert Profile("hd-600").read()["label"] == "hd 600"
+
+
+def test_deleting_profiles_and_listeners_asks_first(data, capsys, monkeypatch):
+    from flatiron.session.store import Listener, Profile
+
+    _sim(Profile.open("A"))
+    _sim(Profile.open("B"), seed=2)
+    assert main(["config", "A", "--sessions", "A,B"]) == 0
+    capsys.readouterr()
+    assert main(["profiles", "delete", "B", "-y"]) == 1 and "A uses it" in capsys.readouterr().out
+    assert main(["profiles", "delete", "nope", "-y"]) == 1
+    monkeypatch.setattr("builtins.input", lambda q: "n")
+    assert main(["profiles", "delete", "A"]) == 0 and "Not deleted" in capsys.readouterr().out
+    assert Profile("a").path.exists()
+    monkeypatch.setattr("builtins.input", lambda q: "y")
+    assert main(["profiles", "delete", "A"]) == 0 and not Profile("a").dir.exists()
+    assert main(["profiles", "delete", "B"]) == 0 and Profile.all() == []
+    Listener.create("Bob")
+    _sim(Profile.open("X", Listener.find("bob").root))
+    monkeypatch.setattr("builtins.input", lambda q: "n")
+    assert main(["listeners", "delete", "bob"]) == 0 and Listener.find("bob") is not None
+    assert main(["listeners", "delete", "bob", "-y"]) == 0
+    assert [x.slug for x in Listener.all()] == ["default"]
+    assert main(["listeners", "delete", "carol", "-y"]) == 1
+
 def test_comparisons_cross_listeners_and_consensus_does_not(data, capsys, tmp_path, monkeypatch):
     from flatiron.session.store import Listener, Profile
 

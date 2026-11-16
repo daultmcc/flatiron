@@ -31,6 +31,7 @@ uv run flatiron config A -r consensus:A,B,C      # A's reference: what A, B and 
 uv run flatiron config A --veto B,C              # correct A's features toward the median of A's, B's and C's
 uv run flatiron report --csv curves.csv          # the level, reference, baseline and residual, per ear
 uv run flatiron profiles new "Etude" --kind iem  # or `profiles set NAME --kind ... --label ...`
+uv run flatiron profiles rename Etude "Etude 2"  # or `profiles delete NAME` (asks first)
 uv run flatiron simulate                         # scheduler + fit against a simulated listener
 uv run flatiron simulate --scenario seating      # or consensus, consensus-speakers: multi-session and multi-headphone checks
 uv run pytest                                    # in parallel (pytest-xdist); -n0 for one process
@@ -44,8 +45,9 @@ profiles: `flatiron listeners new Bob`, then name Bob's profiles as `bob/NAME`
 (`flatiron run "bob/HD 600" --new`). With only one listener nothing changes;
 with several, a profile name needs its listener, unless `FLATIRON_LISTENER=bob`
 is set for the shell. `flatiron listeners` lists them, `listeners rename OLD NEW`
-renames one (the first is called `default`), and `profiles move NAME --to
-LISTENER` moves a profile measured under the wrong one. `compare` can take
+renames one (the first is called `default`), `listeners delete NAME` deletes
+one with all their profiles, and `profiles move NAME --to LISTENER` moves a
+profile measured under the wrong one. `compare` can take
 profiles from different listeners; a consensus, veto or pooling can't. How
 noisy your judgments are is estimated from all of a listener's profiles
 together, so a new headphone starts with it.
