@@ -312,14 +312,14 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("webbrowser.open", opened.append)
     assert main(["report"]) == 0  # the only profile; the fit is computed on demand
     out = capsys.readouterr().out
-    assert "Fitting the new trials" in out and "L ear: 160 trials" in out and "preamp" in out
+    assert "Fitting the new trials" in out and "Left ear · 160 trials" in out and "preamp" in out
     report = prof.dir / "cache" / "report.html"
     assert opened == [report.as_uri()]
     html = report.read_text()
-    assert html.count("<picture>") == 4 and "Left ear" in html  # per ear: fit, reference
-    sections = ["Measured response", "Features", "Reference", "Settings"]
+    assert html.count("<picture>") == 6 and "Left ear" in html  # per ear: fit, correction, reference
+    sections = ["Measured response", "Features", "Correction", "Reference", "Settings"]
     assert [html.index(f"<h2>{h}</h2>") for h in sections] == sorted(html.index(f"<h2>{h}</h2>") for h in sections)
-    assert "ISO 389-7 diffuse-field difference" in html.split("<h2>Reference</h2>")[1]
+    assert "diffuse field (ISO 226 + ISO 389-7)" in html.split("<h2>Reference</h2>")[1]
     report.unlink()
     assert main(["report", "-H"]) == 0 and len(opened) == 1  # -H: written, not opened
     assert report.exists()
@@ -485,7 +485,7 @@ def test_config_method_and_pool_cli(tmp_path, monkeypatch, capsys):
     assert a.read()["settings"] == {"method": "smooth", "smooth_oct": 0.4}
     capsys.readouterr()
     assert main(["report", "Noise"]) == 0
-    assert "Method: smooth (experimental)" in capsys.readouterr().out
+    assert "Method: smooth over 0.4 octave (experimental)" in capsys.readouterr().out
 
     assert main(["config", "Noise", "--sessions", "Noise,Nope"]) == 1 and "pool" not in a.read()
     assert main(["config", "Noise", "--sessions", "Noise,Tone"]) == 0
@@ -493,17 +493,17 @@ def test_config_method_and_pool_cli(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert main(["report", "Noise"]) == 0
     out = capsys.readouterr().out
-    assert "Pooled with Tone: 2 sessions" in out and "L ear: 120 trials" in out
+    assert "(pooled with Tone)" in out and "Left ear · 120 trials" in out
     assert main(["config", "Noise"]) == 0 and "and all of Tone's (pooled)" in capsys.readouterr().out
     # A session of this profile's and all of the other's, new ones included.
     assert main(["config", "Noise", "--sessions", f"{a.sessions()[0].id},Tone"]) == 0
     simulate_profile(b, {e: design_example(e) for e in "LR"}, sessions=1, trials_per_ear=30, seed=5,
                      config=SchedulerConfig(min_trials_noise_fit=10_000))
     capsys.readouterr()
-    assert main(["report", "Noise"]) == 0 and "L ear: 150 trials" in capsys.readouterr().out
+    assert main(["report", "Noise"]) == 0 and "Left ear · 150 trials" in capsys.readouterr().out
     assert main(["config", "Noise", "--reset", "sessions"]) == 0 and a.read()["pool"] is None
     capsys.readouterr()
-    assert main(["report", "Noise"]) == 0 and "L ear: 60 trials" in capsys.readouterr().out
+    assert main(["report", "Noise"]) == 0 and "Left ear · 60 trials" in capsys.readouterr().out
 
 
 def test_session_panel_shades_the_middle_90_percent_above_five_sessions(monkeypatch):

@@ -26,8 +26,6 @@ from flatiron.session.runner import PreparedTrial, TrialRunner
 from flatiron.session.sweep import SweepTiming, pair_taps, sweep_signal
 
 ITI_S = 0.5  # pause between an answer and the next trial
-VOLUME_REMINDER = ("If you changed your system volume for Flatiron, turn it back down "
-                   "before playing anything else.")
 EAR_NAMES = {"L": "LEFT", "R": "RIGHT"}
 
 CSS = """
@@ -117,30 +115,23 @@ class LevelScreen(MessageScreen):
 
     def play(self):
         self.app.player.start(self.sequence(), loop=True)
-        warning = ("Changing the level partway through a session can shift the results slightly: "
-                   "hearing's frequency response changes with loudness (about 0.4 dB at most for a "
-                   "2 dB change, 1 dB for 5 dB). Only change it if it's really needed.\n\n"
+        warning = ("Changing the level mid-session shifts the results slightly: only if you need to.\n\n"
                    if self.mid_session else "")
         cancel = "Esc: back, no change" if self.mid_session else "Esc: quit"
         self.say("Listening level",
                  warning +
-                 "Leave your system volume where you normally listen and don't change it.\n"
-                 "These bursts are like the trial sounds: one ear at a time, low to high pitch.\n"
-                 "Use ↑ / ↓ until the loudest of them is comfortable and moderate, about as loud "
-                 "as quiet conversation. Not loud.\n\n"
+                 "Set the loudest burst to about the level of quiet conversation.\n\n"
                  f"Level: {self.level:+.0f} dBFS   ({'current' if self.mid_session else 'last used'} "
-                 f"{self.start:+.0f}; "
-                 f"range {MIN_LEVEL_DB:+.0f} to {MAX_LEVEL_DB:+.0f})"
+                 f"{self.start:+.0f})"
                  + (f"\n\n{self.note}" if self.note else ""),
-                 f"↑/↓: 1 dB   PgUp/PgDn: 5 dB   Enter: continue at this level   {cancel}")
+                 f"↑/↓: 1 dB   PgUp/PgDn: 5 dB   Enter: continue   {cancel}")
 
     def action_step(self, d: int):
         new = float(np.clip(self.level + d, MIN_LEVEL_DB, MAX_LEVEL_DB))
         self.note = ""
         if new == self.level and d > 0:
-            self.note = ("That's the most Flatiron will play: any louder and its peak limiter would turn "
-                         "most trials back down. If it's still too quiet, raise the system volume a "
-                         "little, and turn it back down when you're done.")
+            self.note = ("That's the most Flatiron will play. If it's still too quiet, raise the system "
+                         "volume a little (and lower it afterwards).")
         self.level = new
         self.play()
 
@@ -211,9 +202,8 @@ class ChannelCheckScreen(MessageScreen):
         played = self.order.pop(0)
         if not self.runner.record_channel_check(played, side):
             self.failed = True
-            self.say(message=f"That burst was in the {EAR_NAMES[played].lower()} ear, but you heard it on the "
-                             f"{EAR_NAMES[side].lower()}.\n\nCheck that the headphones are on the right way "
-                             "round and both channels work, then press Enter to try again.",
+            self.say(message=f"That was the {EAR_NAMES[played].lower()} ear, not the {EAR_NAMES[side].lower()}."
+                             "\n\nCheck the headphones are on the right way round, then press Enter.",
                      status="Enter: retry   Esc: quit")
             return
         if self.order:
@@ -307,10 +297,8 @@ class BlockScreen(MessageScreen):
         info = self.runner.speaker
         pos = self.pos
         last = f"{self.last}\n\n" if self.last else ""
-        quit_note = f"\n\n{VOLUME_REMINDER}" if self.last else ""
         self.say(f"Block {self.done + 1} of {self.total} · {EAR_NAMES[pos.ear].lower()} ear · {pos.label}",
-                 last + pos.instructions() + f"\n\n{info['block']} trials, about a minute and a half."
-                 + quit_note,
+                 last + pos.instructions() + f"\n\n{info['block']} trials.",
                  "Enter when you're in position   Esc: quit")
 
     def action_ready(self):
@@ -358,12 +346,10 @@ class SweepScreen(MessageScreen):
 
     def intro(self):
         ear = self.ears[0]
-        eq = ("\nYour current correction is applied, so what stands out is what it hasn't fixed. "
-              "Q turns it off and on." if self.eq is not None else "")
+        eq = "\nYour current correction is on (Q toggles it)." if self.eq is not None else ""
         self.say(f"Sweep: {EAR_NAMES[ear]} ear",
-                 "A slow narrowband sweep plays from 1 to 14 kHz, then back down.\n"
-                 "Tap ↑ (or P) whenever it gets suddenly louder, ↓ (or D) when it gets quieter.\n"
-                 "Tap on the way down too: averaging the two cancels your reaction time." + eq,
+                 "A slow sweep from 1 to 14 kHz and back.\n"
+                 "Tap ↑ (P) where it gets suddenly louder, ↓ (D) where it gets quieter, on both passes." + eq,
                  "Enter: start   Esc: skip the sweep")
 
     def render_buffers(self, ear: str) -> dict[bool, np.ndarray]:
@@ -681,26 +667,25 @@ class SessionEndScreen(MessageScreen):
         r = self.runner
         p = r.progress()
         acc = r.catch_accuracy()
-        acc_s = f"{acc:.0%} of catch trials right" if acc is not None else "no catch trials yet"
+        acc_s = f"catch trials {acc:.0%} right" if acc is not None else "no catch trials yet"
         if r.speaker:
             self.speaker_end(p)
             return
         if self.reason == "discarded":
-            head, summary = "Session discarded.", "Nothing from it was kept.\n"
+            head, summary = "Session discarded.", ""
         else:
             head = {"time": "Time for a break.", "done": "Verify session complete."}.get(self.reason,
                                                                                     "Session saved.")
             undone = f", {p['undone']} undone" if p["undone"] else ""
-            summary = (f"{p['session_trials']} trials this session{undone}, {acc_s}, "
-                       f"{p['fast']} very fast answers.\n")
+            fast = f", {p['fast']} very fast" if p["fast"] else ""
+            summary = f"{p['session_trials']} trials{undone}, {acc_s}{fast}.\n"
         prior = r.prior_trials
         self.say(head,
                  summary + "Totals: " + " / ".join(
                      f"{e} {prior[e] + (0 if self.reason == 'discarded' else p['session_trials_ear'][e])}"
                      for e in EARS) + "\n\n"
-                 "Before the next session take the headphones off, rest a few minutes, "
-                 "and put them back on.\nKeep the system volume where it is.\n\n" + VOLUME_REMINDER,
-                 "N: start the next session (level and channel check first)   Q: quit")
+                 "Take the headphones off and rest a few minutes before the next session.",
+                 "N: next session   Q: quit")
 
     def speaker_end(self, p):
         from flatiron.session.speaker import next_block, progress
@@ -709,15 +694,13 @@ class SessionEndScreen(MessageScreen):
         nxt = next_block(self.runner.profile)
         head = "Block discarded." if self.reason == "discarded" else "Block saved."
         summary = "" if self.reason == "discarded" else f"{p['session_trials']} trials this block. "
-        summary += f"{done} of {total} blocks done.\n\n"
+        summary += f"{done} of {total} blocks done."
         if nxt is None:
-            self.say(head, summary + "That's the whole plan: every position on both ears.\n\n" + VOLUME_REMINDER,
-                     "Q: quit")
+            self.say(head, summary + " That's the whole plan.", "Q: quit")
             return
-        ear = "the same ear" if nxt.ear == self.runner.speaker["open_ear"] else \
-            f"the {EAR_NAMES[nxt.ear].lower()} ear (move the earplug)"
-        self.say(head, summary + f"Next: {ear}, {nxt.label}. Rest your ears for a moment if you like.\n\n"
-                 + VOLUME_REMINDER, "N: next block   Q: quit")
+        ear = "same ear" if nxt.ear == self.runner.speaker["open_ear"] else \
+            f"{EAR_NAMES[nxt.ear].lower()} ear (move the earplug)"
+        self.say(head, summary + f"\n\nNext: {ear}, {nxt.label}.", "N: next block   Q: quit")
 
     def action_next(self):
         if self.runner.speaker:

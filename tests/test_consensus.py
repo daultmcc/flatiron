@@ -722,7 +722,7 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     monkeypatch.setattr("webbrowser.open", opened.append)
     assert main(["compare", "One", "Two", "Three", "-H", "--ear", "L"]) == 0
     out = capsys.readouterr().out
-    assert "3 profiles counted" in out and "narrow parts differ:" in out and "Right ear" not in out
+    assert "Spread between profiles" in out and "Narrow feature disagreements:" in out and "Right ear" not in out
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
     assert page.count("<picture>") == 1 and "Left ear" in page and "All features" not in page
     assert "aligned curves, narrow parts" in page and not opened  # -H: written, not opened
@@ -744,7 +744,7 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert profile_settings(one).consensus == ("two", "three")
     assert main(["report", "One", "-H"]) == 0
     out = capsys.readouterr().out
-    assert "consensus of Three, Two" in out and "Narrow structure kept: L " in out
+    assert "consensus of Three, Two" in out and "Kept share of narrow features: L " in out
     report = (one.dir / "cache" / "report.html").read_text()
     assert report.count("ear: the reference") == 2
     assert "weighted mean" in out
@@ -780,7 +780,7 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["config", "One", "--veto", "Two"]) == 1  # veto judges features
     capsys.readouterr()
     assert main(["config", "One", "--method", "features", "--veto", "Two,Three,One"]) == 0
-    assert "Warning: the veto is on as well as a consensus reference" in capsys.readouterr().out
+    assert "Warning: the veto is on with a consensus reference" in capsys.readouterr().out
     st = profile_settings(one)
     assert st.veto == ("two", "three", "one") and st.consensus == ("two", "three")
     capsys.readouterr()
@@ -791,7 +791,7 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["config", "One", "--veto-import", "3"]) == 1  # only for the feature mode
     capsys.readouterr()
     assert main(["report", "One", "-H"]) == 0
-    assert "frequency by frequency" in capsys.readouterr().out
+    assert "Veto: pointwise" in capsys.readouterr().out
     assert main(["config", "One", "--veto-mode", "feature", "--veto-import", "3"]) == 0
     assert profile_settings(one).veto_import_db == 3.0
     assert main(["config", "One", "--reset", "veto-import"]) == 0
@@ -843,7 +843,7 @@ def test_speakers_in_a_consensus_cli(three_profiles, tmp_path, capsys):
     simulate_speaker_profile(Profile("spk"), {e: design_example(e) for e in "LR"}, blocks=10, block=16, seed=1)
     capsys.readouterr()
     assert main(["config", "One", "-r", "consensus:Two,Three,Spk"]) == 0
-    assert "with Spk deciding how much" in capsys.readouterr().out
+    assert "consensus of Two, Three, with Spk" in capsys.readouterr().out
     assert main(["config", "One", "--speaker-colouration", "0.5", "--gain-sd", "0.4", "--speaker-window", "0.25"]) == 0
     st = profile_settings(one)
     assert (st.speaker_colour_db, st.consensus_gain_sd, st.speaker_window_oct) == (0.5, 0.4, 0.25)
@@ -854,7 +854,7 @@ def test_speakers_in_a_consensus_cli(three_profiles, tmp_path, capsys):
     capsys.readouterr()
     assert main(["report", "One", "-H"]) == 0
     out = capsys.readouterr().out
-    assert "Speakers (Spk)" in out and "1.00 dB (the default)" in out and "With one speaker" in out
+    assert "with Spk" in out and "1.00 dB (the default)" in out and "with one speaker" in out
     assert len(list(consensus_dir(tmp_path / "flatiron" / "listeners" / "default").glob("*.npz"))) == 2
     # Speakers only gate: a consensus of speakers alone is refused, and an IEM can't be listed.
     assert main(["config", "Two", "-r", "consensus:Spk"]) == 1

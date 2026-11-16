@@ -42,18 +42,14 @@ class Position:
         return EAR_WORDS["R" if self.ear == "L" else "L"]
 
     def instructions(self) -> str:
+        """The setup, besides the angles (the block screen shows those in large digits)."""
         side, other = EAR_WORDS[self.ear], self.plugged
-        vert = "at ear level" if self.elevation == 0 else \
-            f"{abs(self.elevation)}° {'above' if self.elevation > 0 else 'below'}"
-        horiz = "straight in front" if self.azimuth == 0 else f"{self.azimuth}° to the {side}"
-        behind = " (behind you)" if self.azimuth > 90 else ""
         drop = "" if self.elevation == 0 else \
-            f" At 1 m away that's about 0.5 m {'above' if self.elevation > 0 else 'below'} your ears."
+            f", about 0.5 m {'above' if self.elevation > 0 else 'below'} your ears"
         return (f"{side.capitalize()} ear open, earplug in your {other} ear.\n\n"
-                f"The speaker should be {vert} and {horiz} of your head{behind}, about 1 m away "
-                f"(at least 0.7 m), pointing at you.{drop}\n"
-                "Angles are from your head facing straight ahead, upright and level: turn the chair "
-                "to change direction, and move the speaker, not your head, to change height.")
+                f"Speaker about 1 m away (at least 0.7 m){drop}, pointing at you.\n"
+                "Keep your head level and facing forward: turn the chair for direction, "
+                "move the speaker for height.")
 
 
 def plan(key: str = "") -> list[Position]:

@@ -127,8 +127,7 @@ def cmd_devices(args):
     print("\n* = default. Pass --device <index> to other commands; a wired output at 48 kHz is recommended.")
 
 
-VOLUME_REMINDER = ("Reminder: if you changed your system volume for Flatiron, turn it back down "
-                   "before playing anything else.")
+DOUBLE_EQ = "Turn off any system EQ with this correction (PipeWire sink, LSP), or it's applied twice."
 
 
 def _player(args):
@@ -170,14 +169,12 @@ def cmd_tone(args):
         pf = _current(prof)
         if pf is not None:
             eq = PreviewEQ.from_fit(pf.summary())
-            print("Make sure the correction isn't also applied by the system (a Flatiron PipeWire sink or LSP),")
-            print("or Q's 'on' state gets it twice.")
+            print(DOUBLE_EQ)
     level = prof.last_level() if prof is not None else None
     ear = {"L": "L", "R": "R", "both": "LR"}[args.ear]
     app = ToneApp(args.freq, ear, DEFAULT_LEVEL_DB if level is None else level, eq=eq, profile=prof,
                   device=args.device, dry_run=args.dry_run)
     app.run()
-    print(VOLUME_REMINDER)
     return 0
 
 
@@ -220,8 +217,7 @@ def _launch(args, sweep: bool, profile=None, **extra):
                 pf = current_fit(profile, on_fit=lambda: print("Fitting, to apply the current correction "
                                                                "during the sweep...", flush=True))
                 sweep_eq = PreviewEQ.from_fit(pf.summary())
-                print("The sweep plays through the current correction (Q in the sweep turns it off). Make sure")
-                print("it isn't also applied by the system, or it's applied twice.")
+                print("The sweep plays through the current correction. " + DOUBLE_EQ)
             except NotEnoughTrials:
                 pass
             except (ValueError, FileNotFoundError) as e:
@@ -242,7 +238,6 @@ def _launch(args, sweep: bool, profile=None, **extra):
     app = FlatironApp(lambda: TrialRunner(profile, settings(), device=device), _player(args), sweep=sweep,
                       sweep_timing=timing, sweep_eq=sweep_eq)
     app.run()
-    print(VOLUME_REMINDER)
     return 0
 
 
@@ -274,9 +269,8 @@ def _launch_speaker(args, prof):
         return 0
     noise = listener_noise(prof.dir.parent.parent)
     if any(n.n_trials == 0 for n in noise.values()):
-        print("Note: no headphone or IEM profile of this listener has 200 trials in each ear yet, so speaker "
-              "blocks use a default judgment noise. Their error bars are only as right as that guess.")
-    print(f"{done} of {total} blocks done. Each block: one ear open, one position, {block} trials.")
+        print("Note: no headphone profile has 200 trials per ear yet, so these blocks use a default noise.")
+    print(f"{done} of {total} blocks done.")
     channel = prof.read()["channel"]
 
     def speaker():
@@ -311,25 +305,22 @@ def cmd_verify(args):
     if pf is None:
         return 1
     eq = PreviewEQ.from_fit(pf.summary())
-    print(f"Verifying fit {eq.fit_hash}: Flatiron applies the correction to every burst itself.")
-    print("Make sure it isn't also applied by the system (don't play through a Flatiron PipeWire sink or an")
-    print("LSP instance with this correction), or it will be applied twice.")
+    print(f"Verifying fit {eq.fit_hash}. " + DOUBLE_EQ)
     if checkpoint(prof) is None:
-        print("No checkpoint: afterwards the fit is redone with these trials included, and its filters may")
-        print("move. To keep these filters and only add to them, quit and run: flatiron config --checkpoint")
+        print("No checkpoint, so the filters may move afterwards. To keep them: flatiron config --checkpoint")
     n_before = len(prof.sessions())
     rc = _launch(args, sweep=False, profile=prof, preview=eq, max_trials=args.trials)
     if rc or len(prof.sessions()) == n_before:
         return rc
-    print("\nChecking what's left with the correction applied (all trials, verify included)...")
+    print("\nChecking what's left with the correction applied...")
     applied = {e: [PeakingFilter(f.fc, f.gain_db, f.q) for f in fs] for e, fs in eq.channels.items()}
     pf, left = leftovers(prof, applied)
     for e, feats in left.items():
         who = f"{e} ({pf.fits[e].n_trials} trials)"
         if not feats:
-            print(f"  {who}: nothing significant left. The correction holds.")
+            print(f"  {who}: nothing significant left")
             continue
-        print(f"  {who}: still significant: " + ", ".join(
+        print(f"  {who}: left: " + ", ".join(
             f"{x.fc:.0f} Hz ({-x.peak_db:+.1f} dB, {x.kind})" for x in sorted(feats, key=lambda x: x.fc)))
     if any(left.values()):
         print("The fit now includes these trials" + (", and adds filters on top of the checkpoint"
@@ -355,10 +346,8 @@ def cmd_audition(args):
     if pf is None:
         return 1
     eq = PreviewEQ.from_fit(pf.summary())
-    print("Make sure the correction isn't also applied by the system (a Flatiron PipeWire sink or LSP),")
-    print("or the 'on' state gets it twice.")
+    print(DOUBLE_EQ)
     AuditionApp(sources, eq, _player(args), f"{prof.read()['label']} · fit {eq.fit_hash}").run()
-    print(VOLUME_REMINDER)
     return 0
 
 
@@ -924,14 +913,12 @@ def cmd_config(args):
         root = prof.dir.parent.parent
         speakers = _consensus_speakers(new, root)
         heads = [s for s in new.consensus if s not in speakers]
-        print("Consensus of " + ", ".join(Profile(s, root).read()["label"] for s in heads)
-              + (", with " + ", ".join(Profile(s, root).read()["label"] for s in speakers)
-                 + " deciding how much of their shared narrow structure is kept" if speakers else "") + ".")
+        print("Reference: consensus of " + ", ".join(Profile(s, root).read()["label"] for s in heads)
+              + (", with " + ", ".join(Profile(s, root).read()["label"] for s in speakers) if speakers else ""))
         if len(heads) == 1:
-            print("Note: that's a single headphone's curve, not a consensus.")
+            print("Warning: a single headphone's curve, not a consensus.")
         elif len(heads) == 2:
-            print("Note: with two headphones it's their weighted mean, not a median, so one's peak reaches the "
-                  "reference at about half height.")
+            print("Warning: with two headphones the consensus is their weighted mean, not a median.")
     if new.consensus and new.veto and (not old.consensus or not old.veto):
         from flatiron.report.html import VETO_WITH_CONSENSUS
 
@@ -940,15 +927,13 @@ def cmd_config(args):
         pool, used = selection
         prof.update(pool=pool or None, sessions_used=used)
         print(f"sessions: {_describe_selection(prof)}")
-        if pool:
-            print("(Pooled sessions stay in their own profiles; trial sessions adapt to this profile's own.)")
     if args.checkpoint:
         pf = _current(prof)
         if pf is None:
             return 1
         set_checkpoint(prof, pf)
         n = " / ".join(f"{e} {len(c.filters)}" for e, c in pf.correction.ears.items())
-        print(f"Checkpoint: the current filters ({n}) stay as they are from now on; fits only add to them.")
+        print(f"Checkpoint: the current filters ({n}) are fixed; later fits only add to them.")
     for flags, f, *_ in FIT_OPTIONS:
         if _show(old, f) != _show(new, f):
             print(f"{_option_name(flags)}: {_show(old, f)} -> {_show(new, f)}")
@@ -980,87 +965,66 @@ def cmd_config(args):
 
 
 def _print_fit(pf):
-    from flatiron.report.html import AMBIGUOUS_BASELINE_SD_DB, ambiguous_features, consensus_notes, veto_line
+    from flatiron.report.html import (ambiguous_features, fitted_values, reason_parts, reference_description,
+                                      reference_notes, top_notes)
+    from flatiron.report.plots import EAR_NAMES
 
     corr = pf.correction
-    if pf.pooled:
-        print(f"Pooled with {', '.join(pf.pooled)}: {len(pf.sessions)} sessions in all.")
-    for note in consensus_notes(pf):
+    pooled = f" (pooled with {', '.join(pf.pooled)})" if pf.pooled else ""
+    n = len(pf.sessions)
+    print(f"{n} session{'' if n == 1 else 's'}{pooled} · preamp {corr.preamp_db:+.1f} dB")
+    for note in [reference_description(corr.settings, pf)] + reference_notes(pf, kept=True) + top_notes(pf, False):
         print(note)
-    if corr.settings.method == "smooth":
-        print(f"Method: smooth (experimental): every residual against a {corr.settings.smooth_oct:g}-octave "
-              "smooth is corrected; the features below are only what's significant.")
-    if corr.settings.method == "features" and corr.settings.baseline == "joint":
-        print("Baseline: joint (experimental): the posterior mean of the tonality under a model of tonality "
-              "plus features.")
-    if corr.settings.method == "features" and not corr.settings.shared_baseline:
-        print("Baseline: one per ear (--no-shared-baseline).")
     for e, c in corr.ears.items():
         f = pf.fits[e]
-        print(f"\n{e} ear: {f.n_trials} trials, noise {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%} "
-              f"({_noise_source(f)}), "
-              f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB (+ = first interval heard louder)")
-        print(f"  seating spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
-              f"({f'estimated from {f.n_groups} sessions' if f.tau_fitted else 'the prior: needs two sessions of 60+ trials'})")
+        print(f"\n{EAR_NAMES[e]} ear · {f.n_trials} trials")
+        for v in fitted_values(f, False):
+            print(f"  {v}")
         comp = {id(x) for x in c.compensation}
         kept = {id(x) for x in c.fixed}
+        print("  Filters:" if c.filters else "  Filters: none needed")
         for flt in c.filters:
-            note = ("  (checkpoint)" if id(flt) in kept else
-                    "  (tonality compensation)" if id(flt) in comp else "")
-            print(f"  PK  Fc {flt.fc:7.0f} Hz  Gain {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}{note}")
-        if not c.filters:
-            print("  no correction needed")
+            note = "  checkpoint" if id(flt) in kept else "  tonality" if id(flt) in comp else ""
+            print(f"    PK {flt.fc:6.0f} Hz {flt.gain_db:+5.1f} dB  Q {flt.q:5.2f}{note}")
         for kind in ("narrow", "broad"):
             acc = sorted((x for x in c.features if x.accepted and x.kind == kind), key=lambda x: x.fc)
-            rej = [x for x in c.features if not x.accepted and x.reason == "most seatings show little of it"]
             if acc:
-                print(f"  {kind} features: " + ", ".join(f"{x.fc:.0f} Hz ({_correction_of(x):+.1f} dB"
-                                                         + (", inside a broad region" if x.inside_broad else "")
-                                                         + (f", {x.weight:.0%} by significance" if x.weight < 1 else "")
-                                                         + ")" for x in acc))
-            if rej and kind == "narrow":
-                print("  dropped, most seatings show little of it: " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
-            scaled = [x for x in acc if x.reason]
-            if scaled:
-                print(f"  {kind}, corrected to the median seating's level: "
-                      + ", ".join(f"{x.fc:.0f} Hz ({x.scale:.0%})" for x in scaled))
-        for x in sorted((x for x in c.features if x.veto is not None), key=lambda x: x.fc):
-            print(f"  veto {x.fc:.0f} Hz: {_correction_of(x):+.1f} dB ({veto_line(x)})"
-                  + ("" if x.accepted else f": {x.reason}"))
+                print(f"  {kind.capitalize()} features corrected: " + ", ".join(
+                    f"{x.fc:.0f} Hz {_correction_of(x):+.1f} dB"
+                    + (f" ({', '.join(reason_parts(x))})" if reason_parts(x) else "") for x in acc))
+        rej = [x for x in c.features if not x.accepted and x.reason == "most seatings show little of it"]
+        if rej:
+            print("  Dropped (few seatings show it): " + ", ".join(f"{x.fc:.0f} Hz" for x in rej))
+        vetoed = [x for x in c.features if x.veto is not None and not x.accepted]
+        if vetoed:
+            print("  Left alone by the veto: " + ", ".join(f"{x.fc:.0f} Hz" for x in sorted(vetoed, key=lambda x: x.fc)))
         unsure = ambiguous_features(c)
         if unsure:
-            print(f"  baseline uncertain (SD over {AMBIGUOUS_BASELINE_SD_DB:g} dB) under: "
-                  + ", ".join(f"{x.fc:.0f} Hz" for x in unsure) + "; part may be tonality, or the other way round")
-        for a, b, m in c.left_out:
-            print(f"  left out (band budget): {a:.0f}-{b:.0f} Hz, up to {m:.1f} dB")
-    print(f"\npreamp {corr.preamp_db:+.1f} dB (both channels)")
-    if corr.settings.reference in ("iso226", "diffuse"):
-        print("reference: " + {"iso226": "ISO 226 free field",
-                               "diffuse": "ISO 226 + ISO 389-7 diffuse field"}[corr.settings.reference])
-    print("settings: flatiron config")
+            print("  Baseline uncertain under: " + ", ".join(f"{x.fc:.0f} Hz" for x in unsure)
+                  + " (part may be tonality)")
+        for lo, hi, m in c.left_out:
+            print(f"  Out of bands, left uncorrected: {lo:.0f}-{hi:.0f} Hz (up to {m:.1f} dB)")
 
 
 def _print_speaker(prof, pf):
     """A speaker profile: its direction-averaged curve's features, with no
     correction (DESIGN.md, "Positions as random effects")."""
+    from flatiron.report.html import fitted_values
+    from flatiron.report.plots import EAR_NAMES
     from flatiron.session.speaker import progress
 
     done, total = progress(pf.sessions)
-    print(f"Speaker profile (channel {prof.read().get('channel')}): {done} of {total} blocks of the position plan. "
-          "It's evidence about your ears, so it has no correction.")
+    print(f"Speaker profile (channel {prof.read().get('channel')}): {done} of {total} blocks · no correction")
     for e, c in pf.correction.ears.items():
         f = pf.fits[e]
-        print(f"\n{e} ear: {f.n_trials} trials at {f.n_groups} positions, noise {f.sigma0:.2f} dB "
-              f"(×{f.treble_noise:.2f} above 10 kHz), lapse {f.lapse:.1%} ({_noise_source(f)}), "
-              f"time-order bias {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB")
-        print(f"  position spread {f.tau_lo:.1f}, {f.tau_mid:.1f} and {f.tau_hi:.1f} dB at 5, 8 and 12 kHz "
-              "(assumed, not estimated)")
+        print(f"\n{EAR_NAMES[e]} ear · {f.n_trials} trials")
+        for v in fitted_values(f, True):
+            print(f"  {v}")
         for kind in ("narrow", "broad"):
             acc = sorted((x for x in c.features if x.accepted and x.kind == kind), key=lambda x: x.fc)
-            print(f"  {kind} features: " + (", ".join(f"{x.fc:.0f} Hz ({x.peak_db:+.1f} dB)" for x in acc)
-                                            if acc else "none significant"))
-    print("\nTo see it beside your headphones: flatiron compare HEADPHONE ... SPEAKER (a speaker is drawn dashed "
-          "and, beside two or more headphones, doesn't count toward the alignment)")
+            print(f"  {kind.capitalize()} features: " + (", ".join(f"{x.fc:.0f} Hz {x.peak_db:+.1f} dB" for x in acc)
+                                                        if acc else "none"))
+    print(f"\nTo see it beside headphones: flatiron compare HEADPHONE ... {prof.read()['label']}")
 
 
 def _correction_of(f) -> float:
@@ -1132,11 +1096,6 @@ def cmd_compare(args):
 
         webbrowser.open(path.as_uri())
     return 0
-
-
-def _noise_source(f) -> str:
-    return (f"shared: {f.noise_trials} trials in this ear across profiles" if f.noise_trials
-            else "the prior: estimating it needs a profile with 200 trials in this ear")
 
 
 def cmd_report(args):

@@ -318,7 +318,7 @@ async def test_mid_session_level_change_warns_and_is_logged(tmp_path):
         await pilot.pause()
         lvl = app.screen
         assert isinstance(lvl, LevelScreen) and scr.paused
-        assert "shift the results" in str(lvl.query_one("#message").render())
+        assert "shifts the results" in str(lvl.query_one("#message").render())
         # Esc: no change.
         await pilot.press("escape")
         await pilot.pause()

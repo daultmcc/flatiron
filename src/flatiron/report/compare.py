@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 from flatiron.fit.compare import EarComparison, Member, compare_ear, spans  # noqa: E402
-from flatiron.fit.consensus import SPLIT_OCT  # noqa: E402
+from flatiron.fit.compare import HETEROGENEITY_P  # noqa: E402
 from flatiron.model.grid import interp_matrix  # noqa: E402
 from flatiron.report.plots import EAR_NAMES, THEMES, _style  # noqa: E402
 
@@ -54,9 +54,9 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
         col = colors[mem.label]
         ax.fill_between(common, d - sd, d + sd, color=col, alpha=0.14, linewidth=0)
         ax.plot(common, d, color=col, linewidth=1.6, linestyle="-" if c.counted[mem.label] else "--", label=mem.label)
-    ax.set_title(f"{EAR_NAMES.get(c.ear, c.ear)} ear · raw curves, aligned (±1 SD)", color=t["ink"], fontsize=10,
-                 loc="left")
-    ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"], ncol=min(len(members), 5))
+    ax.set_title("Measured response", color=t["ink"], fontsize=10, loc="left")
+    ax.fill_between([], [], [], color=t["muted"], alpha=0.25, linewidth=0, label="±1 SD")
+    ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"], ncol=min(len(members) + 1, 5))
 
     ax = axes[1]
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)
@@ -65,12 +65,10 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
         col = colors[mem.label]
         ax.fill_between(common, n - sd, n + sd, color=col, alpha=0.12, linewidth=0)
         ax.plot(common, n, color=col, linewidth=1.6, linestyle="-" if c.counted[mem.label] else "--")
-    ax.set_title(f"Narrow parts: each curve less its {SPLIT_OCT:g}-octave local linear smooth (±1 SD), as a "
-                 "consensus reference splits them", color=t["ink"], fontsize=10, loc="left")
+    ax.set_title("Narrow parts", color=t["ink"], fontsize=10, loc="left")
 
-    for ax, where, title in ((axes[2], c.differ_broad, f"Where the broad parts (tonality, aligned) span more than "
-                                                      f"{c.broad_spread_db:g} dB"),
-                             (axes[3], c.differ_narrow, "Where the narrow parts differ (Cochran's Q, p < 0.01)")):
+    for ax, where, title in ((axes[2], c.differ_broad, f"Broad tonal disagreements (> {c.broad_spread_db:g} dB)"),
+                             (axes[3], c.differ_narrow, f"Narrow feature disagreements (p < {HETEROGENEITY_P:g})")):
         ax.fill_between(common, 0, 1, where=where, color=t["muted"], linewidth=0, step="mid")
         ax.set_ylim(0, 1)
         ax.set_yticks([])
@@ -93,40 +91,48 @@ def _ranges(c: EarComparison, mask) -> str:
     return ", ".join(out) or "nowhere"
 
 
-def _summary(c: EarComparison) -> list[str]:
-    return [f"{c.n_counted} profiles counted" + (" (fewer than two of a counted kind, so all of them)"
-                                                 if c.fallback else "")
-            + f", between-profile spread {c.tau_hp:.2f} dB",
-            f"broad parts span more than {c.broad_spread_db:g} dB: {_ranges(c, c.differ_broad)}",
-            f"narrow parts differ: {_ranges(c, c.differ_narrow)}"]
+def _spread(c: EarComparison) -> str:
+    return f"Spread between profiles: {c.tau_hp:.2f} dB"
+
+
+def _uncounted(c: EarComparison, members: list[Member]) -> list[Member]:
+    return [m for m in members if not c.counted[m.label]]
 
 
 def print_comparison(comparisons: dict[str, EarComparison], members: list[Member]) -> None:
     c = next(iter(comparisons.values()))
-    print("Comparing " + ", ".join(m.label + ("" if c.counted[m.label] else f" ({m.kind}, not counted)")
-                                   for m in members) + ".")
+    out = _uncounted(c, members)
+    if out:
+        print("Not counted in the spreads: " + ", ".join(f"{m.label} ({m.kind})" for m in out))
+    if c.fallback:
+        print("Fewer than two headphones, so every profile counts.")
     for e, c in comparisons.items():
-        print(f"\n{EAR_NAMES.get(e, e)} ear: " + "\n  ".join(_summary(c)))
+        print(f"\n{EAR_NAMES.get(e, e)} ear\n  {_spread(c)}\n"
+              f"  Broad tonal disagreements (> {c.broad_spread_db:g} dB): {_ranges(c, c.differ_broad)}\n"
+              f"  Narrow feature disagreements: {_ranges(c, c.differ_narrow)}")
 
 
 def write_comparison(path: Path, comparisons: dict[str, EarComparison], members: list[Member]) -> Path:
     from flatiron.report.html import CSS, _columns, _png
 
     names = ", ".join(m.label for m in members)
-    out = [f"<h1>Flatiron comparison · {html.escape(names)}</h1>",
-           '<p class="meta">Raw curves: no reference is subtracted.'
-           + (" Dashed: profiles that don't count toward the alignment, the spread or the strips."
-              if not all(all(c.counted.values()) for c in comparisons.values()) else "") + "</p>"]
+    first = next(iter(comparisons.values()))
+    kinds = sorted({m.kind for m in _uncounted(first, members)})
+    out = [f"<h1>Flatiron comparison · {html.escape(names)}</h1>"]
+    if kinds:
+        out.append(f'<p class="meta">Dashed lines are {" and ".join(k.replace("iem", "IEM") for k in kinds)} '
+                   "profiles and aren't counted in spread calculations.</p>")
+    if first.fallback:
+        out.append('<p class="meta">Fewer than two headphones, so every profile counts.</p>')
     cols = []
     for e, c in comparisons.items():
         light = _png(ear_figure(c, members, "light"))
         dark = _png(ear_figure(c, members, "dark"))
-        s = _summary(c)
         cols.append(f"<h2>{EAR_NAMES.get(e, e)} ear</h2>"
                     f'<div class="card"><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)">'
                     f'<img src="{light}" alt="{EAR_NAMES.get(e, e)} ear: aligned curves, narrow parts and where they '
                     'differ"></picture></div>'
-                    '<p class="meta">' + "<br>".join(html.escape(x[0].upper() + x[1:] + ".") for x in s) + "</p>")
+                    f'<p class="meta">{_spread(c)}</p>')
     out.append(_columns(cols))
     doc = ('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1">'
