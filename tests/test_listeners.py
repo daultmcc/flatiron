@@ -101,11 +101,16 @@ def test_comparisons_cross_listeners_and_consensus_does_not(data, capsys, tmp_pa
     capsys.readouterr()
     assert main(["compare", "default/A", "bob/A"]) == 0
     out = capsys.readouterr().out
-    assert "default/A" in out and "bob/A" in out
+    assert "Comparing default/A, bob/A" in out
     # A consensus or veto is about one listener's ears.
     assert main(["config", "bob/C", "-r", "consensus:default/A"]) == 1
     assert "same listener" in capsys.readouterr().out
     assert main(["config", "bob/C", "--veto", "A"]) == 0
+    # report names the listener when there are several, on the page and in the terminal.
+    capsys.readouterr()
+    assert main(["report", "bob/A"]) == 0
+    assert capsys.readouterr().out.startswith("Listener: Bob · ")
+    assert "Listener: Bob · " in (Profile("a", bob.root).dir / "cache" / "report.html").read_text()
     # Exports carry the listener's name when there are several.
     monkeypatch.chdir(tmp_path)
     assert main(["export", "bob/A", "-t", "apo"]) == 0

@@ -964,15 +964,15 @@ def cmd_config(args):
     return 0
 
 
-def _print_fit(pf):
-    from flatiron.report.html import (ambiguous_features, fitted_values, reason_parts, reference_description,
-                                      reference_notes, top_notes)
+def _print_fit(prof, pf):
+    from flatiron.report.html import (ambiguous_features, fitted_values, listener_prefix, reason_parts,
+                                      reference_description, reference_notes, top_notes)
     from flatiron.report.plots import EAR_NAMES
 
     corr = pf.correction
     pooled = f" (pooled with {', '.join(pf.pooled)})" if pf.pooled else ""
     n = len(pf.sessions)
-    print(f"{n} session{'' if n == 1 else 's'}{pooled} · preamp {corr.preamp_db:+.1f} dB")
+    print(f"{listener_prefix(prof)}{n} session{'' if n == 1 else 's'}{pooled} · preamp {corr.preamp_db:+.1f} dB")
     for note in [reference_description(corr.settings, pf)] + reference_notes(pf, kept=True) + top_notes(pf, False):
         print(note)
     for e, c in corr.ears.items():
@@ -1009,12 +1009,12 @@ def _print_fit(pf):
 def _print_speaker(prof, pf):
     """A speaker profile: its direction-averaged curve's features, with no
     correction (DESIGN.md, "Positions as random effects")."""
-    from flatiron.report.html import fitted_values
+    from flatiron.report.html import fitted_values, listener_prefix
     from flatiron.report.plots import EAR_NAMES
     from flatiron.session.speaker import progress
 
     done, total = progress(pf.sessions)
-    print(f"Speaker profile (channel {prof.read().get('channel')}): {done} of {total} blocks · no correction")
+    print(f"{listener_prefix(prof)}Speaker profile (channel {prof.read().get('channel')}): {done} of {total} blocks · no correction")
     for e, c in pf.correction.ears.items():
         f = pf.fits[e]
         print(f"\n{EAR_NAMES[e]} ear · {f.n_trials} trials")
@@ -1105,14 +1105,10 @@ def cmd_report(args):
     pf = _current(prof)
     if pf is None:
         return 1
-    from flatiron.session.store import listener_of, several_listeners
-
-    if several_listeners():
-        print(f"Listener: {listener_of(prof).label} ({listener_of(prof).slug})")
     if prof.kind == "speaker":
         _print_speaker(prof, pf)
     else:
-        _print_fit(pf)
+        _print_fit(prof, pf)
     if args.csv:
         from flatiron.report.compare import write_csv
 

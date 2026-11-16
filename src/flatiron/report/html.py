@@ -207,10 +207,18 @@ def _spread(name: str, f, how: str) -> str:
 def fitted_values(f, speaker: bool) -> list[str]:
     """The fitted listener values for an ear, one per line."""
     return [f"Listener noise: {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz)",
-            f"Lapse rate: {f.lapse:.1%}" + (" (shared across profiles)" if f.noise_trials else " (prior)"),
+            f"Lapse rate: {f.lapse:.1%}" + ("" if f.noise_trials else " (prior)"),
             f"Time-order bias: {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB",
             _spread("Position spread", f, "assumed") if speaker else
             _spread("Seating spread", f, "" if f.tau_fitted else "prior")]
+
+
+def listener_prefix(profile: Profile) -> str:
+    """'Listener: Bob · ' when there are several listeners, else nothing."""
+    from flatiron.session.store import listener_of, several_listeners
+
+    x = listener_of(profile)
+    return f"Listener: {x.label} · " if several_listeners(x.data) else ""
 
 
 def top_notes(pf: ProfileFit, speaker: bool) -> list[str]:
@@ -239,7 +247,7 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     ear_head = lambda e: f"<h3>{EAR_NAMES[e]} ear</h3>"
 
     out = [f"<h1>Flatiron fit · {html.escape(label)}</h1>",
-           f'<p class="meta">{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} {"block" if speaker else "session"}{"" if len(pf.sessions) == 1 else "s"}'
+           f'<p class="meta">{html.escape(listener_prefix(profile))}{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} {"block" if speaker else "session"}{"" if len(pf.sessions) == 1 else "s"}'
            + (f" (pooled with {html.escape(', '.join(pf.pooled))})" if pf.pooled else "") + " · "
            + " · ".join(f"{EAR_NAMES[e]} {f.n_trials} trials" for e, f in pf.fits.items())
            + ("" if speaker else f" · preamp {corr.preamp_db:+.1f} dB") + "</p>"]

@@ -101,9 +101,8 @@ def _uncounted(c: EarComparison, members: list[Member]) -> list[Member]:
 
 def print_comparison(comparisons: dict[str, EarComparison], members: list[Member]) -> None:
     c = next(iter(comparisons.values()))
-    out = _uncounted(c, members)
-    if out:
-        print("Not counted in the spreads: " + ", ".join(f"{m.label} ({m.kind})" for m in out))
+    print("Comparing " + ", ".join(m.label + ("" if c.counted[m.label] else f" ({m.kind}, not counted)")
+                                   for m in members))
     if c.fallback:
         print("Fewer than two headphones, so every profile counts.")
     for e, c in comparisons.items():
