@@ -56,9 +56,15 @@ def monaural(x: np.ndarray, ear: str) -> np.ndarray:
 
 
 def render_pair(a: np.ndarray, b: np.ndarray, level_a_db: float, level_b_db: float,
-                gap: float, ear: str, fs: int) -> tuple[np.ndarray, LimitResult]:
-    """A, gap, B in one ear. Inputs are unit-RMS bursts; levels are dBFS RMS."""
+                gap: float, ear: str, fs: int, ear_b: str | None = None) -> tuple[np.ndarray, LimitResult]:
+    """A, gap, B in one ear. Inputs are unit-RMS bursts; levels are dBFS RMS.
+    ear_b: play the second burst in this ear instead (a cross-ear trial). The
+    buffer is still scaled as a whole, so the level difference is kept."""
     silence = np.zeros(int(round(gap * fs)))
     mono = np.concatenate([a * db_to_amp(level_a_db), silence, b * db_to_amp(level_b_db)])
     res = limit(mono)
-    return monaural(res.signal, ear), res
+    out = monaural(res.signal, ear)
+    if ear_b is not None and ear_b != ear:
+        cut = a.size + silence.size
+        out[cut:] = monaural(res.signal[cut:], ear_b)
+    return out, res

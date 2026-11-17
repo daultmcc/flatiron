@@ -56,9 +56,16 @@ def write_json(path: Path, obj) -> None:
     os.replace(tmp, path)
 
 
+def is_cross(t) -> bool:
+    """A cross-ear trial (DESIGN.md, "Cross-ear trials"): its ear is "LR" or
+    "RL", the ear of A then the ear of B. Anything that selects trials by ear
+    leaves these out."""
+    return len(t.ear) == 2
+
+
 @dataclass
 class TrialRecord:
-    ear: str
+    ear: str  # "L" or "R"; a cross-ear trial: "LR" or "RL" (A's ear, then B's)
     f_a: float
     f_b: float
     delta_a: float
@@ -122,6 +129,10 @@ class Session:
             raise ValueError(f"unsupported session format {d.get('version')}")
         d["trials"] = [TrialRecord(**t) for t in d.get("trials", [])]
         return cls(**d)
+
+    def cross_trials(self) -> list[TrialRecord]:
+        """The session's cross-ear trials (not undone). No fit uses them yet."""
+        return [t for t in self.trials if is_cross(t) and not t.undone]
 
     def trials_for(self, ear: str) -> Trials:
         ts = [t for t in self.trials if t.ear == ear and not t.undone]

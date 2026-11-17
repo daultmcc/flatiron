@@ -288,16 +288,26 @@ def _launch_speaker(args, prof):
     return _launch(args, sweep=False, profile=prof, speaker=speaker, max_trials=block)
 
 
+CROSS_EAR_PCT = 10.0  # default share of cross-ear trials in `run` (DESIGN.md, "Cross-ear trials")
+
+
 def cmd_run(args):
     prof = _profile(args, create=args.new)
     if prof is None:
         return 1
     if prof.kind == "speaker":
+        if args.cross_ear is not None:
+            print("--cross-ear isn't for speaker profiles: a block has one ear open.")
+            return 1
         return _launch_speaker(args, prof)
     if args.block is not None:
         print("--block is for speaker profiles.")
         return 1
-    return _launch(args, sweep=args.sweep, profile=prof)
+    cross = CROSS_EAR_PCT if args.cross_ear is None else args.cross_ear
+    if not 0 <= cross <= 30:
+        print("--cross-ear must be 0 to 30 (%)")
+        return 1
+    return _launch(args, sweep=args.sweep, profile=prof, cross_rate=cross / 100)
 
 
 def cmd_verify(args):
@@ -666,6 +676,8 @@ def cmd_listeners(args):
 
 
 def cmd_sessions(args):
+    from flatiron.session.store import is_cross
+
     prof = _profile(args)
     if prof is None:
         return 1
@@ -691,10 +703,12 @@ def cmd_sessions(args):
         acc = f"{np.mean([(t.offset > 0) == t.a_louder for t in catch]):.0%}" if catch else "-"
         live = [t for t in s.trials if not t.undone]
         fast = sum(t.fast for t in live)
-        first = f"{np.mean([t.response == 'first' for t in live]):.0%}" if live else "-"
+        within = [t for t in live if not is_cross(t)]
+        first = f"{np.mean([t.response == 'first' for t in within]):.0%}" if within else "-"
+        cross = len(s.cross_trials())
         mins = s.trials[-1].t / 60 if s.trials else 0
         print(f"{s.id}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  catch {acc:>4}  "
-              f"fast {fast:3d}  chose first {first:>4}  EQ: {s.eq_context.get('note')}"
+              f"fast {fast:3d}  chose first {first:>4}{f'  cross {cross}' if cross else ''}  EQ: {s.eq_context.get('note')}"
               f"{'  [verify ' + s.preview.get('fit_hash', '') + ']' if s.preview else ''}"
               f"{'  [' + s.speaker['open_ear'] + ' ear open, ' + s.speaker['position']['label'] + ']' if s.speaker else ''}"
               f"{'' if s.ended else '  (not closed)'}")
@@ -1755,6 +1769,9 @@ def main(argv=None):
     s.add_argument("--debug", action="store_true",
                    help="D during trials shows each burst's frequency and level (answers given while it "
                         "shows are marked in the session file)")
+    s.add_argument("--cross-ear", type=float, metavar="PCT",
+                   help="share of trials comparing the two ears (0 to 30, default 10; 0: none). "
+                        "Collected only: no fit uses them yet")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")

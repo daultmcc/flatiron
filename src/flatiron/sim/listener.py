@@ -113,6 +113,7 @@ class SimulatedListener:
     lapse: float = 0.03
     seed: int = 0
     order_bias_db: float = 0.0  # time-order error: the first interval sounds this much louder
+    channel_offset_db: float = 0.0  # cross-ear trials: the left ear hears this much louder than the right
     # Stimulus the listener hears; None = an ideal point probe at the centre.
     stimulus: StimulusSpec | None = field(default_factory=StimulusSpec)
 
@@ -126,9 +127,12 @@ class SimulatedListener:
         return 10 * np.log10(np.mean(10 ** (lv / 10), axis=1))
 
     def p_a_louder(self, ear, f_a, f_b, offset, a_first=None):
+        """ear: "L" or "R"; a cross-ear trial's "LR" or "RL" (A's ear, then B's)."""
         sigma = noise_sd(f_a, f_b, self.sigma0, self.d0, self.treble_noise)
         order = 0.0 if a_first is None else np.where(a_first, 1.0, -1.0)
-        z = (self.heard_level(ear, f_a) - self.heard_level(ear, f_b) + np.asarray(offset)
+        ear_a, ear_b = (ear[0], ear[1]) if len(ear) == 2 else (ear, ear)
+        balance = 0.0 if ear_a == ear_b else self.channel_offset_db * (1 if ear_a == "L" else -1)
+        z = (self.heard_level(ear_a, f_a) - self.heard_level(ear_b, f_b) + np.asarray(offset) + balance
              + self.order_bias_db * order) / sigma
         return self.lapse / 2 + (1 - self.lapse) * ndtr(z)
 

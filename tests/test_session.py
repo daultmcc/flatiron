@@ -286,3 +286,69 @@ def test_sessions_with_different_stimuli_pool_with_their_keys(tmp_path):
     # A later session's scheduler starts from all of it, keys included.
     r = TrialRunner(prof, config=FAST_CFG, seed=1)
     assert len(set(r.scheduler.ears["L"].trials().stimulus)) == 3
+
+
+def test_cross_ear_trials_play_each_burst_in_its_ear_and_stay_out_of_fits(tmp_path):
+    settings = RunSettings(stimulus=StimulusSpec(kind="tone"), level_dbfs=-40, cross_rate=0.3)
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, settings, config=FAST_CFG, seed=4)
+    lis = SimulatedListener({e: design_example("L") for e in "LR"}, seed=0)
+    lvl = lambda x: 20 * np.log10(np.sqrt(np.mean(x.astype(float) ** 2)))
+    crosses = 0
+    for k in range(40):
+        tr = r.prepare()
+        p, fs = tr.plan, r.fs
+        if len(p.ear) == 2:
+            crosses += 1
+            assert p.ear in ("LR", "RL") and not p.catch
+            assert octaves(p.f_a, p.f_b) <= 3 / 24 + 1e-9
+            first_ear, second_ear = (p.ear[0], p.ear[1]) if p.a_first else (p.ear[1], p.ear[0])
+            c1, c2 = (0 if e == "L" else 1 for e in (first_ear, second_ear))
+            first = tr.buffer[int(tr.first_on * fs):int(tr.first_off * fs)]
+            second = tr.buffer[int(tr.second_on * fs):int(tr.second_off * fs)]
+            assert np.all(first[:, 1 - c1] == 0) and np.all(second[:, 1 - c2] == 0)
+            d_first, d_second = (p.delta_a, p.delta_b) if p.a_first else (p.delta_b, p.delta_a)
+            assert lvl(first[:, c1]) - lvl(second[:, c2]) == pytest.approx(d_first - d_second, abs=0.05)
+        a = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset, p.a_first))
+        r.answer(tr, first_louder=(a == p.a_first), rt_ms=400, t=k)
+    assert crosses and r.progress()["cross"] == crosses
+    r.finish()
+    s = prof.sessions()[0]
+    assert len(s.cross_trials()) == crosses
+    trials, _ = prof.history()
+    assert len(trials["L"]) + len(trials["R"]) == 40 - crosses
+    # The next session's planner starts from them.
+    assert len(TrialRunner(prof, settings, config=FAST_CFG, seed=5).cross.known) == crosses
+
+
+def test_cross_ear_undo_and_no_cross_trials_in_verify_or_by_default(tmp_path):
+    from flatiron.apo import ApoFilter
+    from flatiron.audio.preview import PreviewEQ
+
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, RunSettings(cross_rate=0.3), config=FAST_CFG, seed=0)
+    while True:
+        tr = r.prepare()
+        if len(tr.plan.ear) == 2:
+            break
+        r.answer(tr, True, 400)
+    r.answer(tr, True, 400)
+    assert len(r.cross.known) == 1
+    again = r.undo_last()
+    assert again.plan is tr.plan and len(r.cross.known) == 0
+    r.answer(again, False, 400)
+    assert len(r.cross.known) == 1
+    for settings in (RunSettings(), RunSettings(cross_rate=0.3, preview=PreviewEQ(
+            {"L": [ApoFilter("PK", 6000, -6, 4)], "R": []}, 0.0, "abc"))):
+        r = TrialRunner(prof, settings, config=FAST_CFG, seed=1)
+        assert all(len(r.prepare().plan.ear) == 1 for _ in range(60))
+
+
+def test_cross_ear_planner_finds_the_channel_offset(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    lis = SimulatedListener({e: design_example("L") for e in "LR"}, seed=2, channel_offset_db=3.0)
+    r = TrialRunner(prof, RunSettings(cross_rate=0.3), config=SchedulerConfig(min_trials_noise_fit=10_000),
+                    seed=2)
+    answer_like(lis, r, 300)
+    assert r.progress()["cross"] > 60
+    assert r.cross.offset_estimate() == pytest.approx(3.0, abs=1.5)

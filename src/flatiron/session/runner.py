@@ -16,8 +16,9 @@ from flatiron.audio.preview import PreviewEQ
 from flatiron.audio.limiter import DEFAULT_LEVEL_DB, render_pair
 from flatiron.audio.stimulus import StimulusSpec, make_stimulus, stimulus_key
 from flatiron.model.refine import refine_around
+from flatiron.session.cross import CrossPlanner
 from flatiron.session.scheduler import Scheduler, SchedulerConfig, TrialPlan
-from flatiron.session.store import Profile, Session, TrialRecord, now_iso
+from flatiron.session.store import Profile, Session, TrialRecord, is_cross, now_iso
 from flatiron.session.sweep import Mark
 
 MAX_SESSION_MIN = 15.0
@@ -46,6 +47,9 @@ class RunSettings:
     match: bool = True
     match_boost_db: float = 12.0
     debug: bool = False  # the trial screen can show each burst's frequency and level
+    # Share of trials that are cross-ear (DESIGN.md, "Cross-ear trials").
+    # Off unless asked for (`run` asks); never in speaker blocks or verify sessions.
+    cross_rate: float = 0.0
 
     def __post_init__(self):
         if not 0.15 <= self.gap_s <= 0.6:
@@ -54,6 +58,8 @@ class RunSettings:
             raise ValueError(f"the matching boost must be 0 to {MAX_MATCH_BOOST_DB:g} dB")
         if not 0 < self.session_minutes <= MAX_SESSION_MIN:
             raise ValueError(f"sessions are capped at {MAX_SESSION_MIN:g} minutes")
+        if not 0 <= self.cross_rate <= 0.3:
+            raise ValueError("the cross-ear share must be 0 to 30%")
 
 
 @dataclass
@@ -89,7 +95,8 @@ class TrialRunner:
 
         from flatiron.fit.run import profile_priors
 
-        hist, grids = profile.history()
+        earlier = profile.sessions()
+        hist, grids = profile.history(earlier)
         # The listener's noise, from every profile's trials, held for the
         # session (DESIGN.md, "Shared noise"): a new profile starts with it.
         noise = listener_noise(profile.dir.parent.parent)
@@ -111,6 +118,9 @@ class TrialRunner:
                     fit = cached_fit(profile, hist[e], np.asarray(grids[e], float), noise[e])
                 self.scheduler.load_history(e, hist[e], grids.get(e), fit=fit, refine=bool(self.speaker))
         self.prior_trials = {e: len(hist[e]) for e in EARS}
+        cross_rate = 0.0 if self.speaker or settings.preview is not None else settings.cross_rate
+        self.cross = CrossPlanner(self.scheduler, cross_rate, self.seed,
+                                  [t for s in earlier for t in s.cross_trials()])
         self.discarded = False
         self._lock = threading.Lock()
         self._last_answered: PreparedTrial | None = None
@@ -200,24 +210,26 @@ class TrialRunner:
         return float(np.clip(self.scheduler.match_gain(ear, f), -cfg.match_cut_db, cfg.match_boost_db))
 
     def prepare(self) -> PreparedTrial:
-        return self.render(self.scheduler.next_trial())
+        return self.render(self.cross.next_trial() if self.cross.due() else self.scheduler.next_trial())
 
     def render(self, plan: TrialPlan, retake: bool = False) -> PreparedTrial:
         """Synthesize a plan's buffer at the current level."""
         spec, s = self.settings.stimulus, self.settings
         a = make_stimulus(plan.f_a, spec, seed=self.seed, fs=self.fs)
         b = make_stimulus(plan.f_b, spec, seed=self.seed, fs=self.fs)
+        ear_a, ear_b = (plan.ear[0], plan.ear[1]) if is_cross(plan) else (plan.ear, plan.ear)
         pa = pb = 0.0
         if s.preview is not None:
-            a, pa = s.preview.burst_gain_db(a, plan.ear, self.fs)
-            b, pb = s.preview.burst_gain_db(b, plan.ear, self.fs)
+            a, pa = s.preview.burst_gain_db(a, ear_a, self.fs)
+            b, pb = s.preview.burst_gain_db(b, ear_b, self.fs)
         la = self.level_dbfs + plan.rove_db + plan.delta_a
         lb = self.level_dbfs + plan.rove_db + plan.delta_b
-        channel = self.speaker["channel"] if self.speaker else plan.ear
+        if self.speaker:
+            ear_a = ear_b = self.speaker["channel"]
         if plan.a_first:
-            buf, lim = render_pair(a, b, la, lb, s.gap_s, channel, self.fs)
+            buf, lim = render_pair(a, b, la, lb, s.gap_s, ear_a, self.fs, ear_b=ear_b)
         else:
-            buf, lim = render_pair(b, a, lb, la, s.gap_s, channel, self.fs)
+            buf, lim = render_pair(b, a, lb, la, s.gap_s, ear_b, self.fs, ear_b=ear_a)
         d = a.size / self.fs
         played = [(plan.f_a, la + pa + lim.gain_db), (plan.f_b, lb + pb + lim.gain_db)]
         if not plan.a_first:
@@ -251,7 +263,7 @@ class TrialRunner:
             level_dbfs=trial.level_dbfs, retake=trial.retake, peeked=peeked)
         self.session.trials.append(rec)
         self._save()  # persist before the (slower) refit
-        self.scheduler.record(p, rec.a_louder, known_gain_db=(ga, gb))
+        (self.cross if is_cross(p) else self.scheduler).record(p, rec.a_louder, known_gain_db=(ga, gb))
         self._last_answered = trial
         return rec
 
@@ -266,7 +278,10 @@ class TrialRunner:
             return None
         rec = self.live_trials()[-1]
         rec.undone = True
-        self.scheduler.pop_last(rec.ear)
+        if is_cross(rec):
+            self.cross.pop_last()
+        else:
+            self.scheduler.pop_last(rec.ear)
         self._last_answered = None
         self._save()
         if trial.level_dbfs != self.level_dbfs:
@@ -312,6 +327,7 @@ class TrialRunner:
             "total": {e: self.scheduler.n_trials(e) if e in self.scheduler.ears else self.prior_trials[e]
                       for e in EARS},
             "block_left": min(self.scheduler.until_block_end(e) for e in self.scheduler.ears),
+            "cross": sum(is_cross(t) for t in live),
             "fast": sum(t.fast for t in live),
             "undone": len(self.session.trials) - len(live),
         }

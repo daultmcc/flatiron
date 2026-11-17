@@ -24,6 +24,7 @@ This document describes how Flatiron works as built, the evidence behind its des
 | Speaker sessions and the position model | Built | "Speaker profiles" |
 | Speakers deciding what the consensus keeps | Built | "Consensus reference" |
 | Speaker evidence in a joint model | Superseded | "Speaker profiles" |
+| Cross-ear trials | Built, collected only: no fit uses them | "Cross-ear trials" |
 
 ## Scope
 
@@ -195,6 +196,18 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 - **What it relies on.** A new profile starts with a flat curve, so its first trials aren't matched; it catches up as the curve is learnt (the curve is refitted after every answer). A boost raises the peak level, so the limiter scales more trials down as a whole, which leaves their A/B difference alone.
 - **Simulated** (a listener with a 12 dB/octave loss above 5 kHz, 250 trials in one ear, the last 100 scored): the SD of the heard level across bursts fell from 9.0 to 3.4 dB, with the same trials. What's left is mostly the broad shape not yet learnt and the cap holding back the deepest treble (over 12 kHz the loss there wanted more than 12 dB).
 - **Level dependence.** The model assumes $L$ doesn't depend on level. Matching keeps every burst near one loudness, which is the condition that assumption most needs, especially with a hearing loss, where loudness grows faster with level near threshold.
+
+## Cross-ear trials
+
+**In brief.** Every trial above compares two frequencies in one ear, so the overall level difference between the ears is a gauge the data can't see, and the shape of $L_\mathrm{L} - L_\mathrm{R}$ comes only from two separate fits and the channel-balance prior. A cross-ear trial plays A in one ear and B in the other and asks the same question. They're collected to see what they look like: no fit, correction or report uses them yet. Possible uses are an overall channel-balance correction in the exported presets, and a check on the ears' fitted difference (and on the balance prior).
+
+- **Share.** `run --cross-ear PCT`, 10% of trials by default (0 to 30; 0 for none). Never in speaker blocks or verify sessions.
+- **Pairs.** A frequency log-uniform over 1 to 13 kHz. Half are the same frequency in both ears; the other half have B 1 to 3 steps of 1/24 octave away, either side. Which ear gets A and which interval plays first are random. There are no catch trials among them, and the level rove is as usual.
+- **Aim.** The offset aims at the 50% point: the difference of the two ears' current seating curves, each centred to mean 0 over 1 to 13 kHz (each ear's level is its own gauge), plus the time-order bias (the mean of the ears'), plus a running estimate of the overall L−R difference $c$. That estimate is the MAP of a probit on every cross answer so far, this profile's earlier sessions included, with noise 1.5 dB and a $\mathcal N(0, 3^2)$ prior on $c$. Jitter is $\mathcal N(0, 2^2)$ dB, clipped at ±4, and the offset is capped at 12 dB as usual. All of this is only for aiming.
+- **Rendering.** The trial's whole buffer is scaled under the ceiling together, as for any trial, so the level difference between the ears is kept. An active EQ's gain is recorded per burst as usual.
+- **Storage.** A cross-ear trial is an ordinary trial record whose `ear` is `LR` or `RL`: A's ear, then B's. Everything that selects trials by ear (fits, the noise, history, counts) leaves them out without knowing about them (`session/store.py`, `is_cross`).
+
+A likely model for using them, not built: $P(\text{A louder}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\big((\bar L_{g,e_a}(f_a) - \bar L_{g,e_b}(f_b) \pm c + o_t + \beta s_t)/\sigma_x\big)$, with its own noise $\sigma_x$ (an interaural comparison is probably noisier than a monaural one), and $c$ free.
 
 ## Perceptual model
 
@@ -689,13 +702,13 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Command | Does | Options |
 | --- | --- | --- |
 | `devices` | Lists outputs with host API, channels and native rate, marks the default, and flags Bluetooth, mono and rates other than 48 kHz | — |
-| `run` | Runs trial sessions | `PROFILE`, `--new`, `-d`, `-n`, `-m`/`--minutes` (default 12, at most 15), `--stimulus noise:N`, `warble:N` or `tone` (default `noise:12`: a 1/N-octave band; a warble swings over 1/N octave, default 12), `--active-eq APO_TXT`, `--eq-note`, `--no-match`, `--max-match-boost DB` (see "Loudness matching"), `-s`/`--sweep`, `--sweep-seconds`, `--debug` (see "Trial"); for a speaker profile, `--block N` (see "Speaker sessions") |
-| `verify` | A short session through the correction | As `run`, without `--new`, the sweep and `--debug`, plus `--trials` (answers, both ears; default 150) |
+| `run` | Runs trial sessions | `PROFILE`, `--new`, `-d`, `-n`, `-m`/`--minutes` (default 12, at most 15), `--cross-ear PCT` (default 10; see "Cross-ear trials"), `--stimulus noise:N`, `warble:N` or `tone` (default `noise:12`: a 1/N-octave band; a warble swings over 1/N octave, default 12), `--active-eq APO_TXT`, `--eq-note`, `--no-match`, `--max-match-boost DB` (see "Loudness matching"), `-s`/`--sweep`, `--sweep-seconds`, `--debug` (see "Trial"); for a speaker profile, `--block N` (see "Speaker sessions") |
+| `verify` | A short session through the correction | As `run`, without `--new`, `--cross-ear`, the sweep and `--debug`, plus `--trials` (answers, both ears; default 150) |
 | `audition` | The correction on and off | `PROFILE`, `-d`, `-n`, `--source pink`, `sweep` or `FILE.wav` (repeatable; default pink and sweep) |
 | `tone` | The tone generator | `PROFILE`, `-d`, `-n`, `-f`/`--freq` (default 1000), `-e`/`--ear L`, `R` or `both` |
 | `listeners` | Lists listeners (profiles, trials per ear, each ear's noise and the trials behind it), or changes them | `new NAME`; `rename OLD NEW` (the folder and the name used in `LISTENER/PROFILE`); `delete NAME` (all their profiles; asks first, `-y`/`--yes` doesn't) |
 | `profiles` | Lists profiles (sessions, trials per ear, last date and level, sessions not closed), grouped by listener when there are several, or changes them | `new NAME --kind headphone`, `iem` or `speaker` (with `--channel L` or `R`); `set NAME --kind … --label …`, which affects no trials; `rename NAME NEW` (label and folder); `move NAME --to LISTENER`; `delete NAME` (asks first; `-y`/`--yes` doesn't) |
-| `sessions` | Lists sessions: trials per ear, minutes, catch-trial accuracy, fast answers, share choosing the first interval, EQ context, verify and not-closed marks | `PROFILE`, `--delete ID` (a session left open by a crash, say), `-y`/`--yes` |
+| `sessions` | Lists sessions: trials per ear, minutes, catch-trial accuracy, fast answers, share choosing the first interval (within-ear trials), cross-ear trials, EQ context, verify and not-closed marks | `PROFILE`, `--delete ID` (a session left open by a crash, say), `-y`/`--yes` |
 | `config` | Shows or changes a profile's settings or a listener's (see "Settings") | `PROFILE` or `LISTENER`, the options in "Settings", `--reset NAME,NAME` or `all`, `--checkpoint` |
 | `report` | Prints filters and features, and notes on the seating spread, noise and bias; writes the HTML report and opens it | `PROFILE`, `-H`/`--no-html` (write it but don't open it), `--csv FILE` |
 | `compare` | Compares profiles (see "Comparing profiles"); writes the HTML page and opens it | Two to eight profiles, from any listeners, `-H`/`--no-html`, `--ear`, `--include-kind iem`, `--broad-spread DB` |
@@ -733,7 +746,7 @@ Several people can share one installation. Each listener is a folder of their ow
 Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically. Each listener's folder is `listeners/<slug>/`, with a `listener.json` (label, slug, when it was made, and the default measured range if it's been changed); the paths below starting with `profiles/` or `cache/noise/` and `cache/consensus/` are inside it.
 
 - `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), the profile's own ends of the measured range (if it sets them), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug` (headphones and speakers together; each one's kind says which), with `auto` settings as null, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
-- `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings (loudness matching and its cap among them), the measured range, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone, retake and peeked flags. The file is saved after every answer.
+- `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings (loudness matching and its cap among them), the measured range, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear (`LR` or `RL` for a cross-ear trial), both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone, retake and peeked flags. The file is saved after every answer.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
 - `cache/consensus/`: split consensus results (see "Consensus reference"), shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
@@ -764,6 +777,7 @@ User-facing text (pages, terminal and screens) states values and warnings and le
 - The filter fit recovers known filters, and the tone synth glides and ramps without steps.
 - Exporters match golden files from real LSP and EasyEffects installs byte for byte.
 - When available locally, the LSP and EasyEffects output runs through LSP's LADSPA plugin, and the PipeWire drop-in through a private filter-chain, compared with Flatiron's prediction.
+- Cross-ear trials put each burst in its own ear at the planned level difference, stay out of every fit, and their running offset estimate recovers a simulated listener's channel offset.
 
 ## Simulated listener
 
