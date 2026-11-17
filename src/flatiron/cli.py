@@ -233,6 +233,15 @@ def _launch(args, sweep: bool, profile=None, **extra):
     except ValueError as e:
         print(e)
         return 1
+    device = _device_info(args)
+    app = FlatironApp(lambda: TrialRunner(profile, settings(), device=device), _player(args), sweep=sweep,
+                      sweep_timing=timing, sweep_eq=sweep_eq)
+    app.run()
+    return 0
+
+
+def _device_info(args) -> dict:
+    """What a session file records about the output device; prints its warnings."""
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
         from flatiron.audio.devices import list_output_devices
@@ -243,9 +252,27 @@ def _launch(args, sweep: bool, profile=None, **extra):
             device.update(name=d.name, hostapi=d.hostapi, warnings=d.warnings)
             for w in d.warnings:
                 print(f"! {d.name}: {w}")
-    app = FlatironApp(lambda: TrialRunner(profile, settings(), device=device), _player(args), sweep=sweep,
-                      sweep_timing=timing, sweep_eq=sweep_eq)
-    app.run()
+    return device
+
+
+def cmd_threshold(args):
+    """Threshold sessions (DESIGN.md, "Threshold sessions"): collected only."""
+    from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
+    from flatiron.ui.app import FlatironApp
+
+    prof = _profile(args)
+    if prof is None:
+        return 1
+    if prof.kind == "speaker":
+        print(f"{prof.read()['label']!r} is a speaker profile: threshold sessions are for headphones and IEMs.")
+        return 1
+    try:
+        settings = ThresholdSettings(stimulus=args.stimulus, task=args.task, session_minutes=args.minutes)
+    except ValueError as e:
+        print(e)
+        return 1
+    device = _device_info(args)
+    FlatironApp(lambda: ThresholdRunner(prof, settings, device=device), _player(args)).run()
     return 0
 
 
@@ -682,19 +709,26 @@ def cmd_sessions(args):
     if prof is None:
         return 1
     sessions = prof.sessions()
+    thresholds = prof.threshold_sessions()
     if args.delete:
-        match = [s for s in sessions if s.id == args.delete]
+        match = [(s, prof.delete) for s in sessions if s.id == args.delete]
+        match += [(s, prof.delete_threshold) for s in thresholds if s.id == args.delete]
         if not match:
             print(f"No session {args.delete!r} in {prof.read()['label']!r}.")
             return 1
-        s = match[0]
-        if _confirm(f"Delete session {s.id} ({len(s.trials)} trials)? This can't be undone.", args.yes):
-            prof.delete(s)
+        if len(match) > 1:
+            print(f"Both a trial session and a threshold session are called {args.delete!r}: "
+                  f"delete one by hand, from {prof.sessions_dir} or {prof.thresholds_dir}.")
+            return 1
+        s, delete = match[0]
+        what = "threshold session" if delete == prof.delete_threshold else "session"
+        if _confirm(f"Delete {what} {s.id} ({len(s.trials)} trials)? This can't be undone.", args.yes):
+            delete(s)
             print("Deleted.")
         else:
             print("Not deleted.")
         return 0
-    if not sessions:
+    if not sessions and not thresholds:
         print(f"No sessions for {prof.read()['label']!r} yet.")
         return
     for s in sessions:
@@ -712,8 +746,22 @@ def cmd_sessions(args):
               f"{'  [verify ' + s.preview.get('fit_hash', '') + ']' if s.preview else ''}"
               f"{'  [' + s.speaker['open_ear'] + ' ear open, ' + s.speaker['position']['label'] + ']' if s.speaker else ''}"
               f"{'' if s.ended else '  (not closed)'}")
-    trials, _ = prof.history(sessions)
-    print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
+    if sessions:
+        trials, _ = prof.history(sessions)
+        print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
+    if thresholds:
+        print("\nThreshold sessions (collected only):")
+    for s in thresholds:
+        live = s.live()
+        n = {e: sum(t.ear == e for t in live) for e in EARS}
+        blanks = [t for t in live if t.kind == "blank"]
+        probes = [t for t in live if t.kind == "probe"]
+        fa = f"{np.mean([t.positive for t in blanks]):.0%}" if blanks else "-"
+        hits = f"{np.mean([t.positive for t in probes]):.0%}" if probes else "-"
+        mins = s.trials[-1].t / 60 if s.trials else 0
+        vol = f"  volume {s.system_volume.removeprefix('Volume: ')}" if s.system_volume else ""
+        print(f"{s.id}  {s.task:5s}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  false alarms {fa:>4}  "
+              f"probes {hits:>4}{vol}{'' if s.ended else '  (not closed)'}")
 
 
 # Fit settings `config` can change: flags, CorrectionSettings field, argparse
@@ -1773,6 +1821,17 @@ def main(argv=None):
                    help="share of trials comparing the two ears (0 to 30, default 10; 0: none). "
                         "Collected only: no fit uses them yet")
     s.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("threshold", help="threshold-of-hearing session (collected only: no fit uses it yet)")
+    profile_arg(s)
+    device_arg(s)
+    s.add_argument("-m", "--minutes", type=float, default=8.0, help="session length, at most 15 (default 8)")
+    s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(), metavar="noise[:N]|warble[:N]|tone",
+                   help="as for run (default noise:12)")
+    s.add_argument("--task", choices=("yesno", "2ifc"), default="yesno",
+                   help="yesno: heard anything or not, with some empty intervals (default); "
+                        "2ifc: which of two intervals had the sound")
+    s.set_defaults(func=cmd_threshold)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")
     session_args(s)

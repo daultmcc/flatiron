@@ -26,15 +26,25 @@ def contour_table(phon: float) -> np.ndarray:
     return 10.0 / AF * np.log10(af) - LU + 94.0
 
 
-def contour(freqs, phon: float = 60.0) -> np.ndarray:
-    """Equal-loudness SPL at arbitrary frequencies (interpolated in log f)."""
-    x = np.log2(np.asarray(freqs, dtype=float))
-    xt, yt = np.log2(F), contour_table(phon)
+def _interp(freqs, yt) -> np.ndarray:
+    """Interpolated in log f; above 12.5 kHz, extrapolated from the last two points."""
+    x = np.atleast_1d(np.log2(np.asarray(freqs, dtype=float)))
+    xt = np.log2(F)
     y = np.interp(x, xt, yt)
     hi = x > xt[-1]
     slope = (yt[-1] - yt[-2]) / (xt[-1] - xt[-2])
     y[hi] = yt[-1] + slope * (x[hi] - xt[-1])
     return y
+
+
+def contour(freqs, phon: float = 60.0) -> np.ndarray:
+    """Equal-loudness SPL at arbitrary frequencies (interpolated in log f)."""
+    return _interp(freqs, contour_table(phon))
+
+
+def threshold(freqs) -> np.ndarray:
+    """The hearing threshold T_f (dB SPL) at arbitrary frequencies."""
+    return _interp(freqs, TF)
 
 
 def perceived_level(freqs, phon: float = 60.0) -> np.ndarray:

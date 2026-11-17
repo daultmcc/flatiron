@@ -4,8 +4,9 @@ Flow per session: channel check → optional sweep (first session only) →
 trials until the time limit or Q → end screen (reseat, then next session).
 Speaker blocks: the level once, then per block the earplug screen (when the
 open ear changes) and the position screen
-→ the block's trials; an end screen only on Q or once the plan is done. The fitted curve is never
-shown during trials.
+→ the block's trials; an end screen only on Q or once the plan is done.
+Threshold sessions: an introduction → channel check → detection trials →
+end screen. The fitted curve is never shown during trials.
 """
 
 import random
@@ -441,6 +442,8 @@ class SweepScreen(MessageScreen):
 
 
 class TrialScreen(Screen):
+    PANELS = ("A", "B")  # panel ids: the first and second interval's
+    QUESTION = "Which was louder?"
     BINDINGS = [
         Binding("left,1", "answer(True)", "A louder"),
         Binding("right,2", "answer(False)", "B louder"),
@@ -477,17 +480,17 @@ class TrialScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Which was louder?", id="title")
+            yield Static(self.QUESTION, id="title")
             with Horizontal(id="panels"):
-                yield Static("A", id="A", classes="panel")
-                yield Static("B", id="B", classes="panel")
+                for k in dict.fromkeys(self.PANELS):
+                    yield Static(self.panel_label(k), id=k, classes="panel")
             yield Static("", id="message")
             yield Static("", id="debug")
             yield Static("", id="status")
         yield Footer()
 
     def check_action(self, action: str, parameters) -> bool | None:
-        if action == "debug" and not self.runner.settings.debug:
+        if action == "debug" and not getattr(self.runner.settings, "debug", False):  # threshold settings have none
             return False  # hidden from the footer, and the key does nothing
         return True
 
@@ -508,6 +511,13 @@ class TrialScreen(Screen):
         catch = " · catch trial" if tr.plan.catch else ""
         w.update(f"A {f1:,.0f} Hz at {l1:+.1f} dBFS   ·   B {f2:,.0f} Hz at {l2:+.1f} dBFS   "
                  f"(A − B {l1 - l2:+.1f} dB · level {tr.level_dbfs:+.0f}{cut}{catch})")
+
+    def panel_label(self, key: str) -> str:
+        return key
+
+    def answer_kwargs(self, first: bool) -> dict:
+        """The runner's answer for the left-hand key (first) or the right-hand one."""
+        return {"first_louder": first, "peeked": self.show_debug}
 
     def on_mount(self):
         self.active_since = self.clock()
@@ -542,7 +552,7 @@ class TrialScreen(Screen):
     # -- playback ----------------------------------------------------------
 
     def light(self, which: str | None, answerable: bool = False):
-        for k in ("A", "B"):
+        for k in dict.fromkeys(self.PANELS):
             w = self.query_one(f"#{k}", Static)
             w.set_class(k == which, "lit")
             w.set_class(answerable, "answerable")
@@ -562,7 +572,7 @@ class TrialScreen(Screen):
         self.play_start = self.clock() + lat
         self.last_end = self.play_start + tr.second_off
         at = lambda s, fn: self.timers.append(self.set_timer(max(s + lat, 0.001), fn))
-        at(tr.first_on, lambda: self.light("A", answerable=self.heard_b))
+        at(tr.first_on, lambda: self.light(self.PANELS[0], answerable=self.heard_b))
         at(tr.first_off, lambda: self.light(None, answerable=self.heard_b))
         at(tr.second_on, self.second_on)
         at(tr.second_off, lambda: self.light(None, answerable=True))
@@ -571,7 +581,7 @@ class TrialScreen(Screen):
         if not self.heard_b:
             self.heard_b = True
             self.first_end = self.last_end
-        self.light("B", answerable=True)
+        self.light(self.PANELS[-1], answerable=True)
         self.accepting = True
 
     # -- trial loop --------------------------------------------------------
@@ -654,9 +664,9 @@ class TrialScreen(Screen):
         self.app.player.stop()  # fades out if still playing
         self.cancel_timers()
         self.light(None)
-        self.fetch_next(dict(trial=self.trial, first_louder=first_louder,
+        self.fetch_next(dict(trial=self.trial, **self.answer_kwargs(first_louder),
                              rt_ms=(now - self.first_end) * 1000, rt_last_ms=(now - self.last_end) * 1000,
-                             replays=self.replays, t=now - self.started, peeked=self.show_debug))
+                             replays=self.replays, t=now - self.started))
 
     def on_click(self, event: events.Click):
         """Clicking A or B answers, as ← / → do."""
@@ -707,6 +717,86 @@ class TrialScreen(Screen):
             "will be used. Earlier sessions are kept."), done)
 
 
+class ThresholdIntroScreen(MessageScreen):
+    """Before a threshold session: what to do, and to keep the volume where it is."""
+
+    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
+
+    def __init__(self, task: str):
+        super().__init__()
+        self.detection_task = task
+
+    def on_mount(self):
+        how = ("After each marked interval: ← if you heard anything at all, → if not. "
+               "Some intervals are empty." if self.detection_task == "yesno" else
+               "The sound is in one of two marked intervals: ← the first, → the second. "
+               "Guess if you're not sure.")
+        self.say("Threshold session",
+                 "Very quiet bursts, one ear at a time, at the edge of hearing.\n\n"
+                 "A quiet room, the system volume at its usual setting, and don't change it during "
+                 "the session.\n\n" + how,
+                 "Enter: start   Esc: quit")
+
+    def action_start(self):
+        self.dismiss(True)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class ThresholdScreen(TrialScreen):
+    """Detection trials (DESIGN.md, "Threshold sessions"): one marked interval
+    (yes/no) or two (2IFC). The left-hand key is "heard" or "the first"."""
+
+    inherit_bindings = False
+
+    def answer_kwargs(self, first: bool) -> dict:
+        return {"first": first}
+
+    def show_status(self):
+        p = self.runner.progress()
+        t, lim = int(self.active_seconds()), int(self.limit_s)
+        start = " · finding the level" if p["starting"] else ""
+        self.query_one("#status", Static).update(
+            f"Trial {p['session_trials'] + 1} this session · "
+            + " / ".join(f"{e} {p['session_trials_ear'][e]}" for e in EARS)
+            + f"{start} · {t // 60:02d}:{t % 60:02d} of {lim // 60:02d}:{lim % 60:02d}")
+
+
+class YesNoScreen(ThresholdScreen):
+    PANELS = ("listen", "listen")
+    QUESTION = "Did you hear anything?"
+    BINDINGS = [
+        Binding("left,y,1", "answer(True)", "Heard"),
+        Binding("right,n,2", "answer(False)", "Nothing"),
+        Binding("space", "replay", "Replay"),
+        Binding("p", "pause", "Pause"),
+        Binding("u,backspace", "undo", "Undo"),
+        Binding("q", "quit_session", "Quit"),
+        Binding("x", "discard", "Discard"),
+    ]
+
+    def panel_label(self, key: str) -> str:
+        return "LISTEN"
+
+
+class TwoIntervalScreen(ThresholdScreen):
+    PANELS = ("A", "B")
+    QUESTION = "Which interval had the sound?"
+    BINDINGS = [
+        Binding("left,1", "answer(True)", "First"),
+        Binding("right,2", "answer(False)", "Second"),
+        Binding("space", "replay", "Replay"),
+        Binding("p", "pause", "Pause"),
+        Binding("u,backspace", "undo", "Undo"),
+        Binding("q", "quit_session", "Quit"),
+        Binding("x", "discard", "Discard"),
+    ]
+
+    def panel_label(self, key: str) -> str:
+        return {"A": "1", "B": "2"}[key]
+
+
 class SessionEndScreen(MessageScreen):
     BINDINGS = [
         Binding("n", "next", "Next session"),
@@ -720,6 +810,9 @@ class SessionEndScreen(MessageScreen):
     def on_mount(self):
         r = self.runner
         p = r.progress()
+        if getattr(r, "threshold", False):
+            self.threshold_end(p)
+            return
         acc = r.catch_accuracy()
         acc_s = f"catch trials {acc:.0%} right" if acc is not None else "no catch trials yet"
         if r.speaker:
@@ -740,6 +833,20 @@ class SessionEndScreen(MessageScreen):
                      for e in EARS) + "\n\n"
                  "Take the headphones off and rest a few minutes before the next session.",
                  "N: next session   Q: quit")
+
+    def threshold_end(self, p):
+        if self.reason == "discarded":
+            head, summary = "Session discarded.", ""
+        else:
+            head = "Time for a break." if self.reason == "time" else "Session saved."
+            parts = [f"{p['session_trials']} trials"]
+            if p["blanks"]:
+                parts.append(f"heard something in {p['false_alarms']} of {p['blanks']} empty intervals")
+            if p["probes"]:
+                parts.append(f"{p['probe_hits']} of {p['probes']} clear bursts "
+                             + ("heard" if self.runner.task == "yesno" else "picked"))
+            summary = ", ".join(parts) + ".\n\n"
+        self.say(head, summary + "Rest your ears a few minutes before the next session.", "N: next session   Q: quit")
 
     def speaker_end(self, p):
         from flatiron.session.speaker import next_block, progress
@@ -795,6 +902,9 @@ class FlatironApp(App):
         from flatiron.session.store import qualified
 
         self.sub_title = f"{qualified(self.runner.profile)} · session {self.runner.session.id}"
+        if getattr(self.runner, "threshold", False):
+            self.push_screen(ThresholdIntroScreen(self.runner.task), self.after_intro)
+            return
         if self.runner.speaker and self.sessions_run:  # the level is set once a run
             self.after_level(self.runner.level_dbfs, switch=last_ear != self.runner.speaker["open_ear"], last=last)
             return
@@ -803,6 +913,13 @@ class FlatironApp(App):
     def level_screen(self, mid_session: bool = False) -> LevelScreen:
         r = self.runner
         return LevelScreen(r.level_dbfs, mid_session=mid_session, measured=r.measured, gain=r.match_gain)
+
+    def after_intro(self, ok):
+        if ok is None:
+            self.runner.finish()  # nothing recorded: deleted
+            self.exit()
+            return
+        self.push_screen(ChannelCheckScreen(self.runner), lambda _: self.start_trials())
 
     def after_level(self, level, switch: bool = True, last: str = ""):
         if level is None:
@@ -830,7 +947,10 @@ class FlatironApp(App):
             self.start_trials()
 
     def start_trials(self):
-        self.push_screen(TrialScreen(self.runner, self.clock), self.after_trials)
+        screen = TrialScreen
+        if getattr(self.runner, "threshold", False):
+            screen = YesNoScreen if self.runner.task == "yesno" else TwoIntervalScreen
+        self.push_screen(screen(self.runner, self.clock), self.after_trials)
 
     def after_trials(self, reason):
         self.runner.finish()

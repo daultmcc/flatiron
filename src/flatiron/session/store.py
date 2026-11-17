@@ -141,6 +141,67 @@ class Session:
                       [t.a_louder for t in ts], [1.0 if t.a_first else -1.0 for t in ts], [key] * len(ts))
 
 
+# -- threshold sessions (DESIGN.md, "Threshold sessions") ----------------------
+
+THRESHOLD_TASKS = ("yesno", "2ifc")
+THRESHOLD_KINDS = ("signal", "blank", "probe", "startup")
+
+
+@dataclass
+class ThresholdRecord:
+    ear: str
+    freq: float
+    level_dbfs: float  # the burst's RMS level (a blank's: what it would have been)
+    kind: str  # signal, blank (nothing played), probe (well above threshold), startup (the descending run)
+    response: str  # yesno: "heard" or "nothing"; 2ifc: "first" or "second"
+    positive: bool  # heard, or chose the burst's interval
+    interval: int = 1  # 2ifc: the interval the burst was in (1 or 2)
+    rt_ms: float = 0.0  # from the end of the (last) interval in the first presentation
+    rt_last_ms: float | None = None
+    replays: int = 0
+    fast: bool = False
+    t: float = 0.0
+    undone: bool = False
+    retake: bool = False
+
+
+@dataclass
+class ThresholdSession:
+    profile: str
+    id: str
+    started: str
+    task: str = "yesno"
+    device: dict = field(default_factory=dict)
+    sample_rate: int = 48_000
+    stimulus: dict = field(default_factory=dict)
+    comfort_dbfs: float = DEFAULT_LEVEL_DB  # the listening level (channel check; the start-up run starts below it)
+    gap_s: float = 0.3
+    seed: int = 0
+    system_volume: str | None = None  # as `wpctl` reported it, when it could
+    grid: list = field(default_factory=list)
+    channel_checks: list = field(default_factory=list)
+    trials: list[ThresholdRecord] = field(default_factory=list)
+    ended: str | None = None
+    version: int = FORMAT_VERSION
+
+    def to_json(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, d: dict) -> "ThresholdSession":
+        d = dict(d)
+        if d.get("version") != FORMAT_VERSION:
+            raise ValueError(f"unsupported threshold session format {d.get('version')}")
+        d["trials"] = [ThresholdRecord(**t) for t in d.get("trials", [])]
+        return cls(**d)
+
+    def stimulus_key(self) -> str:
+        return stimulus_key(StimulusSpec(**self.stimulus)) if self.stimulus else POINT
+
+    def live(self) -> list[ThresholdRecord]:
+        return [t for t in self.trials if not t.undone]
+
+
 # -- listeners (DESIGN.md, "Listeners") ----------------------------------------
 
 class AmbiguousListener(ValueError):
@@ -403,6 +464,32 @@ class Profile:
             return []
         return [Session.from_json(json.loads(p.read_text()))
                 for p in sorted(self.sessions_dir.glob("*.json"))]
+
+    # Threshold sessions live in a folder of their own, so nothing that reads
+    # sessions() (every fit) sees them.
+    @property
+    def thresholds_dir(self) -> Path:
+        return self.dir / "thresholds"
+
+    def new_threshold_session(self, **kw) -> ThresholdSession:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        sid, k = stamp, 1
+        while (self.thresholds_dir / f"{sid}.json").exists():
+            k += 1
+            sid = f"{stamp}-{k}"
+        return ThresholdSession(profile=self.slug, id=sid, started=now_iso(), **kw)
+
+    def save_threshold(self, s: ThresholdSession) -> None:
+        write_json(self.thresholds_dir / f"{s.id}.json", s.to_json())
+
+    def delete_threshold(self, s: ThresholdSession) -> None:
+        (self.thresholds_dir / f"{s.id}.json").unlink(missing_ok=True)
+
+    def threshold_sessions(self) -> list[ThresholdSession]:
+        if not self.thresholds_dir.exists():
+            return []
+        return [ThresholdSession.from_json(json.loads(p.read_text()))
+                for p in sorted(self.thresholds_dir.glob("*.json"))]
 
     def last_level(self, sessions: list[Session] | None = None) -> float | None:
         """Level of the most recent trial on record (or the latest session's)."""

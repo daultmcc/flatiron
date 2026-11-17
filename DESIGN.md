@@ -25,6 +25,7 @@ This document describes how Flatiron works as built, the evidence behind its des
 | Speakers deciding what the consensus keeps | Built | "Consensus reference" |
 | Speaker evidence in a joint model | Superseded | "Speaker profiles" |
 | Cross-ear trials | Built, collected only: no fit uses them | "Cross-ear trials" |
+| Threshold sessions | Built, collected only: nothing outside the session uses them | "Threshold sessions" |
 
 ## Scope
 
@@ -208,6 +209,50 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 - **Storage.** A cross-ear trial is an ordinary trial record whose `ear` is `LR` or `RL`: A's ear, then B's. Everything that selects trials by ear (fits, the noise, history, counts) leaves them out without knowing about them (`session/store.py`, `is_cross`).
 
 A likely model for using them, not built: $P(\text{A louder}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\big((\bar L_{g,e_a}(f_a) - \bar L_{g,e_b}(f_b) \pm c + o_t + \beta s_t)/\sigma_x\big)$, with its own noise $\sigma_x$ (an interaural comparison is probably noisier than a monaural one), and $c$ free.
+
+## Threshold sessions
+
+**In brief.** A session of a different kind (`threshold`): single bursts near the threshold of hearing, one ear at a time, and the listener says whether they heard them. Thresholds don't come from chaining comparisons, so they're an independent check on the broad shape of $L$, and perhaps a way to fix it later without accumulated error. Since both ears share a session's system volume, they also give $T_\mathrm{L} - T_\mathrm{R}$ directly. Like cross-ear trials, they're collected to see what they look like: nothing outside the session uses them yet.
+
+**Tasks** (`--task`):
+
+- `yesno` (the default): one marked interval; the listener answers heard or nothing. 10% of trials are blank (nothing plays) and measure the session's false-alarm rate. Faster, but the answers depend on how strict the listener is about "heard", which can drift.
+- `2ifc`: the burst is in one of two marked intervals (the session gap apart) and the listener picks it, guessing if unsure. Guessing is right half the time, so no blank trials. Each answer says less: in simulation, 2IFC's curve error at 400 trials was about 2.5 dB RMS, against 1.4 for yes/no.
+
+In both, 4% of trials are probes, 15 dB above the current estimate, which measure lapses.
+
+**Model** (`model/threshold.py`). Per profile, both ears and every threshold session together:
+
+$$
+P(\text{positive}) = \gamma + (1 - \gamma - \lambda)\,\Phi\!\left(\frac{x_t - \bar T_e(f) - c_s}{\sigma_\text{d}}\right)
+$$
+
+- $x_t$ is the burst's level in dBFS RMS, and $\bar T_e$ ear $e$'s threshold curve averaged over the stimulus spectrum, on the default 1/24-octave grid.
+- $c_s$ is session $s$'s offset (the first session's is 0), shared by both ears: it absorbs the system volume, which can differ between sessions, and the tasks' different midpoints (50% for yes/no, 75% correct for 2IFC). Sharing it is what makes $T_\mathrm{L} - T_\mathrm{R}$ measurable. The listener should keep the volume fixed within a session. Where `wpctl` is available, the default sink's volume is recorded.
+- $\gamma$ is the session's false-alarm rate in yes/no (a Beta(1, 19) posterior mean from its blank trials) and ½ in 2IFC. $\lambda$ is the lapse rate (Beta(1, 49) from the probes' misses, pooled).
+- $\sigma_\text{d}$ is the psychometric spread. It stays at its log-normal prior's median, 3 dB (log SD 0.5), until there are 150 signal trials, then maximises the Laplace evidence; this is the same lesson as "not a joint MAP" in the perceptual model.
+- Prior on $T_e$: the perceptual model's curvature penalty, centred on the shape of ISO 226's threshold (held constant above 12.5 kHz), so a curve with little data looks like a threshold rather than a line; and an SD of 20 dB about its own mean, with no pull on its level.
+- $(T, c)$ are the posterior mode by Fisher scoring, with Laplace error bars. Far from the data the likelihood is flat (a burst far below threshold is answered at the guess rate, one far above at the lapse rate), so Fisher scoring alone can sit on a plateau with an ear 20 dB or more off. Each solve starts by moving each ear's level, and each later session's offset, to its best value on a 2 dB grid of ±80 dB.
+
+In simulation (300 to 400 trials, both tasks), the curves came out within 1 to 2.5 dB RMS from 1 to 13 kHz, and their ±1 SD covered the error 75% of the time; session offsets within about 1 dB.
+
+**Scheduling** (`session/threshold.py`):
+
+- Ears alternate.
+- **Start-up.** A descending run in each ear at 2 kHz, from 30 dB below the listening level (the profile's last), or, with earlier threshold sessions, 15 dB above their threshold there if that's lower. Each positive answer steps 10 dB down (in 2IFC, two in a row at a level), and the first negative one ends the run. These trials are kept.
+- **Adaptive trials.** The frequency is drawn from the 8 grid points where $T_e + c_s$ is least certain, outside the previous trial's quarter octave. The level is the estimate plus $\sigma_\text{d}$ times a standard normal (plus $\sigma_\text{d}/2$ in 2IFC), so the answers also inform the psychometric slope. Levels stay between −140 dBFS and the usual −24 dBFS cap.
+- A refit after every answer (about 10 ms), and $\sigma_\text{d}$ is re-estimated every 50.
+- Session flow: an introduction (quiet room, keep the volume fixed), the channel check at the listening level, the trials (8 minutes by default), and an end screen with the false alarms and probes heard.
+
+**Caveats.**
+
+- Ambient noise masks mostly low frequencies, so it isn't a pure offset: a noisier session's thresholds tilt as well as shift.
+- A DAC or amplifier's own noise floor can mask near-threshold bursts on sensitive headphones or IEMs.
+- An output running at 16 bits limits how quiet a burst can be (about −100 dBFS before it's mostly quantisation noise). Flatiron's own output is float32.
+
+**Storage.** `profiles/<slug>/thresholds/<id>.json`, a folder of its own, so nothing that reads a profile's sessions (every fit) sees them. A threshold trial records the ear, frequency, level, kind (`signal`, `blank`, `probe` or `startup`), the response and whether it was positive, the burst's interval (2IFC), reaction times, replays, the undone and retake flags.
+
+How they might be used later: compare $-\hat T_e - E_\text{thr}$ with $\hat L - E$, where $E_\text{thr}$ is the reference at threshold rather than at 60 phon (ISO 226's threshold, plus ISO 389-7's difference for `diffuse`), as a check on the broad shape; and $T_\mathrm{R} - T_\mathrm{L}$ against the ears' fitted difference and the cross-ear trials.
 
 ## Perceptual model
 
@@ -682,12 +727,12 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 ## Modules
 
 - `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
-- `model/`: grids (with the common grid and the interpolation $A_p$), the trials and fit types, the hierarchical fit (one ear, and both under the balance prior), and grid refinement.
-- `session/`: the adaptive scheduler, the trial runner (scheduler, stimuli and session file, without UI), storage (listeners, profiles and sessions, and the one-off migration), and the sweep.
+- `model/`: grids (with the common grid and the interpolation $A_p$), the trials and fit types, the hierarchical fit (one ear, and both under the balance prior), grid refinement, and the threshold model.
+- `session/`: the adaptive scheduler, the cross-ear planner, the trial runner (scheduler, stimuli and session file, without UI), threshold sessions, storage (listeners, profiles and sessions, and the one-off migration), and the sweep.
 - `fit/`: reference, baseline (robust, and joint in `decompose.py`), features, filter fitting, the correction pipeline, the consensus, the comparison's alignment and strips, the veto, and the per-profile fit (cache, settings, pooling, consensus, checkpoint).
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
 - `report/`: figures, the HTML report, and the comparison report.
-- `ui/`: the trial app (level, channel check, sweep, trials, end screen), audition, and the tone generator.
+- `ui/`: the trial app (level, channel check, sweep, trials, end screen, and the threshold screens), audition, and the tone generator.
 - `sim/`: the simulated listener, non-adaptive designs, validation, the seating and multi-headphone scenarios, and simulated speakers for the consensus (`sim/consensus.py`).
 - `cli.py`: the commands below.
 - `apo.py`: parsing Equalizer APO / AutoEQ text (`Preamp:` and `Filter N: ON` lines of type PK, LSC/LS or HSC/HS; OFF filters are skipped, anything else is an error). Writing it lives with the exporters.
@@ -703,12 +748,13 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | --- | --- | --- |
 | `devices` | Lists outputs with host API, channels and native rate, marks the default, and flags Bluetooth, mono and rates other than 48 kHz | — |
 | `run` | Runs trial sessions | `PROFILE`, `--new`, `-d`, `-n`, `-m`/`--minutes` (default 12, at most 15), `--cross-ear PCT` (default 10; see "Cross-ear trials"), `--stimulus noise:N`, `warble:N` or `tone` (default `noise:12`: a 1/N-octave band; a warble swings over 1/N octave, default 12), `--active-eq APO_TXT`, `--eq-note`, `--no-match`, `--max-match-boost DB` (see "Loudness matching"), `-s`/`--sweep`, `--sweep-seconds`, `--debug` (see "Trial"); for a speaker profile, `--block N` (see "Speaker sessions") |
+| `threshold` | A threshold session (see "Threshold sessions") | `PROFILE`, `-d`, `-n`, `-m`/`--minutes` (default 8), `--stimulus`, `--task yesno` or `2ifc` |
 | `verify` | A short session through the correction | As `run`, without `--new`, `--cross-ear`, the sweep and `--debug`, plus `--trials` (answers, both ears; default 150) |
 | `audition` | The correction on and off | `PROFILE`, `-d`, `-n`, `--source pink`, `sweep` or `FILE.wav` (repeatable; default pink and sweep) |
 | `tone` | The tone generator | `PROFILE`, `-d`, `-n`, `-f`/`--freq` (default 1000), `-e`/`--ear L`, `R` or `both` |
 | `listeners` | Lists listeners (profiles, trials per ear, each ear's noise and the trials behind it), or changes them | `new NAME`; `rename OLD NEW` (the folder and the name used in `LISTENER/PROFILE`); `delete NAME` (all their profiles; asks first, `-y`/`--yes` doesn't) |
 | `profiles` | Lists profiles (sessions, trials per ear, last date and level, sessions not closed), grouped by listener when there are several, or changes them | `new NAME --kind headphone`, `iem` or `speaker` (with `--channel L` or `R`); `set NAME --kind … --label …`, which affects no trials; `rename NAME NEW` (label and folder); `move NAME --to LISTENER`; `delete NAME` (asks first; `-y`/`--yes` doesn't) |
-| `sessions` | Lists sessions: trials per ear, minutes, catch-trial accuracy, fast answers, share choosing the first interval (within-ear trials), cross-ear trials, EQ context, verify and not-closed marks | `PROFILE`, `--delete ID` (a session left open by a crash, say), `-y`/`--yes` |
+| `sessions` | Lists sessions: trials per ear, minutes, catch-trial accuracy, fast answers, share choosing the first interval (within-ear trials), cross-ear trials, EQ context, verify and not-closed marks; then threshold sessions: task, trials per ear, minutes, false alarms, probes heard, system volume | `PROFILE`, `--delete ID` (either kind; a session left open by a crash, say), `-y`/`--yes` |
 | `config` | Shows or changes a profile's settings or a listener's (see "Settings") | `PROFILE` or `LISTENER`, the options in "Settings", `--reset NAME,NAME` or `all`, `--checkpoint` |
 | `report` | Prints filters and features, and notes on the seating spread, noise and bias; writes the HTML report and opens it | `PROFILE`, `-H`/`--no-html` (write it but don't open it), `--csv FILE` |
 | `compare` | Compares profiles (see "Comparing profiles"); writes the HTML page and opens it | Two to eight profiles, from any listeners, `-H`/`--no-html`, `--ear`, `--include-kind iem`, `--broad-spread DB` |
@@ -725,6 +771,8 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Channel check | ←/L left, →/R right, Space replay, Enter retry, Esc quit |
 | Sweep | Enter start, ↑/P peak, ↓/D dip, Q correction on/off, Esc skip |
 | Trials | ←/1 or click A: A louder, →/2 or click B: B louder, Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first), D frequencies and levels (with `run --debug`) |
+| Threshold introduction | Enter start, Esc quit |
+| Threshold trials | yes/no: ←/Y/1 heard, →/N/2 nothing; 2IFC: ←/1 or click 1: first, →/2 or click 2: second; both: Space replay, P pause, U/Backspace undo, Q save and quit, X discard |
 | End of session | N next session, Q quit |
 | Audition | Space switch, N next source, B blind, R reveal, Q/Esc quit |
 | Tone generator | ←/→ frequency, ↑/↓ tap size, G go to a frequency, E ear (left, right, both), S stimulus, +/− level, Q correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space pause, Esc quit |
@@ -747,6 +795,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 
 - `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), the profile's own ends of the measured range (if it sets them), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug` (headphones and speakers together; each one's kind says which), with `auto` settings as null, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings (loudness matching and its cap among them), the measured range, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear (`LR` or `RL` for a cross-ear trial), both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone, retake and peeked flags. The file is saved after every answer.
+- `profiles/<slug>/thresholds/<timestamp>.json`: threshold sessions (see "Threshold sessions"): task, device, stimulus, listening level, gap, seed, system volume, grid, channel checks and every trial.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
 - `cache/consensus/`: split consensus results (see "Consensus reference"), shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
@@ -761,6 +810,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
     - Trials until time is up or the listener quits. The fitted curve is never shown during trials.
     - The end screen asks for a reseat before the next session.
     - For a speaker profile, instead: the level screen once per `run`, then per block a screen for the earplug alone when the open ear changes (and before a run's first block), showing which ear is open and which plugged, then a screen with the position, its angles in large digits; the first of these says how the last block went, then the block's trials, whose status line counts the block's trials. There's no end screen between blocks: only on Q, or when the plan is done (see "Speaker sessions").
+    - For a threshold session (`threshold`), instead: an introduction, the channel check, the detection trials and an end screen (see "Threshold sessions").
 3. **Look** (`report` and `compare` across headphones; each writes an HTML page and opens it unless `-H`, with the ears side by side): per ear, $\hat L$ with its SD band, the reference, the baseline, the residual with its significance, the features (kept or not, and why), the filters, the correction, and the target (residual plus correction). With two or more sessions, each session's residual is drawn against the average; above five, the band holding the middle 90% of them, weighted by trials. Checkpoint filters are labelled. `report`'s page has five sections: *Measured response* (level against reference and baseline, residual and target, and the per-session residuals, with the fitted noise, lapse rate, time-order bias and seating spread one to a line), *Features* (the feature tables), *Correction* (the correction curve, with a checkpoint's part dashed, and the filters), *Reference* (the reference named in a line, with a consensus's fitted values and warnings, and drawn with its mean removed; for a consensus reference, its parts and the kept share $k$, see "Consensus reference") and *Settings*.
 
 User-facing text (pages, terminal and screens) states values and warnings and leaves the explanations to this document. Figure titles don't repeat the ear, which heads its column, and "±1 SD" goes in line labels and legends, never in titles. Session counts appear only in the overview line, which starts with the listener's name when there are several listeners.
@@ -778,6 +828,7 @@ User-facing text (pages, terminal and screens) states values and warnings and le
 - Exporters match golden files from real LSP and EasyEffects installs byte for byte.
 - When available locally, the LSP and EasyEffects output runs through LSP's LADSPA plugin, and the PipeWire drop-in through a private filter-chain, compared with Flatiron's prediction.
 - Cross-ear trials put each burst in its own ear at the planned level difference, stay out of every fit, and their running offset estimate recovers a simulated listener's channel offset.
+- The threshold model recovers simulated thresholds, session offsets and false-alarm rates within its error bars; a simulated session finds a known threshold through the real scheduler, in both tasks; the start-up run stops at its first miss; blank intervals are silent; threshold sessions stay out of the profile's sessions.
 
 ## Simulated listener
 

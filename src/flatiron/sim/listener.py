@@ -139,3 +139,32 @@ class SimulatedListener:
     def respond(self, ear, f_a, f_b, offset, a_first=None) -> np.ndarray:
         p = self.p_a_louder(ear, f_a, f_b, offset, a_first)
         return self.rng.random(np.shape(p)) < p
+
+
+@dataclass
+class ThresholdListener:
+    """Answers detection trials (DESIGN.md, "Threshold sessions"): threshold[ear]
+    maps frequencies to the threshold in dBFS RMS at the current system volume."""
+    threshold: dict
+    sigma: float = 3.0
+    lapse: float = 0.02
+    false_alarm: float = 0.05
+    seed: int = 0
+
+    def __post_init__(self):
+        self.rng = np.random.default_rng(self.seed)
+
+    def p_detect(self, ear, freq, level_db) -> float:
+        return float(ndtr((level_db - self.threshold[ear](np.atleast_1d(freq))[0]) / self.sigma))
+
+    def answer(self, plan, task: str) -> bool:
+        """The left-hand key: heard (yes/no) or the first interval (2IFC)."""
+        lapse = self.rng.random() < self.lapse
+        if task == "yesno":
+            if plan.kind == "blank":
+                return bool(self.rng.random() < self.false_alarm)
+            heard = self.rng.random() < self.p_detect(plan.ear, plan.freq, plan.level_db)
+            return bool(not lapse and (heard or self.rng.random() < self.false_alarm))
+        heard = not lapse and self.rng.random() < self.p_detect(plan.ear, plan.freq, plan.level_db)
+        chosen = plan.interval if heard else int(self.rng.integers(1, 3))
+        return chosen == 1
