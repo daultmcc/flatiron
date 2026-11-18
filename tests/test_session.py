@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from flatiron.apo import parse_apo
-from flatiron.audio.stimulus import StimulusSpec
+from flatiron.audio.stimulus import StimulusSpec, stimulus_key
 from flatiron.model.grid import log_grid, octaves
 from flatiron.session.runner import RunSettings, TrialRunner
 from flatiron.session.scheduler import SchedulerConfig
@@ -82,7 +82,7 @@ def test_active_eq_gain_recorded_as_known_offset(tmp_path):
                     config=FAST_CFG, seed=2)
     tr = r.prepare()
     rec = r.answer(tr, True, 500)
-    ga, gb = eq.gain_db([tr.plan.f_a, tr.plan.f_b])
+    ga, gb = eq.band_gain_db([tr.plan.f_a, tr.plan.f_b], stimulus_key(r.settings.stimulus))
     assert rec.eq_gain_a == pytest.approx(ga) and rec.eq_gain_b == pytest.approx(gb)
     assert rec.offset == pytest.approx(tr.plan.offset + ga - gb)
     assert r.session.eq_context["note"] == "autoeq"
@@ -391,3 +391,15 @@ def test_cross_ear_only_session(tmp_path):
     assert len(s.cross_trials()) == 10
     trials, _ = prof.history()
     assert len(trials["L"]) == len(trials["R"]) == 0
+
+
+def test_active_eq_gain_is_averaged_over_the_burst():
+    from flatiron.apo import ApoEq, ApoFilter
+
+    eq = ApoEq(0.0, [ApoFilter("PK", 2000, 6, 15)])
+    assert eq.band_gain_db([2000], "point")[0] == pytest.approx(6.0, abs=1e-6)
+    assert eq.band_gain_db([2000], "noise:0.083333")[0] == pytest.approx(4.94, abs=0.05)
+    assert eq.band_gain_db([2000], "warble:0.041667")[0] == pytest.approx(4.58, abs=0.05)
+    # A broad filter is about its centre value either way.
+    wide = ApoEq(0.0, [ApoFilter("PK", 2000, 6, 0.7)])
+    assert wide.band_gain_db([2000], "noise:0.083333")[0] == pytest.approx(6.0, abs=0.05)

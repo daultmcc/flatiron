@@ -486,7 +486,7 @@ The correction range can only move within the measured grid, and the stimulus is
 
 Flatiron treats EQ as three layers: any system EQ active while measuring, the correction Flatiron fits, and an optional preference layer the user owns.
 
-- **Active EQ is known, not measured.** A session can record the system EQ in effect (`run --active-eq`, as APO text, with an optional `--eq-note`). Its gain at each stimulus frequency enters the model as a known offset, so $\hat L$ always describes the raw headphone.
+- **Active EQ is known, not measured.** A session can record the system EQ in effect (`run --active-eq`, as APO text, with an optional `--eq-note`). Its power gain over each burst's spectrum (sampled as the fit models the stimulus: flat in Hz across a noise band, uniform in FM phase for a warble, the centre for a tone) enters the model as a known offset, so $\hat L$ always describes the raw headphone. A narrow filter's effect on a band isn't its value at the centre: a Q 15 bell of +6 dB raises a 1/12-octave noise band at its centre by 4.9 dB, and a 1/24-octave warble by 4.6.
 - **Export modes.** *Correction only* (the default): filters to stack after the existing EQ or in their own instance. *Merged* (`export --merge FILE`, or `--merge L=FILE --merge R=FILE` for a preset per channel): the preference layer's APO text first, then the correction sorted by frequency, with the preamp computed over both.
 
 # Several headphones on one listener

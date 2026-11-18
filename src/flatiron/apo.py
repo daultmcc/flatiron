@@ -13,6 +13,7 @@ import numpy as np
 
 from flatiron import FS
 from flatiron.audio.biquad import peaking_coeffs, shelf_coeffs, sos_response_db
+from flatiron.audio.stimulus import spectrum_offsets_oct
 
 FILTER_RE = re.compile(
     r"^Filter\s*\d*\s*:\s*(?P<state>ON|OFF)\s+(?P<type>[A-Z]+)"
@@ -44,6 +45,15 @@ class ApoEq:
     def gain_db(self, freqs, fs: int = FS, include_preamp: bool = False) -> np.ndarray:
         g = sos_response_db(self.sos(fs), freqs, fs)
         return g + self.preamp_db if include_preamp else g
+
+    def band_gain_db(self, freqs, stimulus: str, fs: int = FS) -> np.ndarray:
+        """The power gain (dB) over each burst's spectrum, sampled as the fit
+        models it (spectrum_offsets_oct): a narrow filter's effect on a band
+        or a warble isn't its value at the centre frequency."""
+        f = np.atleast_1d(np.asarray(freqs, float))
+        pts = f[:, None] * 2.0 ** spectrum_offsets_oct(stimulus)[None, :]
+        g = self.gain_db(np.clip(pts, 1.0, fs / 2 * 0.999).ravel(), fs).reshape(pts.shape)
+        return 10 * np.log10(np.mean(10 ** (g / 10), axis=1))
 
 
 def parse_apo(text: str) -> ApoEq:

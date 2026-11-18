@@ -242,7 +242,7 @@ class TrialRunner:
         eq = self.settings.active_eq
         if eq is None:
             return 0.0, 0.0
-        ga, gb = eq.gain_db([plan.f_a, plan.f_b], self.fs)
+        ga, gb = eq.band_gain_db([plan.f_a, plan.f_b], stimulus_key(self.settings.stimulus), self.fs)
         return float(ga), float(gb)
 
     def answer(self, trial: PreparedTrial, first_louder: bool, rt_ms: float,
