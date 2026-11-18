@@ -352,3 +352,28 @@ def test_cross_ear_planner_finds_the_channel_offset(tmp_path):
     answer_like(lis, r, 300)
     assert r.progress()["cross"] > 60
     assert r.cross.offset_estimate() == pytest.approx(3.0, abs=1.5)
+
+
+def test_cross_ear_trials_follow_the_measured_range_and_loudness_matching(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    prof.update(measured={"lo": 2000.0, "hi": 9000.0})
+    plans = {}
+    for match in (True, False):
+        r = TrialRunner(prof, RunSettings(cross_rate=0.3, match=match), config=FAST_CFG, seed=3)
+        lis = SimulatedListener({e: design_example("L") for e in "LR"}, seed=0)
+        plans[match] = []
+        for k in range(80):
+            tr = r.prepare()
+            p = tr.plan
+            if len(p.ear) == 2:
+                plans[match].append(p)
+            a = bool(lis.respond(p.ear, p.f_a, p.f_b, p.offset, p.a_first))
+            r.answer(tr, first_louder=(a == p.a_first), rt_ms=400, t=k)
+        r.finish()
+    on, off = plans[True], plans[False]
+    assert on and len(on) == len(off)
+    for p, q in zip(on, off):
+        # The same pairs either way (the answers, and so the aim, drift apart).
+        assert (p.ear, p.f_a, p.f_b, p.a_first) == (q.ear, q.f_a, q.f_b, q.a_first)
+        assert 2000 * 2 ** (-3 / 24) - 1e-6 <= min(p.f_a, p.f_b) and max(p.f_a, p.f_b) <= 9000 * 2 ** (3 / 24) + 1e-6
+    assert any(abs(p.delta_a + p.delta_b - q.delta_a - q.delta_b) > 0.5 for p, q in zip(on, off))

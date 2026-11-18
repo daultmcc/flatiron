@@ -8,8 +8,10 @@ no fit uses them.
 
 The planner aims each trial near the 50% point as well as it can: the
 difference of the two ears' current curves (each with its mean over 1 to
-13 kHz removed, since each ear's level is its own gauge), plus a running
-estimate of the overall L−R offset from the cross answers so far.
+13 kHz, within the measured range, removed, since each ear's level is its
+own gauge), plus a running estimate of the overall L−R offset from the
+cross answers so far. With loudness matching, each burst is matched in its
+own ear, as the scheduler's are.
 """
 
 import numpy as np
@@ -20,20 +22,25 @@ from flatiron.model.grid import interp_matrix, log_grid
 from flatiron.model.probit import band_matrix
 from flatiron.session.scheduler import Scheduler, TrialPlan
 
-F_LO, F_HI = 1000.0, 13000.0  # where cross-ear frequencies are drawn, and the curves centred
+F_LO, F_HI = 1000.0, 13000.0  # where cross-ear frequencies are drawn and the curves centred (within the measured range)
 SAME_FREQ_SHARE = 0.5  # the rest are 1 to 3 grid steps (1/24 octave each) apart
 MAX_STEPS = 3
 SIGMA_X_DB = 1.5  # assumed judgment noise of a cross-ear pair, for aiming only
 OFFSET_PRIOR_SD = 3.0  # prior SD of the overall L−R offset, for aiming only
 JITTER_SD, MAX_JITTER = 2.0, 4.0
-CENTRE = log_grid(F_LO, F_HI)
 
 
-def centred_curve(fit, group: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+def cross_range(measured: tuple[float, float]) -> tuple[float, float]:
+    """1 to 13 kHz, within the measured range (all of it if they don't overlap)."""
+    lo, hi = max(F_LO, measured[0]), min(F_HI, measured[1])
+    return (lo, hi) if hi > lo else (float(measured[0]), float(measured[1]))
+
+
+def centred_curve(fit, centre: np.ndarray, group: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """An ear's curve on its grid (a group's own, if given and known), shifted
-    so it averages 0 over 1 to 13 kHz."""
+    so it averages 0 over the centre frequencies."""
     curve = fit.L if group is None or fit.u is None or group >= len(fit.u) else fit.L + fit.u[group]
-    return fit.grid, curve - float(np.mean(interp_matrix(fit.grid, CENTRE) @ curve))
+    return fit.grid, curve - float(np.mean(interp_matrix(fit.grid, centre) @ curve))
 
 
 class CrossPlanner:
@@ -47,6 +54,8 @@ class CrossPlanner:
             raise ValueError("the cross-ear rate must be at least 0 and below 1")
         self.sched = scheduler
         self.rate = rate
+        self.f_lo, self.f_hi = cross_range(scheduler.measured)
+        self.centre = log_grid(self.f_lo, self.f_hi)
         self.rng = np.random.default_rng([seed, 0xC205])
         # Per answer: the known part of the probit argument (curve difference,
         # offset, time-order bias), the sign of the L−R offset in it (+1: A in
@@ -68,7 +77,7 @@ class CrossPlanner:
 
     def _level(self, ear: str, f: float, current: bool) -> float:
         st = self.sched.ears[ear]
-        grid, curve = centred_curve(st.fit, st.current if current else None)
+        grid, curve = centred_curve(st.fit, self.centre, st.current if current else None)
         return float(band_matrix(grid, [f], [self.sched.stimulus_key])[0] @ curve)
 
     def _bias(self) -> float:
@@ -96,7 +105,7 @@ class CrossPlanner:
 
     def next_trial(self) -> TrialPlan:
         rng = self.rng
-        f_a = float(2 ** rng.uniform(np.log2(F_LO), np.log2(F_HI)))
+        f_a = float(2 ** rng.uniform(np.log2(self.f_lo), np.log2(self.f_hi)))
         f_b = f_a
         if rng.random() >= SAME_FREQ_SHARE:
             f_b = f_a * 2 ** (rng.choice([-1, 1]) * rng.integers(1, MAX_STEPS + 1) / 24)
@@ -107,7 +116,18 @@ class CrossPlanner:
         jitter = float(np.clip(rng.normal() * JITTER_SD, -MAX_JITTER, MAX_JITTER))
         off = -(diff + c) - self._bias() * (1 if a_first else -1) + jitter
         off = float(np.clip(off, -self.sched.cfg.max_delta_db, self.sched.cfg.max_delta_db))
-        da, db = (off, 0.0) if rng.random() < 0.5 else (0.0, -off)
+        cfg = self.sched.cfg
+        coin = rng.random() < 0.5  # drawn either way, so a seed gives the same trials with matching on or off
+        if cfg.match:
+            # As the scheduler does (DESIGN.md, "Loudness matching"), each burst
+            # matched in its own ear: the offset split evenly around the pair's
+            # matched level, then both moved together to respect the caps.
+            common = 0.5 * float(self.sched.match_gain(ear[0], f_a) + self.sched.match_gain(ear[1], f_b))
+            da, db = common + off / 2, common - off / 2
+            shift = min(cfg.match_boost_db - max(da, db), 0.0) + max(-cfg.match_cut_db - min(da, db), 0.0)
+            da, db = da + shift, db + shift
+        else:
+            da, db = (off, 0.0) if coin else (0.0, -off)
         rove = float(rng.uniform(-self.sched.cfg.rove_db, self.sched.cfg.rove_db))
         return TrialPlan(ear, f_a, f_b, da, db, a_first, rove, False)
 
