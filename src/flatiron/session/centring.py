@@ -46,7 +46,8 @@ MATCH_BOOST_DB, MATCH_CUT_DB = 12.0, 30.0
 
 @dataclass
 class CentringSettings:
-    stimulus: StimulusSpec = field(default_factory=StimulusSpec)
+    # One-octave bands: 1/12-octave ones gave no stable image to place (DESIGN.md).
+    stimulus: StimulusSpec = field(default_factory=lambda: StimulusSpec(bandwidth_oct=1.0))
     session_minutes: float = 5.0
     max_trials: int | None = None
     level_dbfs: float | None = None  # None: the profile's last

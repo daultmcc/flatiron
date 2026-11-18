@@ -1884,8 +1884,9 @@ def main(argv=None):
     profile_arg(s)
     device_arg(s)
     s.add_argument("-m", "--minutes", type=float, default=5.0, help="session length, at most 15 (default 5)")
-    s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(), metavar="noise[:N]|warble[:N]|tone",
-                   help="as for run (default noise:12)")
+    s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(bandwidth_oct=1.0),
+                   metavar="noise[:N]|warble[:N]|tone",
+                   help="as for run, but default noise:1 (one-octave bands: narrower ones are hard to place)")
     s.add_argument("--level", type=float, metavar="DBFS", help="listening level (default: the profile's last)")
     s.add_argument("--no-match", dest="match", action="store_false",
                    help="no loudness matching with the ears' fitted curves")
