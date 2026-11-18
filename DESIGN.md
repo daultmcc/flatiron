@@ -24,9 +24,9 @@ This document describes how Flatiron works as built, the evidence behind its des
 | Speaker sessions and the position model | Built | "Speaker profiles" |
 | Speakers deciding what the consensus keeps | Built | "Consensus reference" |
 | Speaker evidence in a joint model | Superseded | "Speaker profiles" |
-| Cross-ear trials | Built, collected only: no fit uses them | "Cross-ear trials" |
-| Threshold sessions | Built, collected only: nothing outside the session uses them | "Threshold sessions" |
-| Centring sessions | Built, collected only: nothing outside the session uses them | "Centring sessions" |
+| Cross-ear trials | Built; in the two-ear fit, with the listener's cross-ear bias | "Cross-ear trials", "Using cross-ear trials" |
+| Threshold sessions | Built; only their channel balance is used (in the two-ear fit) | "Threshold sessions" |
+| Centring sessions | Built; their channel balance enters the two-ear fit | "Centring sessions" |
 
 ## Scope
 
@@ -201,7 +201,7 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 
 ## Cross-ear trials
 
-**In brief.** Every trial above compares two frequencies in one ear, so the overall level difference between the ears is a gauge the data can't see, and the shape of $L_\mathrm{L} - L_\mathrm{R}$ comes only from two separate fits and the channel-balance prior. A cross-ear trial plays A in one ear and B in the other and asks the same question. They're collected to see what they look like: no fit, correction or report uses them yet. Possible uses are an overall channel-balance correction in the exported presets, and a check on the ears' fitted difference (and on the balance prior).
+**In brief.** Every trial above compares two frequencies in one ear, so the overall level difference between the ears is a gauge the data can't see, and the shape of $L_\mathrm{L} - L_\mathrm{R}$ comes only from two separate fits and the channel-balance prior. A cross-ear trial plays A in one ear and B in the other and asks the same question. They shape $L_\mathrm{L} - L_\mathrm{R}$ in the two-ear fit, past a cross-ear bias that's the listener's (see "Using cross-ear trials"). No correction of the overall balance comes from them.
 
 - **Share.** `run --cross-ear PCT`, 10% of trials by default (0 to 100; 0 for none, 100 for nothing else, aimed with the within-ear curves from earlier sessions). Never in speaker blocks or verify sessions.
 - **Pairs.** A frequency log-uniform over 1 to 13 kHz, cut to the measured range. Half are the same frequency in both ears; the other half have B 1 to 3 steps of 1/24 octave away, either side. Which ear gets A and which interval plays first are random. There are no catch trials among them, and the level rove is as usual.
@@ -212,11 +212,11 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 
 **First data** (2026-11-18). Every session put the left louder: Sundara +3.1 and +3.6 dB, HD560 +3.7 to +4.3 dB at −24 to −31 dBFS on two amps and DACs, and +3.3 ± 0.4 at −60 dBFS; $\sigma_x$ 2.7 (Sundara) to 4.3 dB (HD560). Centring sessions and thresholds both put the channels within half a dB of balance, so this is a bias in comparing loudness across ears, not a level difference ("Centring sessions"). An overall balance correction from these trials is out. What may survive is the shape of $L_\mathrm{L} - L_\mathrm{R}$ across frequency, if the bias is the same at every frequency: then a free constant absorbs it. By band the cross-ear $c$ ran from about +2 to +4 dB below 8 kHz and +4 to +9 above.
 
-A likely model for using them, not built: $P(\text{A louder}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\big((\bar L_{g,e_a}(f_a) - \bar L_{g,e_b}(f_b) \pm c + o_t + \beta s_t)/\sigma_x\big)$, with its own noise $\sigma_x$ (an interaural comparison is probably noisier than a monaural one), and $c$ free.
+How they're used is in "Using cross-ear trials".
 
 ## Threshold sessions
 
-**In brief.** A session of a different kind (`threshold`): single bursts near the threshold of hearing, one ear at a time, and the listener says whether they heard them. Thresholds don't come from chaining comparisons, so they're an independent check on the broad shape of $L$, and perhaps a way to fix it later without accumulated error. Since both ears share a session's system volume, they also give $T_\mathrm{L} - T_\mathrm{R}$ directly. Like cross-ear trials, they're collected to see what they look like: nothing outside the session uses them yet.
+**In brief.** A session of a different kind (`threshold`): single bursts near the threshold of hearing, one ear at a time, and the listener says whether they heard them. Thresholds don't come from chaining comparisons, so they're an independent check on the broad shape of $L$, and perhaps a way to fix it later without accumulated error. Since both ears share a session's system volume, they also give $T_\mathrm{L} - T_\mathrm{R}$ directly. Only their $T_\mathrm{R} - T_\mathrm{L}$ is used, as an observation of the profile's channel balance in the two-ear fit (see "Using cross-ear trials"); nothing else outside the session uses them.
 
 **Tasks** (`--task`):
 
@@ -272,7 +272,7 @@ How they might be used later: compare $-\hat T_e - E_\text{thr}$ with $\hat L - 
 
 ## Centring sessions
 
-**In brief.** A session of another kind (`centre`): each burst plays in both ears at once, the same waveform in each, with the left $d/2$ dB up and the right $d/2$ down, and the listener says whether the image sounds left or right of centre. The $d$ that sounds centred is the channels' perceived balance, measured without comparing sounds across time. Collected only, like cross-ear trials and thresholds.
+**In brief.** A session of another kind (`centre`): each burst plays in both ears at once, the same waveform in each, with the left $d/2$ dB up and the right $d/2$ down, and the listener says whether the image sounds left or right of centre. The $d$ that sounds centred is the channels' perceived balance, measured without comparing sounds across time. It enters the two-ear fit as a direct observation of the profile's balance, from sessions of noise at least half an octave wide (see "Using cross-ear trials").
 
 **Why.** First cross-ear data (2026-11-18) put the left about 3.5 to 4 dB louder on two headphones, two amps and two DACs, and at levels from −24 to −60 dBFS, while threshold sessions found the ears equally sensitive ($T_\mathrm{R} - T_\mathrm{L} = -0.4 \pm 0.7$ dB). A cross-ear trial can't tell a real level difference from a tendency to hear the left-ear burst as louder; centring can't either, against a tendency to answer "left", but the two biases have no reason to be the same. If centring comes out near 0 while cross-ear trials stay at +3.5, the cross-ear figure is a judgment bias and shouldn't be corrected; a real 4 dB imbalance would put mono sound well off to the left.
 
@@ -362,13 +362,37 @@ Each ear is first fitted on its own, as above, with the listener's noise; that f
 - Its constant is free, since each ear's level is a gauge.
 - `config --balance` scales both SDs: larger is looser, and 0 fits each ear on its own. A profile in a consensus or veto uses its own setting.
 - The joint solve is the same Fisher scoring, with both ears' Schur complements in one matrix: sessions belong to one ear, so the coupling is only between the two curves.
-- Error bars and session curves come from the joint fit. The scheduler still fits each ear on its own while it picks trials (`model/hierarchical.py`, `fit_balanced`; `fit/run.py`, `BALANCE`).
+- Error bars and session curves come from the joint fit. The scheduler still fits each ear on its own while it picks trials (`model/hierarchical.py`, `fit_joint` and `fit_balanced`; `fit/run.py`, `BALANCE`).
+- Cross-ear trials, centring and thresholds, where a profile has them, enter the same solve (see "Using cross-ear trials"). The fit is then joint even with `--balance 0`.
 
 The prior's size comes from the real profiles. A rough empirical-Bayes fit of $\delta$, pooled over FT1, HD560 and Sundara, gave 1 to 1.5 dB below 5 kHz and 2 to 4 dB above 8 kHz, and preferred a width of 1/8 octave to 1/12 or 1/4. For Sundara, the consensus reference's L−R was 1.62 dB RMS (4.9 at most, mostly HD560 above 11 kHz), and is about 0.9 with the prior.
 
 Real differences are kept, but shrunk. They still show where the data are strong: HD560's right ear is 8 to 12 dB down above 11 kHz (about 4 SD). Sundara's own sessions and SundaraTone's, which share no trials, have L−R curves correlated at +0.57. Other headphone pairs correlate at +0.2 to +0.5, so part of the difference may be the listener's ears rather than the drivers. A Gaussian prior pulls hardest on the largest differences: an 8 dB, Q 3 peak in one ear at 600 trials per ear keeps about 55% of its L−R difference. It washes out as trials grow, but slowly.
 
 Thicker tails may be worth trying later: a Student-t or a mixture (a narrow and a wide Gaussian) for $\delta$, in place of the Gaussian. It would pull small differences together as much as now, but leave large, well-measured ones nearly alone. The soft local pooling tried in simulation (see "Channel balance" under "Findings") is close to the mixture, and kept slightly more of an ear-specific peak. It hasn't been tried in the joint fit: a non-Gaussian $\delta$ needs an inner iteration (reweighting, for example) and makes the result depend on the starting point.
+
+## Using cross-ear trials
+
+**In brief.** Cross-ear trials say how $L_\mathrm{L} - L_\mathrm{R}$ varies across frequency, which within-ear trials can only infer from two separate curves (and the balance prior). But they also carry a bias of the listener's: one listener heard the left ear about 3.6 dB louder in every cross-ear comparison, on two headphones, two amps and a 36 dB range of levels, while centring and thresholds found the channels balanced ("Centring sessions"). So a cross-ear trial sees the curves plus $b + c_p$: $b$ the listener's bias, shared by all their profiles, and $c_p$ the profile's own overall balance. Centring and threshold sessions see $c_p$ alone, which is what tells the two apart.
+
+**Model** (`fit/interaural.py`; `model/hierarchical.py`, `fit_joint`). The two-ear fit ("Channel balance") gains probit rows linear in its parameters:
+
+- Cross-ear: $P(\text{A louder}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\big((\tilde L_{e_a}(f_a) - \tilde L_{e_b}(f_b) + o_t + \beta s_t \pm (b + c_p))/\sigma_x\big)$, + when A is in the left ear. $\tilde L_e$ is the ear's average curve, averaged over the stimulus spectrum, with its mean over the reference range removed; $\beta$ the mean of the ears' time-order biases; $\lambda$ = 0.02. The session's seating deviations are left out (their spread goes into $\sigma_x$), which keeps the ear-by-ear Schur elimination.
+- Centring: $P(\text{left}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\big((\tilde L_\mathrm{L}(f) - \tilde L_\mathrm{R}(f) + d + c_p)/\sigma_c\big)$, from sessions of noise at least half an octave wide.
+- Thresholds: the profile's threshold fit gives $T_\mathrm{R} - T_\mathrm{L}$ averaged over the reference range, with its SD widened by 1.3 (its error bars covered about 75% in simulation), folded into $c_p$'s prior as a Gaussian observation. It needs 100 signal trials, and assumes the balance at threshold holds at listening level.
+- $c_p \sim \mathcal N(0, 1.5^2)$ dB, about a driver mismatch. The reference range is 1 to 13 kHz within the measured range (where cross-ear trials are drawn). Without it $c_p$ would be relative to the fit's gauge (equal means over the whole grid), which moved it by up to 0.9 dB on real profiles.
+- `config --cross-ear-fit` (on by default; `--no-cross-ear-fit` turns it off). A profile with none of this data is fitted as before.
+
+**The listener's bias.** Like the noise ("Shared noise"), $b$ is the listener's: fitted once to every headphone or IEM profile with cross-ear trials (and the setting on) together, each with its own curves, balance prior and $c_p$, with $b \sim \mathcal N(0, 10^2)$. Each profile's own fit then holds $b$ there and estimates $c_p$. The two judgment noises $\sigma_x$ and $\sigma_c$ are the listener's too, set in the same fit by maximising the Laplace evidence, one then the other, under a weak log-normal prior (median 2.5 dB, log SD 0.7). Fitting them to the curves they shape (the MAP) shrinks them, and in simulation a few dozen cross-ear trials aimed near the 50% point could be all but separable, so without the prior nothing stopped them collapsing. The result is cached in `cache/bias/`, keyed by every member's fits and rows. A profile's $c_p$ SD leaves out $b$'s uncertainty, as each fit leaves out the noise's.
+
+**Why this model** (scratch tests, 2026-11-18, Sundara and HD560, one listener):
+
+- A frequency-dependent bias $b(f)$ (piecewise linear in log f, knots at 1, 2, 4, 8 and 13 kHz) was indistinguishable from a constant: Wald $p$ 0.74 and 0.18 per profile, 0.27 shared; 0.4 to 1.5 nats gained for 4 to 8 parameters. The two profiles' $b(f)$ agreed ($p$ 0.47). The 2 kHz knot sat about 1.4 dB above the rest in both, about 2 SD: one to watch.
+- Shared rather than per profile, so a headphone's own L−R (HD560's −4 to −7 dB at 11 to 13 kHz) can't be taken for bias; it held under every variant. But sharing only protects the shape: a profile's constant imbalance needs its own term, $c_p$, or it bends the shape or inflates $\sigma_x$. Without centring or thresholds, $b$ and $c_p$ are separated only by $c_p$'s prior (correlation −0.98).
+- Effect on the curves, with the balance prior on: L−R moved 0.5 to 0.8 dB RMS (at most 1.6 dB) and its SD fell 25 to 35%. With the ears fitted independently, the cross-ear trials did much of the balance prior's work (HD560's L−R at 12 to 13 kHz went from −8 to −10 to −4.5 to −7 dB, SD halved), and the two fits' L−R came closer (1.06 → 0.69 and 1.46 → 0.42 dB RMS apart).
+- Built, on the real data: $b$ = +3.66 ± 0.32 dB, $\sigma_x$ 2.8, $\sigma_c$ 2.3; Sundara $c_p$ −0.10 ± 0.32 (cross-ear and thresholds), HD560 −0.15 ± 0.16 (cross-ear and centring). In simulation (a +3 dB cross-ear bias, identical channels, 85 cross-ear and 150 centring trials): $b$ 3.3 ± 0.5, $c_p$ −0.3 ± 0.2, $\sigma_x$ 0.8 (true about 1.0), $\sigma_c$ 2.05 (true 2).
+
+The report's notes give the profile's $c_p$, what it came from, and $b$. Nothing corrects the overall balance.
 
 ## Adaptive selection
 
@@ -459,6 +483,7 @@ The listener has settings of their own, with names no profile setting shares: `-
 | --- | --- | --- |
 | Max feature width $W$ | 1 octave (1/3 to 2) | `-w`/`--width` |
 | Channel balance | 1 (scale on 1.5 and 3 dB; 0: off) | `--balance` |
+| Cross-ear trials, centring and thresholds in the two-ear fit | on | `--cross-ear-fit`, `--no-cross-ear-fit` |
 | Reference; listening level | `diffuse`; 60 phon | `-r`/`--reference`; `--phon` |
 | Consensus reference | none | `-r consensus:A,B` (speakers may be listed too) |
 | Its prior on the listener's narrow structure; coupling | ×1; 1 dB | `--consensus-prior`; `--coupling` |
@@ -834,8 +859,9 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings (loudness matching and its cap among them), the measured range, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear (`LR` or `RL` for a cross-ear trial), both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone, retake and peeked flags. The file is saved after every answer.
 - `profiles/<slug>/thresholds/<timestamp>.json`: threshold sessions (see "Threshold sessions"): task, device, stimulus, listening level, gap, seed, system volume, grid, the measured range, any known EQ, channel checks and every trial. A trial records the ear, frequency, level, kind, answer, interval, reaction times, replays, the fast, undone, retake and peeked flags, and any known EQ gain.
 - `profiles/<slug>/centring/<timestamp>.json`: centring sessions (see "Centring sessions"): device, stimulus, listening level, seed, the measured range, whether matching was on, any known EQ, channel checks and every trial.
-- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
+- `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), two-ear fits (`balanced-<hash>-<ear>.npz`, or `joint-<hash>-<ear>.npz` with a `.json` of $c_p$ and its sources when cross-ear, centring or threshold data are in), which consensus entries the profile last used, and the last HTML report.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
+- `cache/bias/`: the listener's cross-ear bias and judgment noises, with each member's $c_p$, keyed by everything they depend on, newest 200 kept (see "Using cross-ear trials").
 - `cache/consensus/`: split consensus results (see "Consensus reference"), shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
 
 ## Session flow

@@ -172,23 +172,56 @@ def balance_prior(profile: Profile) -> BalancePrior | None:
     return replace(BALANCE, lo_db=BALANCE.lo_db * scale, hi_db=BALANCE.hi_db * scale)
 
 
-def balanced_key(ear_keys: dict[str, str], balance: BalancePrior) -> str:
+def balanced_key(ear_keys: dict[str, str], balance: BalancePrior | None, extra_key: str = "") -> str:
     h = hashlib.sha256(f"{CACHE_VERSION}|balance|{balance!r}".encode())
     for e in sorted(ear_keys):
         h.update(f"|{e}={ear_keys[e]}".encode())
+    if extra_key:
+        h.update(f"|interaural={extra_key}".encode())
     return h.hexdigest()[:20]
 
 
 def cached_balanced(profile: Profile, trials: dict[str, Trials], fits: dict[str, ProbitFit],
-                    ear_keys: dict[str, str], balance: BalancePrior) -> tuple[dict[str, ProbitFit], dict[str, str]]:
-    """Both ears' curves fitted together under the balance prior, from each
-    ear's own fit; cached like those, keyed on both of them."""
-    key = balanced_key(ear_keys, balance)
-    paths = {e: profile.dir / "cache" / f"balanced-{key}-{e}.npz" for e in fits}
+                    ear_keys: dict[str, str], balance: BalancePrior | None,
+                    interaural=None) -> tuple[dict[str, ProbitFit], dict[str, str]]:
+    """Both ears' curves fitted together, under the balance prior (or None)
+    and with any cross-ear, centring and threshold terms (`interaural`: the
+    profile's rows, Extra and listener bias), from each ear's own fit; cached
+    like those, keyed on all of it."""
+    extra_key = ""
+    if interaural is not None:
+        rows, extra, bias = interaural
+        extra_key = f"{rows.key()}|{bias.key if bias else 'none'}"
+    key = balanced_key(ear_keys, balance, extra_key)
+    prefix = "balanced" if interaural is None else "joint"
+    paths = {e: profile.dir / "cache" / f"{prefix}-{key}-{e}.npz" for e in fits}
+    info_path = profile.dir / "cache" / f"{prefix}-{key}.json"
     keys = {e: f"{key}-{e}" for e in fits}
-    if all(p.exists() for p in paths.values()):
-        return {e: _load_fit(p) for e, p in paths.items()}, keys
-    out = fit_balanced(trials, fits, balance)
+    if all(p.exists() for p in paths.values()) and (interaural is None or info_path.exists()):
+        out = {e: _load_fit(p) for e, p in paths.items()}
+        if interaural is not None:
+            info = json.loads(info_path.read_text())
+            for f in out.values():
+                f.interaural = info
+        return out, keys
+    if interaural is None:
+        out = fit_balanced(trials, fits, balance)
+    else:
+        from flatiron.model.hierarchical import fit_joint
+
+        rows, extra, bias = interaural
+        res = fit_joint([(trials, fits, balance, profile_priors(profile))], extra)
+        out = res.fits[0]
+        info = {"c_db": float(res.extra[0]), "c_sd": float(np.sqrt(res.extra_cov[0, 0])),
+                "ref_hz": list(rows.ref), "cross_trials": rows.n_cross if bias else 0,
+                "centring_trials": rows.n_centring, "threshold": rows.threshold,
+                "b_db": bias.b if bias else None, "b_sd": bias.b_sd if bias else None,
+                "b_profiles": len(bias.profiles) if bias else 0,
+                "sigma_x": bias.sigma_x if bias else None, "sigma_c": bias.sigma_c if bias else None}
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text(json.dumps(info))
+        for f in out.values():
+            f.interaural = info
     for e, p in paths.items():
         _save_fit(p, out[e])
     return out, keys
@@ -211,6 +244,8 @@ class ProfileFit:
                               "time_order_bias_db": f.bias_db, "time_order_bias_sd": f.bias_sd,
                               "tau_seat": [f.tau_lo, f.tau_mid, f.tau_hi], "tau_fitted": f.tau_fitted}
                           for e, f in self.fits.items()})
+        if self.fits and self.fits["L"].interaural:
+            out["interaural"] = self.fits["L"].interaural
         return out
 
 
@@ -331,8 +366,18 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
         fits[e] = cached_fit(profile, trials[e], grid, noise[e], priors)
         keys[e] = fit_key(trials[e], grid, noise[e], priors)
     balance = balance_prior(profile)
-    if balance is not None:
-        fits, keys = cached_balanced(profile, trials, fits, keys, balance)
+    interaural = None
+    if profile.kind != "speaker" and profile_settings(profile).cross_ear_fit:
+        from flatiron.fit.interaural import listener_bias, profile_extra, profile_rows
+
+        rows = profile_rows(profile, sessions, {e: fits[e].grid for e in EARS})
+        if not rows.empty():
+            bias = listener_bias(profile.dir.parent.parent, on_fit) if rows.n_cross else None
+            extra = profile_extra(rows, fits, bias)
+            if extra is not None:
+                interaural = (rows, extra, bias)
+    if balance is not None or interaural is not None:
+        fits, keys = cached_balanced(profile, trials, fits, keys, balance, interaural)
     for e in EARS:
         fits[e].groups = [g[0].id for g in Profile.groups(sessions, e)]
         fits[e].noise_trials = noise[e].n_trials

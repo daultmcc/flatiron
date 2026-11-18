@@ -132,6 +132,9 @@ class CorrectionSettings:
     # multiple of the defaults; 0: each ear fitted on its own. Unlike the rest,
     # this changes the perceptual fit (cached separately, and quick).
     balance: float = 1.0
+    # Use cross-ear trials, centring and threshold sessions in the two-ear fit
+    # (DESIGN.md, "Using cross-ear trials"). Changes the perceptual fit too.
+    cross_ear_fit: bool = True
 
     def __post_init__(self):
         object.__setattr__(self, "veto", tuple(self.veto))

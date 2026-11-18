@@ -221,9 +221,28 @@ def listener_prefix(profile: Profile) -> str:
     return f"Listener: {x.label} · " if several_listeners(x.data) else ""
 
 
+def interaural_note(pf: ProfileFit) -> str | None:
+    """The two-ear fit's cross-ear, centring and threshold terms, in one line."""
+    info = pf.fits["L"].interaural if pf.fits else None
+    if not info:
+        return None
+    lo, hi = info["ref_hz"]
+    src = [f"{n} {what}" for n, what in ((info["cross_trials"], "cross-ear"), (info["centring_trials"], "centring"))
+           if n] + (["thresholds"] if info["threshold"] else [])
+    out = (f"Channel balance (left − right, {lo / 1000:g}–{hi / 1000:g} kHz): {info['c_db']:+.1f} ± "
+           f"{info['c_sd']:.1f} dB, from {', '.join(src)}.")
+    if info["b_db"] is not None:
+        out += (f" Your cross-ear bias, left out of it: {info['b_db']:+.1f} ± {info['b_sd']:.1f} dB "
+                f"(from {info['b_profiles']} profile{'' if info['b_profiles'] == 1 else 's'}).")
+    return out
+
+
 def top_notes(pf: ProfileFit, speaker: bool) -> list[str]:
     st = pf.correction.settings
     out = ["Speaker profile: evidence about your ears, so no correction."] if speaker else []
+    note = interaural_note(pf)
+    if note:
+        out.append(note)
     out += method_notes(pf)
     if st.method == "features" and st.baseline == "joint":
         out.append("Baseline: joint (experimental).")

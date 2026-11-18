@@ -855,6 +855,11 @@ FIT_OPTIONS = [
     (("--balance",), "balance",
      dict(type=float, help="strength of the prior that the ears are alike, as a multiple of the default SDs "
                            "(1.5 dB below 5 kHz, 3 above 8 kHz): larger is looser; 0: each ear on its own")),
+    (("--cross-ear-fit",), "cross_ear_fit",
+     dict(action=argparse.BooleanOptionalAction,
+          help="use cross-ear trials, centring and threshold sessions in fitting the two ears together "
+               "(default on): they shape the left-right difference, with your own cross-ear bias "
+               "estimated across your profiles")),
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k-narrow"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),

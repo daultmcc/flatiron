@@ -86,6 +86,14 @@ narrow the range trials are drawn from for all your profiles with
 `flatiron config <LISTENER> --default-max-measured 12k` (or `--default-min-measured`), or for one
 profile with `flatiron config <PROFILE> --max-measured 12k`. The range that gets corrected follows it.
 
+About one trial in ten plays its two tones in different ears (`--cross-ear` sets the share, 0 to
+100%). These help pin down the difference between your left and right channels. Many people hear one
+ear as louder than it is when comparing across ears, so Flatiron estimates that bias for you, from all
+your profiles together, and leaves it out. `flatiron centre <PROFILE>` runs a short session of
+another kind: a sound plays in both ears at once and you say whether it's left or right of centre,
+which measures the channel balance with no such bias. `flatiron config <PROFILE> --no-cross-ear-fit`
+leaves all of this out of the fit.
+
 300-400 trials is enough for a very basic measurement and 1000 should give reasonably accurate
 results. That may sound like a lot, but even 1000 trials should take less than an hour. If you find
 it taking longer than that you may be overthinking your answers. The fit accounts for a degree of

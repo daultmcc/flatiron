@@ -153,6 +153,9 @@ class ProbitFit:
     focus_cross: np.ndarray | None = None  # Cov(L, L + u_f)
     groups: list = field(default_factory=list)  # what each group is (session ids), when known
     noise_trials: int = 0  # trials behind a shared noise estimate, when known (0: the prior's values)
+    # The two-ear fit's cross-ear, centring and threshold terms, when used
+    # (fit/interaural.py): the profile's balance c_p, the listener's bias b, counts.
+    interaural: dict | None = None
 
     @property
     def sd(self) -> np.ndarray:

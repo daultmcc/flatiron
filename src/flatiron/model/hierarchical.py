@@ -473,51 +473,122 @@ def balance_precision(grid_a: np.ndarray, grid_b: np.ndarray, balance: BalancePr
     return M.T @ Q @ M
 
 
-def fit_balanced(trials: dict, fits: dict, balance: BalancePrior = BalancePrior(), priors: Priors = Priors(),
-                 all_groups: bool = True, tol: float = TOL_FINAL) -> dict:
-    """Both ears' curves fitted together, with a prior that their difference
-    is small (`balance`). Each ear keeps the noise and seating spread of its
-    own fit in `fits` (from fit_hierarchical, which also warm-starts this):
-    those are estimated ear by ear, and only the curves are coupled."""
-    ears = list(fits)
-    if len(ears) != 2:
-        raise ValueError("a balanced fit needs exactly two ears")
-    ms, a0, v0 = [], [], []
-    for e in ears:
-        f = fits[e]
-        m = _Model(trials[e], f.grid, priors)
-        m.set_noise([np.log(f.sigma0), np.log(f.d0), logit(f.lapse), np.log(f.treble_noise)])
-        m.set_tau(np.log([f.tau_lo, f.tau_mid, f.tau_hi]))
-        v = np.zeros((m.n_groups, m.r))
-        if f.v is not None and f.v.shape[1] == m.r:
-            k = min(f.v.shape[0], m.n_groups)
-            v[:k] = f.v[:k]
-        ms.append(m), a0.append(np.append(f.L, f.bias_db)), v0.append(v)
-    sizes = [m.n + 1 for m in ms]
-    cut = np.cumsum([0] + sizes)
-    Q = np.zeros((cut[-1], cut[-1]))
-    Qc = balance_precision(ms[0].grid, ms[1].grid, balance)
-    idx = np.r_[cut[0]:cut[0] + ms[0].n, cut[1]:cut[1] + ms[1].n]  # the levels, not the biases
-    Q[np.ix_(idx, idx)] = Qc
+@dataclass
+class Extra:
+    """Probit observations beyond the within-ear trials, linear in the joint
+    parameters (DESIGN.md, "Using cross-ear trials"): each block's
+    (L_L, bias_L, L_R, bias_R) in order, then n extra parameters with a
+    Gaussian prior. Row t: P(y_t) = λ/2 + (1 − λ) Φ((X_t · θ + off_t) / σ_t)."""
+    X: np.ndarray
+    off: np.ndarray
+    y: np.ndarray
+    sigma: np.ndarray
+    lapse: float
+    prior_mean: np.ndarray  # of the extra parameters
+    prior_sd: np.ndarray
+
+    @property
+    def n(self) -> int:
+        return int(self.prior_mean.size)
+
+    def terms(self, theta):
+        """Probabilities, d(nll)/dη·(1/σ) folded in as d(nll)/d(Xθ), and Fisher weights."""
+        z = (self.X @ theta + self.off) / self.sigma
+        p = self.lapse / 2 + (1 - self.lapse) * ndtr(z)
+        dp = (1 - self.lapse) * np.exp(-0.5 * z * z) / SQRT_2PI / self.sigma
+        return p, -(self.y / p - (1 - self.y) / (1 - p)) * dp, dp * dp / (p * (1 - p))
+
+    def nll(self, theta) -> float:
+        p, _, _ = self.terms(theta)
+        return float(-np.sum(self.y * np.log(p) + (1 - self.y) * np.log1p(-p)))
+
+
+@dataclass
+class JointResult:
+    fits: list[dict]  # per block: ear -> ProbitFit
+    extra: np.ndarray  # the extra parameters' posterior mode
+    extra_cov: np.ndarray
+    theta: np.ndarray  # the whole parameter vector
+    converged: bool
+    neg_log_post: float = 0.0
+    logdet: float = 0.0  # of the Hessian, groups included: with neg_log_post, the Laplace evidence
+
+    @property
+    def neg_evidence(self) -> float:
+        """−log p(data) by Laplace, up to terms that don't depend on the extra rows' noise."""
+        return self.neg_log_post + 0.5 * self.logdet
+
+
+def fit_joint(blocks: list[tuple], extra: Extra | None = None, all_groups: bool = True,
+              tol: float = TOL_FINAL) -> JointResult:
+    """Both ears of one or more profiles fitted together. blocks: per profile,
+    (trials, fits, balance, priors): each ear keeps the noise and seating
+    spread of its own fit in `fits` (from fit_hierarchical, which also
+    warm-starts this); `balance` (or None) is the prior that the ears' curves
+    are alike. `extra` adds observations and parameters shared across them."""
+    models, a0, v0, cuts, Qs = [], [], [], [], []
+    start = 0
+    for trials, fits, balance, priors in blocks:
+        ears = list(fits)
+        if len(ears) != 2:
+            raise ValueError("a joint fit needs exactly two ears per profile")
+        ms = []
+        for e in ears:
+            f = fits[e]
+            m = _Model(trials[e], f.grid, priors)
+            m.set_noise([np.log(f.sigma0), np.log(f.d0), logit(f.lapse), np.log(f.treble_noise)])
+            m.set_tau(np.log([f.tau_lo, f.tau_mid, f.tau_hi]))
+            v = np.zeros((m.n_groups, m.r))
+            if f.v is not None and f.v.shape[1] == m.r:
+                k = min(f.v.shape[0], m.n_groups)
+                v[:k] = f.v[:k]
+            ms.append(m), a0.append(np.append(f.L, f.bias_db)), v0.append(v)
+        cut = start + np.cumsum([0] + [m.n + 1 for m in ms])
+        for i, m in enumerate(ms):
+            models.append((m, cut[i], cut[i + 1]))
+        cuts.append((ears, ms, cut))
+        if balance is not None:
+            idx = np.r_[cut[0]:cut[0] + ms[0].n, cut[1]:cut[1] + ms[1].n]  # the levels, not the biases
+            Qs.append((idx, balance_precision(ms[0].grid, ms[1].grid, balance)))
+        start = cut[-1]
+    n_x = extra.n if extra is not None else 0
+    N = start + n_x
+    Q = np.zeros((N, N))
+    for idx, Qc in Qs:
+        Q[np.ix_(idx, idx)] += Qc
+    mu = np.zeros(N)
+    if n_x:
+        Q[start:, start:] += np.diag(1.0 / extra.prior_sd**2)
+        mu[start:] = extra.prior_mean
+        if extra.X.shape[1] != N:
+            raise ValueError("the extra rows don't match the parameters")
 
     def objective(a, vs):
-        return sum(m.objective(a[cut[i]:cut[i + 1]], vs[i]) for i, m in enumerate(ms)) + 0.5 * a @ Q @ a
+        r = a - mu
+        val = sum(m.objective(a[s:e], vs[i]) for i, (m, s, e) in enumerate(models)) + 0.5 * r @ Q @ r
+        return val + (extra.nll(a) if n_x else 0.0)
 
     def step(a, vs):
-        parts = [m.schur(a[cut[i]:cut[i + 1]], vs[i]) for i, m in enumerate(ms)]
-        S = Q.copy()
-        for i, p in enumerate(parts):
-            S[cut[i]:cut[i + 1], cut[i]:cut[i + 1]] += p[0]
-        Qa = Q @ a
-        ga = np.concatenate([p[2] for p in parts]) + Qa
-        rhs = np.concatenate([p[1] for p in parts]) + Qa
+        parts = [m.schur(a[s:e], vs[i]) for i, (m, s, e) in enumerate(models)]
+        S, Qa = Q.copy(), Q @ (a - mu)
+        ga, rhs = Qa.copy(), Qa.copy()
+        for (m, s, e), p in zip(models, parts):
+            S[s:e, s:e] += p[0]
+            rhs[s:e] += p[1]
+            ga[s:e] += p[2]
+        if n_x:
+            _, g, w = extra.terms(a)
+            gx = extra.X.T @ g
+            S += (extra.X * w[:, None]).T @ extra.X
+            ga += gx
+            rhs += gx
         cS = cho_factor(S, lower=True, check_finite=False)
         da = -cho_solve(cS, rhs, check_finite=False)
-        dvs = [m.group_steps(da[cut[i]:cut[i] + m.n + 1], *parts[i][3:6]) for i, m in enumerate(ms)]
-        slope = ga @ da + sum(parts[i][5][k] @ dvs[i][k] for i, m in enumerate(ms) for k in m.nonempty)
+        dvs = [m.group_steps(da[s:s + m.n + 1], *parts[i][3:6]) for i, (m, s, e) in enumerate(models)]
+        slope = ga @ da + sum(parts[i][5][k] @ dvs[i][k] for i, (m, s, e) in enumerate(models) for k in m.nonempty)
         return cS, parts, da, dvs, -0.5 * float(slope)
 
-    a, vs = np.concatenate(a0), v0
+    a, vs = np.concatenate(a0 + [mu[start:]]), v0
     val = objective(a, vs)
     ok = False
     for _ in range(MAX_ITER):
@@ -529,7 +600,7 @@ def fit_balanced(trials: dict, fits: dict, balance: BalancePrior = BalancePrior(
         while True:
             na = a + t * da
             nvs = [v.copy() for v in vs]
-            for i, m in enumerate(ms):
+            for i, (m, s, e) in enumerate(models):
                 for k in m.nonempty:
                     nvs[i][k] += t * dvs[i][k]
             new = objective(na, nvs)
@@ -542,11 +613,27 @@ def fit_balanced(trials: dict, fits: dict, balance: BalancePrior = BalancePrior(
         a, vs, val = na, nvs, new
     else:
         cS, parts, da, dvs, decrement = step(a, vs)
-    Sinv = cho_solve(cS, np.eye(cut[-1]), check_finite=False)
-    out = {}
-    for i, (e, m) in enumerate(zip(ears, ms)):
-        ai = a[cut[i]:cut[i + 1]]
-        fac = _Factor(None, parts[i][3], parts[i][4], da[cut[i]:cut[i + 1]], dvs[i], decrement, 0.0)
-        out[e] = _result(m, ai, vs[i], m.objective(ai, vs[i]), fac, fits[e].converged and ok, fits[e].tau_fitted,
-                         len(trials[e]), all_groups, Sinv[cut[i]:cut[i + 1], cut[i]:cut[i + 1]])
-    return out
+    Sinv = cho_solve(cS, np.eye(N), check_finite=False)
+    logdet = 2 * float(np.log(np.diag(cS[0])).sum()) + sum(float(p[6]) for p in parts)
+    out, i = [], 0
+    for (trials, fits, _, _), (ears, ms, cut) in zip(blocks, cuts):
+        res = {}
+        for j, (e, m) in enumerate(zip(ears, ms)):
+            s, t = cut[j], cut[j + 1]
+            ai = a[s:t]
+            fac = _Factor(None, parts[i][3], parts[i][4], da[s:t], dvs[i], decrement, 0.0)
+            res[e] = _result(m, ai, vs[i], m.objective(ai, vs[i]), fac, fits[e].converged and ok,
+                             fits[e].tau_fitted, len(trials[e]), all_groups, Sinv[s:t, s:t])
+            i += 1
+        out.append(res)
+    return JointResult(out, a[start:].copy(), Sinv[start:, start:].copy(), a, ok, float(val), logdet)
+
+
+def fit_balanced(trials: dict, fits: dict, balance: BalancePrior | None = BalancePrior(), priors: Priors = Priors(),
+                 all_groups: bool = True, tol: float = TOL_FINAL, extra: Extra | None = None) -> dict:
+    """Both ears' curves fitted together, with a prior that their difference
+    is small (`balance`; None: no such prior) and any `extra` observations.
+    Each ear keeps the noise and seating spread of its own fit in `fits`
+    (from fit_hierarchical, which also warm-starts this): those are
+    estimated ear by ear, and only the curves are coupled."""
+    return fit_joint([(trials, fits, balance, priors)], extra, all_groups, tol).fits[0]
