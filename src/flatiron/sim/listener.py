@@ -157,8 +157,9 @@ class ThresholdListener:
     def p_detect(self, ear, freq, level_db) -> float:
         return float(ndtr((level_db - self.threshold[ear](np.atleast_1d(freq))[0]) / self.sigma))
 
-    def answer(self, plan, task: str) -> bool:
-        """The left-hand key: heard (yes/no) or the first interval (2IFC)."""
+    def answer(self, plan, task: str) -> bool | None:
+        """The upper key: heard (yes/no) or the first interval (2IFC); None:
+        neither (2ifc-neither, when nothing was heard and nothing claimed)."""
         lapse = self.rng.random() < self.lapse
         if task == "yesno":
             if plan.kind == "blank":
@@ -166,5 +167,7 @@ class ThresholdListener:
             heard = self.rng.random() < self.p_detect(plan.ear, plan.freq, plan.level_db)
             return bool(not lapse and (heard or self.rng.random() < self.false_alarm))
         heard = not lapse and self.rng.random() < self.p_detect(plan.ear, plan.freq, plan.level_db)
+        if task == "2ifc-neither" and not heard and (lapse or self.rng.random() >= self.false_alarm):
+            return None
         chosen = plan.interval if heard else int(self.rng.integers(1, 3))
         return chosen == 1

@@ -730,10 +730,13 @@ class ThresholdIntroScreen(MessageScreen):
         self.detection_task = task
 
     def on_mount(self):
-        how = ("After each marked interval: ↑ if you heard anything at all, ↓ if not. "
-               "Some intervals are empty." if self.detection_task == "yesno" else
-               "The sound is in one of two marked intervals: ↑ the first, ↓ the second. "
-               "Guess if you're not sure.")
+        how = {"yesno": "After each marked interval: ↑ if you heard anything at all, ↓ if not. "
+                        "Some intervals are empty.",
+               "2ifc": "The sound is in one of two marked intervals: ↑ the first, ↓ the second. "
+                       "Guess if you're not sure.",
+               "2ifc-neither": "The sound is in one of two marked intervals: ↑ the first, ↓ the second, "
+                               "N if you heard nothing in either. If you heard something but aren't "
+                               "sure where, pick the likelier one."}[self.detection_task]
         self.say("Threshold session",
                  "Very quiet bursts, one ear at a time, at the edge of hearing.\n\n"
                  "A quiet room, the system volume at its usual setting, and don't change it during "
@@ -766,7 +769,7 @@ class ThresholdScreen(TrialScreen):
             return
         p = tr.plan
         level = f"{tr.played_db:+.1f} dBFS" + (" (blank: nothing played)" if p.kind == "blank" else "")
-        where = f" in interval {p.interval}" if self.runner.task == "2ifc" else ""
+        where = f" in interval {p.interval}" if self.runner.two_interval else ""
         w.update(f"{p.ear} · {p.freq:,.0f} Hz at {level}{where} · {p.kind}   "
                  f"(estimate {tr.estimate_db:+.1f} ± {tr.estimate_sd:.1f} dBFS)")
 
@@ -818,6 +821,22 @@ class TwoIntervalScreen(ThresholdScreen):
         return {"A": "1", "B": "2"}[key]
 
 
+class NeitherScreen(TwoIntervalScreen):
+    """2ifc-neither: as 2IFC, plus N for "heard nothing in either"."""
+    QUESTION = "Which interval had the sound? (N: neither)"
+    BINDINGS = [
+        Binding("up,1", "answer(True)", "First"),
+        Binding("down,2", "answer(False)", "Second"),
+        Binding("n,0", "answer(None)", "Neither"),
+        Binding("space", "replay", "Replay"),
+        Binding("p", "pause", "Pause"),
+        Binding("u,backspace", "undo", "Undo"),
+        Binding("q", "quit_session", "Quit"),
+        Binding("x", "discard", "Discard"),
+        Binding("d", "debug", "Debug"),  # only with threshold --debug
+    ]
+
+
 class SessionEndScreen(MessageScreen):
     BINDINGS = [
         Binding("n", "next", "Next session"),
@@ -866,6 +885,8 @@ class SessionEndScreen(MessageScreen):
             if p["probes"]:
                 parts.append(f"{p['probe_hits']} of {p['probes']} clear bursts "
                              + ("heard" if self.runner.task == "yesno" else "picked"))
+            if self.runner.task == "2ifc-neither":
+                parts.append(f"neither in {p['neither']}, the wrong interval in {p['wrong']}")
             summary = ", ".join(parts) + ".\n\n"
         self.say(head, summary + "Rest your ears a few minutes before the next session.", "N: next session   Q: quit")
 
@@ -970,7 +991,8 @@ class FlatironApp(App):
     def start_trials(self):
         screen = TrialScreen
         if getattr(self.runner, "threshold", False):
-            screen = YesNoScreen if self.runner.task == "yesno" else TwoIntervalScreen
+            screen = {"yesno": YesNoScreen, "2ifc": TwoIntervalScreen,
+                      "2ifc-neither": NeitherScreen}[self.runner.task]
         self.push_screen(screen(self.runner, self.clock), self.after_trials)
 
     def after_trials(self, reason):

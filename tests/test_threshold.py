@@ -13,8 +13,8 @@ from flatiron.model.threshold import ThresholdData, fit_thresholds, prior_shape
 from flatiron.session.store import Profile
 from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
 from flatiron.sim.listener import ThresholdListener
-from flatiron.ui.app import ChannelCheckScreen, FlatironApp, SessionEndScreen, ThresholdIntroScreen, \
-    TwoIntervalScreen, YesNoScreen
+from flatiron.ui.app import ChannelCheckScreen, FlatironApp, NeitherScreen, SessionEndScreen, \
+    ThresholdIntroScreen, TwoIntervalScreen, YesNoScreen
 
 GRID = log_grid()
 MID = (GRID > 1000) & (GRID < 13000)
@@ -45,7 +45,7 @@ def test_model_recovers_thresholds_offsets_and_false_alarms():
             x = th + 4 * rng.normal() + (15 if kind == "probe" else 0)
             p = gamma if kind == "blank" else gamma + (1 - gamma - 0.02) * ndtr((x - th) / 3)
             recs.append(NS(ear=e, freq=f, level_dbfs=x, positive=bool(rng.random() < p), kind=kind, undone=False))
-        sessions.append((two, "noise:0.083333", recs))
+        sessions.append(("2ifc" if two else "yesno", "noise:0.083333", recs))
     fit = fit_thresholds(ThresholdData.build(sessions))
     assert fit.converged and fit.sigma_fitted and fit.sigma == pytest.approx(3, rel=0.25)
     assert fit.c == pytest.approx(offsets, abs=1.5)
@@ -86,6 +86,47 @@ def test_startup_descends_until_the_first_miss_then_adapts(tmp_path):
     assert p.kind != "startup"
     mean, _ = r.estimate("L", 2000)
     assert start - 25 < mean[0] < start
+
+
+def test_neither_model_estimates_false_claims_from_wrong_intervals():
+    rng = np.random.default_rng(1)
+    claim, recs = 0.2, []
+    for k in range(600):
+        e, f = "LR"[k % 2], float(2 ** rng.uniform(np.log2(900), np.log2(14500)))
+        kind = "probe" if rng.random() < 0.04 else "signal"
+        th = TRUTH[e](np.array([f]))[0]
+        x = th + 4 * rng.normal() + (15 if kind == "probe" else 0)
+        interval = int(rng.integers(1, 3))
+        if rng.random() < 0.02:
+            response = "neither"
+        elif rng.random() < ndtr((x - th) / 3):
+            response = ("first", "second")[interval - 1]
+        elif rng.random() < claim:
+            response = ("first", "second")[int(rng.integers(2))]
+        else:
+            response = "neither"
+        positive = response == ("first", "second")[interval - 1]
+        recs.append(NS(ear=e, freq=f, level_dbfs=x, positive=positive, kind=kind, undone=False,
+                       response=response))
+    data = ThresholdData.build([("2ifc-neither", "noise:0.083333", recs)])
+    assert data.wrong.sum() > 20
+    fit = fit_thresholds(data)
+    # gamma: an unheard burst claimed and its interval guessed right.
+    assert fit.false_alarm[0] == pytest.approx(claim / 2, abs=0.04)
+    for i, e in enumerate("LR"):
+        assert rms((fit.T[i] - TRUTH[e](GRID))[MID]) < 2.0
+
+
+def test_neither_answers_only_in_2ifc_neither(tmp_path):
+    r = runner(tmp_path, task="2ifc-neither")
+    tr = r.prepare()
+    assert tr.second_on > tr.first_off  # two intervals
+    rec = r.answer(tr, None, 500)
+    assert rec.response == "neither" and not rec.positive
+    assert r.progress()["neither"] == 1
+    r2 = runner(tmp_path, task="2ifc", name="y")
+    with pytest.raises(ValueError):
+        r2.answer(r2.prepare(), None, 500)
 
 
 def test_buffers_blank_and_two_interval(tmp_path):
@@ -134,7 +175,7 @@ def test_sessions_are_kept_apart_from_trial_sessions_and_undo_restores_the_run(t
     assert len(prof.threshold_sessions()) == 1
 
 
-@pytest.mark.parametrize("task", ["yesno", "2ifc"])
+@pytest.mark.parametrize("task", ["yesno", "2ifc", "2ifc-neither"])
 def test_adaptive_sessions_find_a_simulated_threshold(tmp_path, task):
     prof = Profile.open("x", root=tmp_path)
     for k, volume in enumerate((0.0, 8.0)):
@@ -174,7 +215,8 @@ async def wait_for(pilot, cond, timeout=10.0):
 
 
 @pytest.mark.parametrize("task,screen,keys", [("yesno", YesNoScreen, ["y", "n", "up"]),
-                                              ("2ifc", TwoIntervalScreen, ["1", "2", "down"])])
+                                              ("2ifc", TwoIntervalScreen, ["1", "2", "down"]),
+                                              ("2ifc-neither", NeitherScreen, ["1", "n", "down"])])
 async def test_threshold_session_ui(tmp_path, task, screen, keys):
     app, runners, prof = make_app(tmp_path, task)
     async with app.run_test() as pilot:
@@ -196,7 +238,8 @@ async def test_threshold_session_ui(tmp_path, task, screen, keys):
         await pilot.pause()
         assert isinstance(app.screen, SessionEndScreen)
     (s,) = prof.threshold_sessions()
-    first = ["heard", "nothing", "heard"] if task == "yesno" else ["first", "second", "second"]
+    first = {"yesno": ["heard", "nothing", "heard"], "2ifc": ["first", "second", "second"],
+             "2ifc-neither": ["first", "neither", "second"]}[task]
     assert [t.response for t in s.trials] == first and s.ended
     assert prof.sessions() == []
 

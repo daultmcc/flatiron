@@ -761,7 +761,15 @@ def cmd_sessions(args):
         hits = f"{np.mean([t.positive for t in probes]):.0%}" if probes else "-"
         mins = s.trials[-1].t / 60 if s.trials else 0
         vol = f"  volume {s.system_volume.removeprefix('Volume: ')}" if s.system_volume else ""
-        print(f"{s.id}  {s.task:5s}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  false alarms {fa:>4}  "
+        if s.task == "2ifc-neither" and live:
+            signal = [t for t in live if t.kind != "probe"]
+            share = lambda r: f"{np.mean([t.response == r for t in signal]):.0%}" if signal else "-"
+            wrong = [t for t in signal if t.response in ("first", "second")]
+            fa = f"wrong {np.mean([not t.positive for t in wrong]):.0%}" if wrong else "wrong -"
+            fa = f"neither {share('neither'):>4}  {fa:>10}"
+        else:
+            fa = f"false alarms {fa:>4}"
+        print(f"{s.id}  {s.task:12s}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  {fa}  "
               f"probes {hits:>4}{vol}{'' if s.ended else '  (not closed)'}")
 
 
@@ -1829,9 +1837,10 @@ def main(argv=None):
     s.add_argument("-m", "--minutes", type=float, default=8.0, help="session length, at most 15 (default 8)")
     s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(), metavar="noise[:N]|warble[:N]|tone",
                    help="as for run (default noise:12)")
-    s.add_argument("--task", choices=("yesno", "2ifc"), default="yesno",
+    s.add_argument("--task", choices=("yesno", "2ifc", "2ifc-neither"), default="yesno",
                    help="yesno: heard anything or not, with some empty intervals (default); "
-                        "2ifc: which of two intervals had the sound")
+                        "2ifc: which of two intervals had the sound, guessing if unsure; "
+                        "2ifc-neither: the same, or neither")
     s.add_argument("--debug", action="store_true",
                    help="D during trials shows each burst's frequency, level and the threshold estimate "
                         "(answers given while it shows are marked in the session file)")

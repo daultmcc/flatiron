@@ -143,7 +143,7 @@ class Session:
 
 # -- threshold sessions (DESIGN.md, "Threshold sessions") ----------------------
 
-THRESHOLD_TASKS = ("yesno", "2ifc")
+THRESHOLD_TASKS = ("yesno", "2ifc", "2ifc-neither")
 THRESHOLD_KINDS = ("signal", "blank", "probe", "startup")
 
 
@@ -153,7 +153,7 @@ class ThresholdRecord:
     freq: float
     level_dbfs: float  # the burst's RMS level (a blank's: what it would have been)
     kind: str  # signal, blank (nothing played), probe (well above threshold), startup (the descending run)
-    response: str  # yesno: "heard" or "nothing"; 2ifc: "first" or "second"
+    response: str  # yesno: "heard" or "nothing"; 2ifc: "first" or "second"; 2ifc-neither: those or "neither"
     positive: bool  # heard, or chose the burst's interval
     interval: int = 1  # 2ifc: the interval the burst was in (1 or 2)
     rt_ms: float = 0.0  # from the end of the (last) interval in the first presentation

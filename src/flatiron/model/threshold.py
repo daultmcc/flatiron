@@ -8,8 +8,12 @@ chance of a positive answer (heard, or the right interval) to a burst at x dBFS:
 
     P = γ + (1 − γ − λ) Φ((x − T̄_e(f) − c_s) / σ)
 
-γ is the session's false-alarm rate in a yes/no task (from its blank trials)
-or ½ in a two-interval one, λ the lapse rate (from the probe trials, clearly
+γ is the session's false-alarm rate in a yes/no task (from its blank trials),
+½ in a forced two-interval one, and in a two-interval one with a "neither"
+answer (2ifc-neither) the chance that an unheard burst is claimed and its
+interval guessed right: half the claim rate, estimated from the answers that
+picked the wrong interval (positive there means the right interval;
+"neither" and the wrong one are negative), λ the lapse rate (from the probe trials, clearly
 audible ones), σ the psychometric function's spread. T̄ averages T over the
 stimulus spectrum, as the perceptual model does.
 
@@ -58,38 +62,52 @@ class ThresholdData:
     signal: np.ndarray
     probe: np.ndarray
     session: np.ndarray
-    two_interval: np.ndarray  # per session: the task was 2IFC
+    task: np.ndarray  # per session: yesno, 2ifc or 2ifc-neither
     stimulus: np.ndarray  # per trial: stimulus key
+    wrong: np.ndarray  # per trial: picked the wrong interval (2ifc-neither: a false claim)
 
     @property
     def n_sessions(self) -> int:
-        return int(self.two_interval.size)
+        return int(self.task.size)
+
+    @property
+    def neither(self) -> np.ndarray:
+        """Per session: a 2ifc-neither one, whose γ comes from the fit."""
+        return self.task == "2ifc-neither"
 
     @classmethod
     def build(cls, sessions) -> "ThresholdData":
-        """sessions: (two_interval, stimulus key, records) per session, in
-        order; records have ear, freq, level_dbfs, positive, kind, undone."""
+        """sessions: (task, stimulus key, records) per session, in order;
+        records have ear, freq, level_dbfs, positive, kind, undone and
+        response."""
         rows = []
-        for s, (_, key, recs) in enumerate(sessions):
+        for s, (task, key, recs) in enumerate(sessions):
             for r in recs:
                 if not r.undone:
+                    wrong = task == "2ifc-neither" and getattr(r, "response", "") in ("first", "second") \
+                        and not r.positive
                     rows.append((EARS.index(r.ear), r.freq, r.level_dbfs, r.positive, r.kind != "blank",
-                                 r.kind == "probe", s, key))
-        cols = list(zip(*rows)) if rows else [()] * 8
+                                 r.kind == "probe", s, key, wrong))
+        cols = list(zip(*rows)) if rows else [()] * 9
         return cls(np.asarray(cols[0], int), np.asarray(cols[1], float), np.asarray(cols[2], float),
                    np.asarray(cols[3], bool), np.asarray(cols[4], bool), np.asarray(cols[5], bool),
-                   np.asarray(cols[6], int), np.asarray([s[0] for s in sessions], bool),
-                   np.asarray(cols[7], dtype=object))
+                   np.asarray(cols[6], int), np.asarray([s[0] for s in sessions], dtype=object),
+                   np.asarray(cols[7], dtype=object), np.asarray(cols[8], bool))
 
-    def false_alarms(self) -> np.ndarray:
-        """Per session: γ, the Beta posterior mean from its blank trials
-        (yes/no), or ½ (2IFC)."""
+    def false_alarms(self, missed: np.ndarray | None = None) -> np.ndarray:
+        """Per session: γ. Yes/no: the Beta posterior mean from its blank
+        trials. 2IFC: ½. 2ifc-neither: from its wrong-interval answers, whose
+        chance is (1 − λ)(1 − p) γ per trial; missed[s] is the session's sum
+        of (1 − λ)(1 − p) under the current fit (without it, the prior mean)."""
         a, b = FALSE_ALARM_PRIOR
         out = np.full(self.n_sessions, 0.5)
         for s in range(self.n_sessions):
-            if not self.two_interval[s]:
+            if self.task[s] == "yesno":
                 m = (self.session == s) & ~self.signal
                 out[s] = (self.positive[m].sum() + a) / (m.sum() + a + b)
+            elif self.task[s] == "2ifc-neither":
+                n_wrong = self.wrong[self.session == s].sum()
+                out[s] = (n_wrong + a) / (missed[s] + a + b) if missed is not None else a / (a + b)
         return out
 
     def lapse(self) -> float:
@@ -181,6 +199,18 @@ class _Problem:
         p = np.clip(self.gamma + span * ndtr(eta), P_CLIP, 1 - P_CLIP)
         dp = span * np.exp(-0.5 * eta**2) / np.sqrt(2 * np.pi)
         return p, dp
+
+    def update_gamma(self, theta, sigma) -> float:
+        """Re-estimate the 2ifc-neither sessions' γ at θ; returns the largest change."""
+        if not self.data.neither.any() or not self.x.size:
+            return 0.0
+        miss = (1 - self.lam) * (1 - ndtr((self.x - self.J @ theta) / sigma))
+        s = self.data.session[self.data.signal]
+        missed = np.bincount(s, weights=miss, minlength=self.S)
+        new = self.data.false_alarms(missed)[s]
+        change = float(np.max(np.abs(new - self.gamma))) if new.size else 0.0
+        self.gamma = new
+        return change
 
     def neg_log_post(self, theta, sigma) -> float:
         p, _ = self.terms(theta, sigma)
@@ -277,13 +307,26 @@ def fit_thresholds(data: ThresholdData, grid: np.ndarray | None = None, sigma: f
         fit_sigma = sigma is None and n_signal >= MIN_TRIALS_SIGMA
     if sigma is None:
         sigma = init.sigma if init is not None else SIGMA_PRIOR_DB
+    if theta0 is not None:
+        prob.update_gamma(theta0, sigma)  # 2ifc-neither: γ from the last fit's curve
     if fit_sigma:
         start = theta0
         res = minimize_scalar(lambda ls: prob.neg_evidence(np.exp(ls), start)[0],
                               bounds=np.log(SIGMA_RANGE), method="bounded", options={"xatol": 0.02})
         sigma = float(np.exp(res.x))
     theta, f, H, converged = prob.solve(sigma, theta0)
+    # 2ifc-neither: γ depends on the curve; a few rounds (each warm-started).
+    for _ in range(4):
+        if prob.update_gamma(theta, sigma) < 0.002:
+            break
+        theta, f, H, converged = prob.solve(sigma, theta)
     n = grid.size
+    gamma = data.false_alarms()
+    if data.neither.any() and prob.x.size:
+        s = data.session[data.signal]
+        for k in np.flatnonzero(data.neither):
+            if (s == k).any():
+                gamma[k] = prob.gamma[np.flatnonzero(s == k)[0]]
     return ThresholdFit(grid, theta[:2 * n].reshape(2, n), np.concatenate([[0.0], theta[2 * n:]]),
-                        np.linalg.inv(H), float(sigma), prob.lam, data.false_alarms(), n_signal,
+                        np.linalg.inv(H), float(sigma), prob.lam, gamma, n_signal,
                         bool(fit_sigma), f, converged)

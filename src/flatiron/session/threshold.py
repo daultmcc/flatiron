@@ -6,8 +6,9 @@ can't know which to attend to), at a level near the current
 estimate of the threshold there. In the yes/no task the listener says whether
 they heard anything in the marked interval; some trials are blank, to measure
 false alarms. In the two-interval task (2IFC) the burst is in one of two
-marked intervals and the listener says which. In both, some trials are probes
-well above threshold, to measure lapses.
+marked intervals and the listener says which: forced to guess (2ifc), or
+allowed to answer "neither" (2ifc-neither), when the right interval counts as
+heard. In all, some trials are probes well above threshold, to measure lapses.
 
 Frequencies come from the profile's measured range; the grid spans it, and
 any earlier threshold session's frequencies, since one fit covers them all.
@@ -113,6 +114,10 @@ class ThresholdRunner:
     threshold = True  # the UI's flag for this kind of session
     speaker = None
 
+    @property
+    def two_interval(self) -> bool:
+        return self.task != "yesno"
+
     def __init__(self, profile: Profile, settings: ThresholdSettings = ThresholdSettings(),
                  config: ThresholdConfig = ThresholdConfig(), seed: int | None = None,
                  device: dict | None = None, fs: int = FS, volume: bool = True):
@@ -155,8 +160,8 @@ class ThresholdRunner:
     # -- the model ---------------------------------------------------------
 
     def data(self) -> ThresholdData:
-        parts = [(s.task == "2ifc", s.stimulus_key(), s.trials) for s in self.earlier]
-        parts.append((self.task == "2ifc", self.key, self.session.trials))
+        parts = [(s.task, s.stimulus_key(), s.trials) for s in self.earlier]
+        parts.append((self.task, self.key, self.session.trials))
         return ThresholdData.build(parts)
 
     def _fit(self, fit_sigma: bool = False) -> ThresholdFit:
@@ -174,7 +179,7 @@ class ThresholdRunner:
     def next_plan(self) -> ThresholdPlan:
         cfg, rng = self.cfg, self.rng
         ear = EARS[int(rng.integers(2))]  # at random: no pattern to track
-        interval = int(rng.integers(1, 3)) if self.task == "2ifc" else 1
+        interval = int(rng.integers(1, 3)) if self.two_interval else 1
         level = self.startup[ear]
         if level is not None:
             return ThresholdPlan(ear, self.startup_freq, level, "startup", interval)
@@ -196,8 +201,8 @@ class ThresholdRunner:
             x = mean[i] + cfg.probe_db
         else:
             # Around the threshold, so the answers also say how steep the
-            # psychometric function is; a little above it for 2IFC, whose
-            # midpoint is 75% correct.
+            # psychometric function is; a little above it for forced 2IFC,
+            # whose midpoint is 75% correct.
             x = mean[i] + self.fit.sigma * (rng.normal() + (0.5 if self.task == "2ifc" else 0.0))
         x = float(np.clip(x, MIN_LEVEL_DB, MAX_LEVEL_DB))
         return ThresholdPlan(ear, f, x, "blank" if blank else "probe" if probe else "signal", interval)
@@ -223,11 +228,16 @@ class ThresholdRunner:
 
     # -- answers -----------------------------------------------------------
 
-    def answer(self, trial: PreparedThreshold, first: bool, rt_ms: float, replays: int = 0,
+    def answer(self, trial: PreparedThreshold, first: bool | None, rt_ms: float, replays: int = 0,
                t: float = 0.0, rt_last_ms: float | None = None, peeked: bool = False) -> ThresholdRecord:
-        """first: the left-hand answer: "heard" (yes/no) or the first interval (2IFC)."""
+        """first: the upper answer: "heard" (yes/no) or the first interval
+        (2IFC); None: "neither" (2ifc-neither only)."""
         p = trial.plan
-        if self.task == "yesno":
+        if first is None:
+            if self.task != "2ifc-neither":
+                raise ValueError(f"no \"neither\" answer in a {self.task} session")
+            response, positive = "neither", False
+        elif self.task == "yesno":
             response, positive = ("heard" if first else "nothing"), first
         else:
             response, positive = ("first" if first else "second"), (1 if first else 2) == p.interval
@@ -251,7 +261,8 @@ class ThresholdRunner:
             self.startup[p.ear] = None
             return
         if self.task == "2ifc":
-            # A level passes after two right answers in a row there.
+            # A level passes after two right answers in a row there (a guess
+            # is right half the time; with "neither" one is enough).
             same = [t for t in self.live_trials() if t.ear == p.ear and t.kind == "startup"]
             if len(same) < 2 or same[-2].level_dbfs != p.level_db:
                 return
@@ -311,6 +322,8 @@ class ThresholdRunner:
             "session_trials_ear": {e: sum(t.ear == e for t in live) for e in EARS},
             "false_alarms": sum(t.positive for t in blanks), "blanks": len(blanks),
             "probe_hits": sum(t.positive for t in probes), "probes": len(probes),
+            "neither": sum(t.response == "neither" for t in live),
+            "wrong": sum(t.response in ("first", "second") and not t.positive for t in live),
             "starting": any(v is not None for v in self.startup.values()),
             "fast": sum(t.fast for t in live),
             "undone": len(self.session.trials) - len(live),
