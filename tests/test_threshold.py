@@ -56,6 +56,13 @@ def test_model_recovers_thresholds_offsets_and_false_alarms():
         assert rms(err[MID]) < 2.5 * np.mean(fit.sd(e)[MID])
 
 
+def test_ears_are_random_not_alternating(tmp_path):
+    r = runner(tmp_path)
+    ears = [r.next_plan().ear for _ in range(200)]
+    switches = sum(a != b for a, b in zip(ears, ears[1:]))
+    assert 70 < switches < 130 and 70 < ears.count("L") < 130
+
+
 def test_startup_descends_until_the_first_miss_then_adapts(tmp_path):
     r = runner(tmp_path)
     start = r.level_dbfs - 30
@@ -64,6 +71,12 @@ def test_startup_descends_until_the_first_miss_then_adapts(tmp_path):
     while any(v is not None for v in r.startup.values()):
         tr = r.prepare()
         p = tr.plan
+        if r.startup[p.ear] is None:
+            # Ears are random, so an ear that's done goes adaptive while the
+            # other is still starting: answered as a threshold 15 dB under the start.
+            assert p.kind != "startup"
+            r.answer(tr, p.kind != "blank" and p.level_db > start - 15, 500)
+            continue
         assert p.kind == "startup" and p.freq == 2000
         levels[p.ear].append(p.level_db)
         r.answer(tr, answers[p.ear].pop(0), 500)

@@ -1,7 +1,8 @@
 """Threshold sessions: detection trials near the threshold of hearing
 (DESIGN.md, "Threshold sessions"). Collected only: no fit uses them yet.
 
-Per trial, one burst in one ear (ears alternate), at a level near the current
+Per trial, one burst in one ear (drawn at random, so the listener
+can't know which to attend to), at a level near the current
 estimate of the threshold there. In the yes/no task the listener says whether
 they heard anything in the marked interval; some trials are blank, to measure
 false alarms. In the two-interval task (2IFC) the burst is in one of two
@@ -139,7 +140,6 @@ class ThresholdRunner:
         self.discarded = False
         self._lock = threading.Lock()
         self._last: tuple[PreparedThreshold, dict] | None = None
-        self._n = 0
         self._last_freq: float | None = None
         self.fit = self._fit()
         # The descending run: each ear's next level, or None once it's done.
@@ -173,8 +173,7 @@ class ThresholdRunner:
 
     def next_plan(self) -> ThresholdPlan:
         cfg, rng = self.cfg, self.rng
-        ear = EARS[self._n % 2]
-        self._n += 1
+        ear = EARS[int(rng.integers(2))]  # at random: no pattern to track
         interval = int(rng.integers(1, 3)) if self.task == "2ifc" else 1
         level = self.startup[ear]
         if level is not None:

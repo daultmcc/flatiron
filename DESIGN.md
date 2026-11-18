@@ -239,8 +239,8 @@ In simulation (300 to 400 trials, both tasks), the curves came out within 1 to 2
 
 **Scheduling** (`session/threshold.py`):
 
-- Ears alternate.
-- **Start-up.** A descending run in each ear at 2 kHz (or the nearer end of the measured range, if it excludes 2 kHz), from 30 dB below the listening level (the profile's last), or, with earlier threshold sessions, 15 dB above their threshold there if that's lower. Each positive answer steps 10 dB down (in 2IFC, two in a row at a level), and the first negative one ends the run. These trials are kept.
+- The ear is drawn at random each trial, so knowing which ear to listen to isn't a cue (an alternating pattern would be, for a listener who kept track of it).
+- **Start-up.** A descending run in each ear at 2 kHz (or the nearer end of the measured range, if it excludes 2 kHz), from 30 dB below the listening level (the profile's last), or, with earlier threshold sessions, 15 dB above their threshold there if that's lower. Each positive answer steps 10 dB down (in 2IFC, two in a row at a level), and the first negative one ends the run. These trials are kept. An ear whose run is over goes on to adaptive trials while the other's is still going, since the ear stays random.
 - **Adaptive trials.** The frequency is drawn from the 8 grid points inside the measured range where $T_e + c_s$ is least certain, outside the previous trial's quarter octave. The level is the estimate plus $\sigma_\text{d}$ times a standard normal (plus $\sigma_\text{d}/2$ in 2IFC), so the answers also inform the psychometric slope. Levels stay between −140 dBFS and the usual −24 dBFS cap.
 - A refit after every answer (about 10 ms), and $\sigma_\text{d}$ is re-estimated every 50.
 - Session flow: an introduction (quiet room, keep the volume fixed), the channel check at the listening level, the trials (8 minutes by default), and an end screen with the false alarms and probes heard.
