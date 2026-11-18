@@ -140,12 +140,13 @@ def test_adaptive_sessions_find_a_simulated_threshold(tmp_path, task):
         assert err < 2 * np.mean(sd[MID]) and err < 6.0
 
 
-def make_app(tmp_path, task):
-    prof = Profile.open("ui test", root=tmp_path)
+def make_app(tmp_path, task, debug=False):
+    prof = Profile.open(f"ui test {debug}", root=tmp_path)
     runners = []
 
     def make():
-        runners.append(ThresholdRunner(prof, ThresholdSettings(task=task), seed=len(runners), volume=False))
+        runners.append(ThresholdRunner(prof, ThresholdSettings(task=task, debug=debug), seed=len(runners),
+                                       volume=False))
         return runners[-1]
 
     return FlatironApp(make, NullPlayer()), runners, prof
@@ -185,6 +186,54 @@ async def test_threshold_session_ui(tmp_path, task, screen, keys):
     first = ["heard", "nothing", "heard"] if task == "yesno" else ["first", "second", "second"]
     assert [t.response for t in s.trials] == first and s.ended
     assert prof.sessions() == []
+
+
+@pytest.mark.parametrize("task", ["yesno", "2ifc"])
+async def test_threshold_debug_readout_only_with_the_flag(tmp_path, task):
+    from textual.widgets import Static
+
+    for debug in (False, True):
+        app, runners, prof = make_app(tmp_path, task, debug)
+        async with app.run_test() as pilot:
+            await pilot.press("enter")
+            await pilot.pause()
+            for _ in range(2):
+                scr = app.screen
+                await pilot.press("left" if scr.order[0] == "L" else "right")
+                await pilot.pause()
+            scr = app.screen
+            await wait_for(pilot, lambda: scr.accepting)
+            await pilot.press("d")
+            await pilot.pause()
+            text = str(scr.query_one("#debug", Static).render())
+            assert ("Hz at" in text) == debug
+            if debug:
+                p = scr.trial.plan
+                assert f"{p.ear} · {p.freq:,.0f} Hz at {scr.trial.played_db:+.1f} dBFS" in text
+                assert ("interval" in text) == (task == "2ifc") and "estimate" in text
+            await pilot.press("left")
+            await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
+        assert runners[0].session.trials[0].peeked == debug
+
+
+def test_trials_follow_the_measured_range(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    r = ThresholdRunner(prof, ThresholdSettings(), seed=0, volume=False)
+    for i in range(30):
+        r.answer(r.prepare(), i % 2 == 0, 500, t=i)
+    r.finish()
+    prof.update(measured={"lo": 3000.0, "hi": 9000.0})
+    r = ThresholdRunner(prof, ThresholdSettings(), seed=1, volume=False)
+    assert r.session.measured == [3000.0, 9000.0]
+    # The grid still covers the first session's frequencies, for the fit.
+    assert r.grid[0] <= 900 and r.grid[-1] >= 14000
+    plans = []
+    for i in range(80):
+        tr = r.prepare()
+        plans.append(tr.plan)
+        r.answer(tr, i % 3 != 0, 500, t=i)
+    assert all(3000 * (1 - 1e-6) <= p.freq <= 9000 * (1 + 1e-6) for p in plans)
+    assert {p.freq for p in plans if p.kind == "startup"} == {3000.0}
 
 
 async def test_escape_on_the_introduction_keeps_nothing(tmp_path):

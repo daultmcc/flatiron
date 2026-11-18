@@ -453,7 +453,7 @@ class TrialScreen(Screen):
         Binding("l", "level", "Level"),
         Binding("q", "quit_session", "Quit"),
         Binding("x", "discard", "Discard"),
-        Binding("d", "debug", "Debug"),  # only with run --debug
+        Binding("d", "debug", "Debug"),  # only with run --debug or threshold --debug
     ]
 
     def __init__(self, runner: TrialRunner, clock: Callable[[], float] = time.monotonic):
@@ -490,7 +490,7 @@ class TrialScreen(Screen):
         yield Footer()
 
     def check_action(self, action: str, parameters) -> bool | None:
-        if action == "debug" and not getattr(self.runner.settings, "debug", False):  # threshold settings have none
+        if action == "debug" and not self.runner.settings.debug:
             return False  # hidden from the footer, and the key does nothing
         return True
 
@@ -751,7 +751,21 @@ class ThresholdScreen(TrialScreen):
     inherit_bindings = False
 
     def answer_kwargs(self, first: bool) -> dict:
-        return {"first": first}
+        return {"first": first, "peeked": self.show_debug}
+
+    def show_readout(self):
+        """Debug: the burst's ear, frequency, level, kind and the threshold
+        estimate. Answers given while it shows are marked `peeked`."""
+        w = self.query_one("#debug", Static)
+        tr = self.trial
+        if not self.show_debug or tr is None:
+            w.update("")
+            return
+        p = tr.plan
+        level = f"{tr.played_db:+.1f} dBFS" + (" (blank: nothing played)" if p.kind == "blank" else "")
+        where = f" in interval {p.interval}" if self.runner.task == "2ifc" else ""
+        w.update(f"{p.ear} · {p.freq:,.0f} Hz at {level}{where} · {p.kind}   "
+                 f"(estimate {tr.estimate_db:+.1f} ± {tr.estimate_sd:.1f} dBFS)")
 
     def show_status(self):
         p = self.runner.progress()
@@ -774,6 +788,7 @@ class YesNoScreen(ThresholdScreen):
         Binding("u,backspace", "undo", "Undo"),
         Binding("q", "quit_session", "Quit"),
         Binding("x", "discard", "Discard"),
+        Binding("d", "debug", "Debug"),  # only with threshold --debug
     ]
 
     def panel_label(self, key: str) -> str:
@@ -791,6 +806,7 @@ class TwoIntervalScreen(ThresholdScreen):
         Binding("u,backspace", "undo", "Undo"),
         Binding("q", "quit_session", "Quit"),
         Binding("x", "discard", "Discard"),
+        Binding("d", "debug", "Debug"),  # only with threshold --debug
     ]
 
     def panel_label(self, key: str) -> str:

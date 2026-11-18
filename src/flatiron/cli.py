@@ -267,7 +267,8 @@ def cmd_threshold(args):
         print(f"{prof.read()['label']!r} is a speaker profile: threshold sessions are for headphones and IEMs.")
         return 1
     try:
-        settings = ThresholdSettings(stimulus=args.stimulus, task=args.task, session_minutes=args.minutes)
+        settings = ThresholdSettings(stimulus=args.stimulus, task=args.task, session_minutes=args.minutes,
+                                     debug=args.debug)
     except ValueError as e:
         print(e)
         return 1
@@ -1831,6 +1832,9 @@ def main(argv=None):
     s.add_argument("--task", choices=("yesno", "2ifc"), default="yesno",
                    help="yesno: heard anything or not, with some empty intervals (default); "
                         "2ifc: which of two intervals had the sound")
+    s.add_argument("--debug", action="store_true",
+                   help="D during trials shows each burst's frequency, level and the threshold estimate "
+                        "(answers given while it shows are marked in the session file)")
     s.set_defaults(func=cmd_threshold)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")

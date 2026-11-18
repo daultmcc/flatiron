@@ -163,6 +163,7 @@ class ThresholdRecord:
     t: float = 0.0
     undone: bool = False
     retake: bool = False
+    peeked: bool = False  # answered with the debug readout showing
 
 
 @dataclass
@@ -179,6 +180,7 @@ class ThresholdSession:
     seed: int = 0
     system_volume: str | None = None  # as `wpctl` reported it, when it could
     grid: list = field(default_factory=list)
+    measured: list | None = None  # the profile's measured range, [lo, hi] Hz: where trials were drawn
     channel_checks: list = field(default_factory=list)
     trials: list[ThresholdRecord] = field(default_factory=list)
     ended: str | None = None
