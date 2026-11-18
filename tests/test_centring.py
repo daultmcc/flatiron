@@ -48,7 +48,7 @@ def test_the_estimate_finds_the_balance_and_carries_over(tmp_path):
     assert r.current_estimate == pytest.approx(3.0, abs=0.8)
     # Aimed near the centre point: −c, with jitter.
     late = [t.ild_db for t in r.live_trials()[-50:]]
-    assert np.mean(late) == pytest.approx(-3.0, abs=1.0) and np.std(late) > 1.0
+    assert np.mean(late) == pytest.approx(-3.0, abs=1.5) and np.std(late) > 2.5
     r.finish()
     again = runner(tmp_path, seed=1)
     assert again.current_estimate == pytest.approx(r.current_estimate, abs=1e-6)

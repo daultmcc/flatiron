@@ -36,7 +36,9 @@ from flatiron.session.store import CentringRecord, Profile, now_iso
 
 SIGMA_DB = 1.5  # assumed spread of the answers, for aiming only
 PRIOR_SD_DB = 3.0  # prior SD of the overall balance, for aiming only
-JITTER_SD, MAX_JITTER = 2.0, 4.0
+# Wide enough that many trials clearly lean: at ±2 (clipped at 4) nearly every
+# burst sounded centred, since the aim (shape included) is accurate.
+JITTER_SD, MAX_JITTER = 4.0, 8.0
 MAX_ILD_DB = 12.0
 ROVE_DB = 2.0
 MATCH_BOOST_DB, MATCH_CUT_DB = 12.0, 30.0
