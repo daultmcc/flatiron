@@ -16,6 +16,25 @@ def log_grid(f_lo: float = MEASURE_LO, f_hi: float = MEASURE_HI,
     return f_lo * 2.0 ** (np.arange(n + 1) * span / n)
 
 
+def cover(grid: np.ndarray, f_lo: float, f_hi: float, step_oct: float = INITIAL_STEP_OCT) -> np.ndarray:
+    """The grid, extended at INITIAL_STEP_OCT-ish spacing so it reaches f_lo and
+    f_hi (a measured range wider than an existing profile's grid). Points
+    already there are kept; nothing is removed."""
+    g = np.asarray(grid, float)
+    parts = [g]
+    if f_lo < g[0] * (1 - 1e-9):
+        parts.append(log_grid(f_lo, g[0], step_oct)[:-1])
+    if f_hi > g[-1] * (1 + 1e-9):
+        parts.append(log_grid(g[-1], f_hi, step_oct)[1:])
+    return np.sort(np.concatenate(parts)) if len(parts) > 1 else g
+
+
+def in_range(grid: np.ndarray, f_lo: float, f_hi: float) -> np.ndarray:
+    """Mask of the grid points inside [f_lo, f_hi] (a hair of slack for rounding)."""
+    g = np.asarray(grid, float)
+    return (g >= f_lo * (1 - 1e-6)) & (g <= f_hi * (1 + 1e-6))
+
+
 def octaves(f_a, f_b) -> np.ndarray:
     return np.abs(np.log2(np.asarray(f_a, float) / np.asarray(f_b, float)))
 

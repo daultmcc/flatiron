@@ -152,7 +152,7 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 
 ## Frequency grid
 
-- Measured range 850 Hz to 15 kHz, a little past the default correction range (1 to 13 kHz) so the baseline and taper aren't distorted at the edges.
+- Measured range 850 Hz to 15 kHz by default, a little past the default correction range (1 to 13 kHz) so the baseline and taper aren't distorted at the edges. It's a profile setting (`config --min-measured`, `--max-measured`, at least an octave wide, within 50 Hz to 18 kHz), for a listener who can't comfortably hear the top of the range, say. New trials use only the grid points inside it. A range wider than the profile's grid extends the grid at 1/24 octave; a narrower one leaves the grid as it is, so earlier trials outside the range still count in the fit. The correction never reaches past the fit's grid: the correction range is clipped to it.
 - Initial grid: 1/24-octave log spacing, about 100 points per ear.
 - Refinement: log midpoints, down to 1/48 octave (see "Adaptive selection"). Each session saves its final grid per ear; the next session starts from it.
 
@@ -167,21 +167,33 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 | Gap between A and B | 300 ms | — |
 | Presentation | Monaural: one ear only, the other channel digital silence | — |
 | Sample rate | 48 kHz, float32 | — |
-| Level | Set per session on the level screen (default −30 dBFS RMS, at most −24) | — |
+| Level | Set per session on the level screen (default −30 dBFS RMS, at most −24): the average level once loudness matching moves each pair | `--no-match`, `--max-match-boost` |
 
 Noise bands are generated in the frequency domain (a shaped FFT, then its inverse) for steep band edges, and every stimulus is normalised to unit RMS before any level is applied. A trial's whole A-gap-B buffer is scaled under a −12 dBFS ceiling (then hard-clipped there as a last guard), so the limiter never changes the A/B difference.
 
-The system volume stays at the listener's usual setting. Each session opens on a level screen that loops bands across the range and adjusts Flatiron's own level, starting from the last session's. The level can be changed mid-session, with a warning; changes are logged and every trial records its level.
+The system volume stays at the listener's usual setting. Each session opens on a level screen that loops bands across the measured range (eight, from 1 to 14 kHz at most), at the levels loudness matching would give them, and adjusts Flatiron's own level, starting from the last session's. The level can be changed mid-session, with a warning; changes are logged and every trial records its level.
 
 Audio goes through one persistent PortAudio output stream with a fixed 40 ms buffer. PortAudio's "low" latency (about 9 ms) underflowed on PipeWire. The trial UI offsets its panel lights and reaction times by the stream's reported latency.
 
 ## Trial
 
-1. The scheduler picks an ear (alternating), a pair of grid points and a level offset, applied to one randomly chosen interval.
+1. The scheduler picks an ear (alternating), a pair of grid points and a level offset. With loudness matching (the default), the offset is split evenly around the pair's matched level; without it, it's applied to one randomly chosen interval.
 2. Which stimulus plays first is random, and a whole-trial level rove (±2 dB) keeps the listener from anchoring on absolute level.
 3. A, gap, B play; the listener answers A or B. Replays are allowed and logged. The answer can be undone: the trial is kept on file, marked undone, and left out of fits.
 4. About 5% of trials are catch trials: the same frequency with a ±6 dB offset. They track attention.
 5. Reaction time is logged from the end of B. Answers under 150 ms are flagged.
+6. With `run --debug`, D toggles a line under the panels giving each interval's frequency and the level it played at (dBFS RMS, after the limiter), and their difference. An answer given while it shows is marked `peeked` in the session file. Peeked answers are still fitted.
+
+## Loudness matching
+
+**In brief.** Each pair plays at a common level that cancels the curve fitted so far, so every trial sounds about as loud as the average and the set level means the average. Without it, how loud a trial sounds varies with the headphone's response, the listener's equal-loudness contour and their hearing: with a high-frequency hearing loss, making the quiet treble audible makes the ear-gain region uncomfortably loud.
+
+- **The level.** A burst at $f$ is moved by $m(f) = \overline{L_g} - L_g(f)$, where $L_g$ is the current fit of this seating's curve and $\overline{L_g}$ its mean over the measured range (uniform in log-frequency). A pair plays around the mean of $m$ at its two frequencies, with the scheduler's offset split evenly: $\Delta_{a,b} = \tfrac12(m(f_a) + m(f_b)) \pm \tfrac12 o$. Catch trials are matched the same way.
+- **Caps.** No burst is raised more than `--max-match-boost` (12 dB by default, 0 to 24) or lowered more than 30 dB, a guard against a wild early fit. The cap moves both bursts of the pair together.
+- **The fit doesn't change.** The model sees only the A−B difference, which is the scheduler's offset either way: matching moves only the pair's common level. The split's random draw is made either way too, so a seed gives the same trials with matching on or off. Simulated, the fits come out identical to rounding.
+- **What it relies on.** A new profile starts with a flat curve, so its first trials aren't matched; it catches up as the curve is learnt (the curve is refitted after every answer). A boost raises the peak level, so the limiter scales more trials down as a whole, which leaves their A/B difference alone.
+- **Simulated** (a listener with a 12 dB/octave loss above 5 kHz, 250 trials in one ear, the last 100 scored): the SD of the heard level across bursts fell from 9.0 to 3.4 dB, with the same trials. What's left is mostly the broad shape not yet learnt and the cap holding back the deepest treble (over 12 kHz the loss there wanted more than 12 dB).
+- **Level dependence.** The model assumes $L$ doesn't depend on level. Matching keeps every burst near one loudness, which is the condition that assumption most needs, especially with a hearing loss, where loudness grows faster with level near threshold.
 
 ## Perceptual model
 
@@ -278,7 +290,7 @@ Thicker tails may be worth trying later: a Student-t or a mixture (a narrow and 
 
 Two optional ways to tell the scheduler where to look:
 
-- **Sweep** (`run --sweep`): a slow narrowband sweep (a cluster of nine tones spread over ±1/24 octave) from 1 to 14 kHz and back, 30 s each way by default (`--sweep-seconds`, 10 to 90). It runs before the first session of that `run`, whether or not the profile has earlier sessions; later sessions started from the end screen skip it. The listener taps at each peak or dip. Up and down taps are paired and averaged, which cancels reaction-time lag, and the grid is refined around them. If the profile already has a fit, the sweep plays through it (Q toggles it), so what's left is what the correction hasn't fixed.
+- **Sweep** (`run --sweep`): a slow narrowband sweep (a cluster of nine tones spread over ±1/24 octave) from 1 to 14 kHz (within the measured range) and back, 30 s each way by default (`--sweep-seconds`, 10 to 90). It runs before the first session of that `run`, whether or not the profile has earlier sessions; later sessions started from the end screen skip it. The listener taps at each peak or dip. Up and down taps are paired and averaged, which cancels reaction-time lag, and the grid is refined around them. If the profile already has a fit, the sweep plays through it (Q toggles it), so what's left is what the correction hasn't fixed.
 - **Tone generator** (`tone`): a continuous tone or noise band, glided by hand. Marks made there are saved in the profile and refine the grid of the next trial session that starts. Each mark is stamped with that session, so it's used once; a mark whose session was deleted counts as unused.
 
 # From measurements to filters
@@ -345,7 +357,7 @@ The steps run per ear. Code comments cite them by number.
 
 ## Settings
 
-Every setting but the channel balance is downstream of the cached perceptual fit, so changing it needs no new trials. The balance changes the joint fit of the two ears, which is quick and cached separately. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
+Every setting but the channel balance and the measured range is downstream of the cached perceptual fit, so changing it needs no new trials. The measured range decides where new trials go, and changes nothing until then. The balance changes the joint fit of the two ears, which is quick and cached separately. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
 
 | Setting | Default | `config` option |
 | --- | --- | --- |
@@ -363,14 +375,15 @@ Every setting but the channel balance is downstream of the cached perceptual fit
 | Band budget | 24 per channel (at most 128) | `-b`/`--bands` |
 | Filter fit tolerance | 0.5 dB | `--fit-tolerance` |
 | Boost caps; cut cap | +4 narrow, +6 broad; −12 dB | `--max-boost-narrow`, `--max-boost-broad`; `--max-cut` |
-| Correction range $[f_\text{lo}, f_\text{hi}]$ | 1 to 13 kHz | `--f-lo`, `--f-hi` (Hz, or kHz with a `k`: `12.5k`) |
+| Correction range $[f_\text{lo}, f_\text{hi}]$ | 1 to 13 kHz | `--min-corrected`, `--max-corrected` (Hz, or kHz with a `k`: `12.5k`) |
+| Measured range | 850 Hz to 15 kHz | `--min-measured`, `--max-measured` (see "Frequency grid") |
 | Seating step | on | `--seating` / `--no-seating` |
 | Sessions and pooled profiles | all of this profile's | `--sessions ID,PROFILE,…` |
 | Method | `features` | `--method features`, `smooth` or `match`; `--smooth-width` |
 | Baseline | `robust` | `--baseline robust` or `joint` |
 | One baseline for both ears | on | `--shared-baseline` / `--no-shared-baseline` |
 
-`config` with no options lists every setting, starred where changed. `--reset NAME,NAME` returns the named settings to their defaults; it also takes `sessions`, `checkpoint`, and `all` (every setting and the session selection, but not the checkpoint, which has to be named). `--reset` can't be combined with any other change, which catches a reset and a change meant for different profiles or settings; `--veto none` can.
+`config` with no options lists every setting, starred where changed. `--reset NAME,NAME` returns the named settings to their defaults; it also takes `sessions`, `checkpoint`, and `all` (every setting, the measured range included, and the session selection, but not the checkpoint, which has to be named). `--reset` can't be combined with any other change, which catches a reset and a change meant for different profiles or settings; `--veto none` can.
 
 Some combinations are refused:
 
@@ -384,7 +397,7 @@ Some combinations are refused:
 
 Limits: $W$ 1/3 to 2 octaves, `--balance` 0 to 10, `--soft-margin` 0 to 2 SD, `--veto-softness` 0 to 1, `--consensus-prior` 0 to 10, `--coupling` 0 to 6 dB, `--speaker-window` 0.1 to 1 octave, `--speaker-colouration` 0 to 6 dB, `--gain-sd` 0.05 to 2, `--smooth-width` 1/8 to 1 octave, `--fit-tolerance` 0.1 to 6 dB, `--broad-strength` 0 to 100%, 1 to 128 bands, and $f_\text{lo}$ below $f_\text{hi}$.
 
-The correction range can only move within the measured range, and the measured range, grid and stimulus are fixed when the trials are collected. Features wider than about an octave are only as well constrained as the longest jumps (1 octave).
+The correction range can only move within the measured grid, and the stimulus is fixed when the trials are collected. Features wider than about an octave are only as well constrained as the longest jumps (1 octave).
 
 ## Checkpoints
 
@@ -672,8 +685,8 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Command | Does | Options |
 | --- | --- | --- |
 | `devices` | Lists outputs with host API, channels and native rate, marks the default, and flags Bluetooth, mono and rates other than 48 kHz | — |
-| `run` | Runs trial sessions | `PROFILE`, `--new`, `-d`, `-n`, `-m`/`--minutes` (default 12, at most 15), `--stimulus noise:N`, `warble:N` or `tone` (default `noise:12`: a 1/N-octave band; a warble swings over 1/N octave, default 12), `--active-eq APO_TXT`, `--eq-note`, `-s`/`--sweep`, `--sweep-seconds`; for a speaker profile, `--block N` (see "Speaker sessions") |
-| `verify` | A short session through the correction | As `run`, without `--new` and the sweep, plus `--trials` (answers, both ears; default 150) |
+| `run` | Runs trial sessions | `PROFILE`, `--new`, `-d`, `-n`, `-m`/`--minutes` (default 12, at most 15), `--stimulus noise:N`, `warble:N` or `tone` (default `noise:12`: a 1/N-octave band; a warble swings over 1/N octave, default 12), `--active-eq APO_TXT`, `--eq-note`, `--no-match`, `--max-match-boost DB` (see "Loudness matching"), `-s`/`--sweep`, `--sweep-seconds`, `--debug` (see "Trial"); for a speaker profile, `--block N` (see "Speaker sessions") |
+| `verify` | A short session through the correction | As `run`, without `--new`, the sweep and `--debug`, plus `--trials` (answers, both ears; default 150) |
 | `audition` | The correction on and off | `PROFILE`, `-d`, `-n`, `--source pink`, `sweep` or `FILE.wav` (repeatable; default pink and sweep) |
 | `tone` | The tone generator | `PROFILE`, `-d`, `-n`, `-f`/`--freq` (default 1000), `-e`/`--ear L`, `R` or `both` |
 | `listeners` | Lists listeners (profiles, trials per ear, each ear's noise and the trials behind it), or changes them | `new NAME`; `rename OLD NEW` (the folder and the name used in `LISTENER/PROFILE`); `delete NAME` (all their profiles; asks first, `-y`/`--yes` doesn't) |
@@ -694,7 +707,7 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Level | ↑/↓ ±1 dB, PgUp/PgDn ±5 dB, Enter continue, Esc cancel |
 | Channel check | ←/L left, →/R right, Space replay, Enter retry, Esc quit |
 | Sweep | Enter start, ↑/P peak, ↓/D dip, Q correction on/off, Esc skip |
-| Trials | ←/1 A louder, →/2 B louder, Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first) |
+| Trials | ←/1 A louder, →/2 B louder, Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first), D frequencies and levels (with `run --debug`) |
 | End of session | N next session, Q quit |
 | Audition | Space switch, N next source, B blind, R reveal, Q/Esc quit |
 | Tone generator | ←/→ frequency, ↑/↓ tap size, G go to a frequency, E ear (left, right, both), S stimulus, +/− level, Q correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space pause, Esc quit |
@@ -715,8 +728,8 @@ Several people can share one installation. Each listener is a folder of their ow
 
 Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically. Each listener's folder is `listeners/<slug>/`, with a `listener.json` (label, slug, when it was made); the paths below starting with `profiles/` or `cache/noise/` and `cache/consensus/` are inside it.
 
-- `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug` (headphones and speakers together; each one's kind says which), with `auto` settings as null, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
-- `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone and retake flags. The file is saved after every answer.
+- `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), the measured range (if not the default), and tone-generator marks. A consensus reference is stored in the settings as the string `consensus:slug,slug` (headphones and speakers together; each one's kind says which), with `auto` settings as null, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
+- `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings (loudness matching and its cap among them), the measured range, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear, both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone, retake and peeked flags. The file is saved after every answer.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), which consensus entries the profile last used, and the last HTML report.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
 - `cache/consensus/`: split consensus results (see "Consensus reference"), shared by the profiles in each set. `cache/comparison.html`: the last comparison report.

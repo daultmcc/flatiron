@@ -20,6 +20,7 @@ import numpy as np
 from flatiron import EARS
 from flatiron.audio.limiter import DEFAULT_LEVEL_DB
 from flatiron.audio.stimulus import POINT, StimulusSpec, stimulus_key
+from flatiron.model.grid import MEASURE_HI, MEASURE_LO
 from flatiron.model.probit import Trials
 from flatiron.paths import data_dir
 
@@ -77,6 +78,7 @@ class TrialRecord:
     level_dbfs: float | None = None  # presentation level for this trial (None: the session's)
     undone: bool = False  # withdrawn by the listener; kept on file, left out of fits
     retake: bool = False  # answer given after undoing the previous one for this trial
+    peeked: bool = False  # answered with the debug readout (frequencies and levels) showing
 
     @property
     def offset(self) -> float:
@@ -103,6 +105,7 @@ class Session:
     sweep_marks: dict = field(default_factory=dict)  # ear -> list of {freq, kind}
     sweep_eq: str | None = None  # fit hash of the correction applied during the sweep (it can be toggled)
     tone_marks: list = field(default_factory=list)  # tone-generator marks this session's grid was refined around
+    measured: list | None = None  # [lo, hi] Hz trials were drawn from (None: before the setting existed)
     # Speaker blocks: {open_ear, channel, position: {label, azimuth, elevation}, plugged, block}
     speaker: dict | None = None
     trials: list[TrialRecord] = field(default_factory=list)
@@ -309,6 +312,12 @@ class Profile:
     @property
     def kind(self) -> str:
         return self.read().get("kind", "headphone")
+
+    @property
+    def measured(self) -> tuple[float, float]:
+        """The range trials are drawn from (`config --min-measured/--max-measured`)."""
+        m = self.read().get("measured") or {}
+        return float(m.get("lo", MEASURE_LO)), float(m.get("hi", MEASURE_HI))
 
     def update(self, **kw) -> None:
         d = self.read()

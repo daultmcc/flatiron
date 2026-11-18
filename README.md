@@ -77,6 +77,13 @@ If the `--sweep` flag is present, before the sessions a tone sweep will be playe
 regions where you hear a rise or fall in the volume and this will be used to narrow in on
 frequency regions of interest during the trials.
 
+As it learns how loud each frequency sounds to you, Flatiron adjusts the volume of each pair of
+tones so that all trials sound about equally loud, with the level you choose at the start of each
+session as the average. Quiet regions are raised by at most 12 dB (`--max-match-boost`), and
+`--no-match` turns this off. If the highest (or lowest) frequencies are hard for you to hear,
+narrow the range trials are drawn from with `flatiron config <PROFILE> --max-measured 12k`
+(or `--min-measured`).
+
 300-400 trials is enough for a very basic measurement and 1000 should give reasonably accurate
 results. That may sound like a lot, but even 1000 trials should take less than an hour. If you find
 it taking longer than that you may be overthinking your answers. The fit accounts for a degree of

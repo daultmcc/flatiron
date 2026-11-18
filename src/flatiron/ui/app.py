@@ -26,6 +26,10 @@ from flatiron.session.runner import PreparedTrial, TrialRunner
 from flatiron.session.sweep import SweepTiming, pair_taps, sweep_signal
 
 ITI_S = 0.5  # pause between an answer and the next trial
+
+
+def khz(f: float) -> str:
+    return f"{f / 1000:.3g}"
 EAR_NAMES = {"L": "LEFT", "R": "RIGHT"}
 
 CSS = """
@@ -33,6 +37,7 @@ Screen { align: center middle; }
 #title { width: 100%; content-align: center middle; text-style: bold; padding: 1 0; }
 #message { width: 100%; content-align: center middle; padding: 1 2; }
 #status { width: 100%; content-align: center middle; color: $text-muted; padding: 1 0; }
+#debug { width: 100%; content-align: center middle; color: $warning; }
 #panels { height: 13; width: 100%; padding: 0 6; }
 .panel {
     width: 1fr; height: 100%; margin: 0 2; border: heavy $panel-lighten-2;
@@ -89,17 +94,22 @@ class LevelScreen(MessageScreen):
         Binding("escape", "cancel", "Cancel"),
     ]
 
-    # Bursts like the trials': one ear at a time, across the measured range.
-    # A single 4 kHz tone in both ears misleads: both ears sound louder than
-    # one, and 4 kHz is where hearing is most sensitive.
+    # Bursts like the trials': one ear at a time, across the measured range,
+    # at the levels loudness matching would give them. A single 4 kHz tone in
+    # both ears misleads: both ears sound louder than one, and 4 kHz is where
+    # hearing is most sensitive.
     FREQS = (1000, 2000, 3000, 4000, 6000, 8000, 11000, 14000)
     GAP_S = 0.3
 
-    def __init__(self, start_db: float, mid_session: bool = False):
+    def __init__(self, start_db: float, mid_session: bool = False,
+                 measured: tuple[float, float] | None = None,
+                 gain: Callable[[str, float], float] = lambda ear, f: 0.0):
         super().__init__()
         self.start = float(np.clip(start_db, MIN_LEVEL_DB, MAX_LEVEL_DB))
         self.level = self.start
         self.mid_session = mid_session
+        self.freqs = self.FREQS if measured is None else level_freqs(*measured)
+        self.gain = gain
         self.note = ""
 
     def on_mount(self):
@@ -108,9 +118,10 @@ class LevelScreen(MessageScreen):
     def sequence(self) -> np.ndarray:
         gap = np.zeros((int(self.GAP_S * FS), 2), np.float32)
         parts = []
-        for i, f in enumerate(self.FREQS):
-            x = make_stimulus(float(f), StimulusSpec(), seed=0) * db_to_amp(self.level)
-            parts += [monaural(limit(x).signal, "LR"[i % 2]), gap]
+        for i, f in enumerate(self.freqs):
+            ear = "LR"[i % 2]
+            x = make_stimulus(float(f), StimulusSpec(), seed=0) * db_to_amp(self.level + self.gain(ear, float(f)))
+            parts += [monaural(limit(x).signal, ear), gap]
         return np.concatenate(parts)
 
     def play(self):
@@ -142,6 +153,15 @@ class LevelScreen(MessageScreen):
     def action_cancel(self):
         self.app.player.stop()
         self.dismiss(None)
+
+
+def level_freqs(lo: float, hi: float, n: int = 8) -> list[float]:
+    """The level screen's bursts: n across the measured range, from 1 to 14 kHz
+    at most (the range's ends are rarely where the level matters)."""
+    a, b = max(lo, 1000.0), min(hi, 14_000.0)
+    if b / a < 2:
+        a, b = lo, hi
+    return [float(round(f, -1)) for f in np.geomspace(a, b, n)]
 
 
 class ConfirmScreen(ModalScreen):
@@ -348,7 +368,7 @@ class SweepScreen(MessageScreen):
         ear = self.ears[0]
         eq = "\nYour current correction is on (Q toggles it)." if self.eq is not None else ""
         self.say(f"Sweep: {EAR_NAMES[ear]} ear",
-                 "A slow sweep from 1 to 14 kHz and back.\n"
+                 f"A slow sweep from {khz(self.timing.f_lo)} to {khz(self.timing.f_hi)} kHz and back.\n"
                  "Tap ↑ (P) where it gets suddenly louder, ↓ (D) where it gets quieter, on both passes." + eq,
                  "Enter: start   Esc: skip the sweep")
 
@@ -429,12 +449,14 @@ class TrialScreen(Screen):
         Binding("l", "level", "Level"),
         Binding("q", "quit_session", "Quit"),
         Binding("x", "discard", "Discard"),
+        Binding("d", "debug", "Debug"),  # only with run --debug
     ]
 
     def __init__(self, runner: TrialRunner, clock: Callable[[], float] = time.monotonic):
         super().__init__()
         self.runner = runner
         self.clock = clock
+        self.show_debug = False
         self.trial: PreparedTrial | None = None
         self.accepting = False
         self.paused = False
@@ -459,8 +481,32 @@ class TrialScreen(Screen):
                 yield Static("A", id="A", classes="panel")
                 yield Static("B", id="B", classes="panel")
             yield Static("", id="message")
+            yield Static("", id="debug")
             yield Static("", id="status")
         yield Footer()
+
+    def check_action(self, action: str, parameters) -> bool | None:
+        if action == "debug" and not self.runner.settings.debug:
+            return False  # hidden from the footer, and the key does nothing
+        return True
+
+    def action_debug(self):
+        self.show_debug = not self.show_debug
+        self.show_readout()
+
+    def show_readout(self):
+        """Debug: what the current pair was played at. Answers given while it
+        shows are marked `peeked` in the session file."""
+        w = self.query_one("#debug", Static)
+        tr = self.trial
+        if not self.show_debug or tr is None:
+            w.update("")
+            return
+        (f1, f2), (l1, l2) = tr.freqs, tr.levels
+        cut = f" · limiter {tr.limited_db:+.1f} dB" if tr.limited_db < 0 else ""
+        catch = " · catch trial" if tr.plan.catch else ""
+        w.update(f"A {f1:,.0f} Hz at {l1:+.1f} dBFS   ·   B {f2:,.0f} Hz at {l2:+.1f} dBFS   "
+                 f"(A − B {l1 - l2:+.1f} dB · level {tr.level_dbfs:+.0f}{cut}{catch})")
 
     def on_mount(self):
         self.active_since = self.clock()
@@ -562,6 +608,7 @@ class TrialScreen(Screen):
         self.trial, self.replays = nxt, 0
         self.heard_b, self.first_end = False, None
         self.query_one("#message", Static).update(message)
+        self.show_readout()
         if not self.paused:
             self.timers.append(self.set_timer(ITI_S, self.play))
 
@@ -592,10 +639,11 @@ class TrialScreen(Screen):
                 self.runner.set_level(level)
                 if self.trial is not None and not self.busy:
                     self.trial = self.runner.render(self.trial.plan, retake=self.trial.retake)
+                    self.show_readout()
             self.action_pause()  # resume: the current pair replays
             self.show_status()
 
-        self.app.push_screen(LevelScreen(self.runner.level_dbfs, mid_session=True), done)
+        self.app.push_screen(self.app.level_screen(mid_session=True), done)
 
     def action_answer(self, first_louder: bool):
         if not self.accepting or self.paused or self.busy:
@@ -607,7 +655,7 @@ class TrialScreen(Screen):
         self.light(None)
         self.fetch_next(dict(trial=self.trial, first_louder=first_louder,
                              rt_ms=(now - self.first_end) * 1000, rt_last_ms=(now - self.last_end) * 1000,
-                             replays=self.replays, t=now - self.started))
+                             replays=self.replays, t=now - self.started, peeked=self.show_debug))
 
     def action_replay(self):
         if self.trial is None or self.paused or self.busy:
@@ -744,7 +792,11 @@ class FlatironApp(App):
         if self.runner.speaker and self.sessions_run:  # the level is set once a run
             self.after_level(self.runner.level_dbfs, switch=last_ear != self.runner.speaker["open_ear"], last=last)
             return
-        self.push_screen(LevelScreen(self.runner.level_dbfs), self.after_level)
+        self.push_screen(self.level_screen(), self.after_level)
+
+    def level_screen(self, mid_session: bool = False) -> LevelScreen:
+        r = self.runner
+        return LevelScreen(r.level_dbfs, mid_session=mid_session, measured=r.measured, gain=r.match_gain)
 
     def after_level(self, level, switch: bool = True, last: str = ""):
         if level is None:

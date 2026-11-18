@@ -330,13 +330,13 @@ def test_config_and_report_cli(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "width: 1 -> 0.5" in out and "broad-strength: 0 -> 50" in out
     assert prof.read()["settings"] == {"max_width_oct": 0.5, "broad_strength": 0.5, "preserve_tonality": False}
-    assert main(["config", "--broad-strength", "60", "--f-hi", "12.5k"]) == 0
+    assert main(["config", "--broad-strength", "60", "--max-corrected", "12.5k"]) == 0
     assert main(["config"]) == 0
     out = capsys.readouterr().out
     assert "* width" in out and "(default 1)" in out and "  bands" in out and "checkpoint: none" in out
-    assert "* f-hi                 12.5k" in out and "(unused without --method smooth)" in out
+    assert "* max-corrected        12.5k" in out and "(unused without --method smooth)" in out
     assert main(["config", "--reset", "width", "-b", "3"]) == 1  # --reset stands alone
-    assert main(["config", "--reset", "width,f-hi"]) == 0
+    assert main(["config", "--reset", "width,max-corrected"]) == 0
     assert "max_width_oct" not in prof.read()["settings"] and "f_hi" not in prof.read()["settings"]
     assert main(["config", "--reset", "nonsense"]) == 1
     assert main(["config", "-w", "5"]) == 1  # invalid: nothing saved

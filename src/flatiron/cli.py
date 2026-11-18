@@ -188,7 +188,8 @@ def _settings(args, profile):
         eq = parse_apo(text)
         note = args.eq_note or f"APO file {args.active_eq}"
     return RunSettings(stimulus=args.stimulus, session_minutes=args.minutes,
-                       active_eq=eq, eq_note=note, eq_text=text)
+                       active_eq=eq, eq_note=note, eq_text=text, match=args.match,
+                       match_boost_db=args.max_match_boost, debug=getattr(args, "debug", False))
 
 
 def _launch(args, sweep: bool, profile=None, **extra):
@@ -208,7 +209,10 @@ def _launch(args, sweep: bool, profile=None, **extra):
         if not 10 <= seconds <= 90:
             print("--sweep-seconds must be 10 to 90 (each direction)")
             return 1
-        timing = SweepTiming(duration=seconds)
+        from flatiron.session.sweep import sweep_range
+
+        lo, hi = sweep_range(profile.measured)
+        timing = SweepTiming(f_lo=lo, f_hi=hi, duration=seconds)
         if profile.sessions():
             from flatiron.audio.preview import PreviewEQ
             from flatiron.fit.run import NotEnoughTrials, current_fit
@@ -224,7 +228,11 @@ def _launch(args, sweep: bool, profile=None, **extra):
                 print(f"Can't apply the correction during the sweep: {e}")
     extra_now = lambda: {k: (v() if callable(v) else v) for k, v in extra.items()}  # speaker: the next position
     settings = lambda: replace(_settings(args, profile), **extra_now())
-    settings()  # validate options before the UI starts
+    try:
+        settings()  # validate options before the UI starts
+    except ValueError as e:
+        print(e)
+        return 1
     device = {"index": args.device, "dry_run": args.dry_run}
     if not args.dry_run:
         from flatiron.audio.devices import list_output_devices
@@ -754,8 +762,11 @@ FIT_OPTIONS = [
     (("--max-boost-narrow",), "max_boost_narrow_db", dict(type=float, help="max boost for narrow features (dB)")),
     (("--max-boost-broad",), "max_boost_broad_db", dict(type=float, help="max boost for broad features (dB)")),
     (("--max-cut",), "max_cut_db", dict(type=float, help="max cut (dB)")),
-    (("--f-lo",), "f_lo", dict(type=_hz, help="lower correction limit (Hz, or kHz with a k: 1k)"), KHZ),
-    (("--f-hi",), "f_hi", dict(type=_hz, help="upper correction limit (Hz, or kHz with a k: 13k)"), KHZ),
+    (("--min-corrected",), "f_lo",
+     dict(type=_hz, help="lowest frequency corrected (Hz, or kHz with a k: 1k); never below --min-measured"), KHZ),
+    (("--max-corrected",), "f_hi",
+     dict(type=_hz, help="highest frequency corrected (Hz, or kHz with a k: 13k); never above --max-measured"),
+     KHZ),
     (("--seating",), "consistency",
      dict(action=argparse.BooleanOptionalAction,
           help="correct each feature to its median seating's level, and drop it if most seatings show little of it")),
@@ -778,9 +789,43 @@ FIT_OPTIONS = [
     (("--smooth-width",), "smooth_oct",
      dict(type=float, help="smoothing width (FWHM) in octaves for --method smooth, 1/8 to 1")),
 ]
+# The measured range: a profile setting `config` changes, but not a fit
+# setting (it decides where trials go, not how they're fitted).
+MEASURED_OPTIONS = (("min-measured", "min_measured", "lo"), ("max-measured", "max_measured", "hi"))
+MIN_MEASURED_OCT = 1.0  # the narrowest measured range
+
 # What --reset takes besides the settings above. "all" is every setting and the
 # session selection, but not the checkpoint, which has to be named.
-RESET_EXTRA = ("sessions", "checkpoint")
+RESET_EXTRA = ("sessions", "checkpoint") + tuple(n for n, *_ in MEASURED_OPTIONS)
+
+
+def _show_measured(prof) -> dict[str, str]:
+    lo, hi = prof.measured
+    return {"min-measured": KHZ[1](lo), "max-measured": KHZ[1](hi)}
+
+
+def _set_measured(prof, lo=None, hi=None) -> bool:
+    """Change the measured range (None: leave that end). Prints what changed;
+    False (nothing changed) if the range is invalid."""
+    from flatiron.audio.synth import F_MAX, F_MIN
+    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
+
+    old = _show_measured(prof)
+    cur_lo, cur_hi = prof.measured
+    lo, hi = cur_lo if lo is None else lo, cur_hi if hi is None else hi
+    if not F_MIN <= lo < hi <= F_MAX:
+        print(f"The measured range must be within {F_MIN:g} Hz to {F_MAX / 1000:g} kHz, low end first "
+              "(nothing changed).")
+        return False
+    if np.log2(hi / lo) < MIN_MEASURED_OCT:
+        print(f"The measured range must span at least {MIN_MEASURED_OCT:g} octave (nothing changed).")
+        return False
+    keep = {} if (lo, hi) == (MEASURE_LO, MEASURE_HI) else {"lo": lo, "hi": hi}
+    prof.update(measured=keep or None)
+    for name, v in _show_measured(prof).items():
+        if v != old[name]:
+            print(f"{name}: {old[name]} -> {v}")
+    return True
 
 
 def _option_name(flags) -> str:
@@ -886,7 +931,9 @@ def cmd_config(args):
     old = profile_settings(prof)
     names = {_option_name(flags): f for flags, f, *_ in FIT_OPTIONS}
     default = CorrectionSettings()
-    changing = any(getattr(args, f) is not None for _, f, *_ in FIT_OPTIONS) or args.sessions or args.checkpoint
+    measured = {end: getattr(args, f) for _, f, end in MEASURED_OPTIONS}
+    changing = (any(getattr(args, f) is not None for _, f, *_ in FIT_OPTIONS) or args.sessions or args.checkpoint
+                or any(v is not None for v in measured.values()))
 
     if args.reset is not None:
         if changing:
@@ -899,7 +946,8 @@ def cmd_config(args):
                   f"{', '.join(list(names) + list(RESET_EXTRA))}")
             return 1
         if "all" in listed:
-            listed = list(names) + ["sessions"] + (["checkpoint"] if "checkpoint" in listed else [])
+            listed = (list(names) + ["sessions"] + [n for n, *_ in MEASURED_OPTIONS]
+                      + (["checkpoint"] if "checkpoint" in listed else []))
         new = old
         for n in listed:
             if n in names:
@@ -910,6 +958,11 @@ def cmd_config(args):
                 if _show(new, f) != was:
                     print(f"{n}: {was} -> {_show(new, f)}")
         set_profile_settings(prof, new)
+        from flatiron.model.grid import MEASURE_HI, MEASURE_LO
+
+        ends = [end for n, _, end in MEASURED_OPTIONS if n in listed]
+        if ends:
+            _set_measured(prof, MEASURE_LO if "lo" in ends else None, MEASURE_HI if "hi" in ends else None)
         if "sessions" in listed and (prof.read().get("sessions_used") or prof.read().get("pool")):
             prof.update(sessions_used=None, pool=None)
             print("sessions: all of this profile's (no pooling)")
@@ -983,6 +1036,9 @@ def cmd_config(args):
         selection = _session_selection(prof, args.sessions)
         if selection is None:
             return 1
+    if any(v is not None for v in measured.values()):
+        if not _set_measured(prof, measured["lo"], measured["hi"]):
+            return 1
     if "reference" in changes or "veto" in changes:
         # Checked here too, so a bad list never gets saved. Only when one's being
         # set: --reset sessions has to work on a profile pooling has put in conflict.
@@ -1042,6 +1098,12 @@ def cmd_config(args):
                   "   (unused without --veto)" if f in ("veto_mode", "veto_import_db", "veto_softness") and not st.veto
                   else "")
         print(f"  {mark} {_option_name(flags):20} {_show(st, f)}{dflt}{unused}")
+    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
+
+    defaults = {"min-measured": KHZ[1](MEASURE_LO), "max-measured": KHZ[1](MEASURE_HI)}
+    for name, v in _show_measured(prof).items():
+        changed = v != defaults[name]
+        print(f"  {'*' if changed else ' '} {name:20} {v}" + (f"   (default {defaults[name]})" if changed else ""))
     print(f"  {'*' if prof.read().get('sessions_used') or prof.read().get('pool') else ' '} "
           f"{'sessions':20} {_describe_selection(prof)}")
     cp = prof.read().get("checkpoint")
@@ -1496,6 +1558,13 @@ def main(argv=None):
         s.add_argument("--active-eq", metavar="APO_TXT",
                        help="system EQ in effect while measuring (Equalizer APO / AutoEQ text)")
         s.add_argument("--eq-note", help="free-text note on the EQ context")
+        s.add_argument("--no-match", dest="match", action="store_false",
+                       help="play every burst at the set level instead of matching their loudness to your "
+                            "answers so far (matching keeps quiet regions audible without the loud ones "
+                            "getting uncomfortable)")
+        s.add_argument("--max-match-boost", type=float, default=12.0, metavar="DB",
+                       help="loudness matching: the most a quiet region is raised above the set level "
+                            "(0 to 24 dB, default 12)")
 
     s = sub.add_parser("run", help="run forced-choice sessions")
     session_args(s)
@@ -1505,6 +1574,9 @@ def main(argv=None):
     s.add_argument("--sweep-seconds", type=float, help="sweep length each way (default 30)")
     s.add_argument("--block", type=int, metavar="N",
                    help="speaker profiles: trials per block, one position each (16 to 60, default 32)")
+    s.add_argument("--debug", action="store_true",
+                   help="D during trials shows each burst's frequency and level (answers given while it "
+                        "shows are marked in the session file)")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")
@@ -1575,6 +1647,12 @@ def main(argv=None):
     s.add_argument("--checkpoint", action="store_true",
                    help="keep the current filters fixed from now on; later fits only add filters "
                         "(e.g. before a verify session)")
+    s.add_argument("--min-measured", dest="min_measured", type=_hz, metavar="HZ",
+                   help="lowest frequency trials use (Hz, or kHz with a k; default 850). Earlier trials "
+                        "outside the range still count")
+    s.add_argument("--max-measured", dest="max_measured", type=_hz, metavar="HZ",
+                   help="highest frequency trials use (default 15k): lower it if the top of the range is "
+                        "hard to hear")
     s.set_defaults(func=cmd_config)
 
     s = sub.add_parser("report", help="the current fit: filters and features, and the HTML report with figures")

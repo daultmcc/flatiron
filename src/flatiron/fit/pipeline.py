@@ -549,6 +549,9 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     base: this ear's shared baseline (from ear_bases); voter_base: the voters'
     (from voter_bases). Without them each ear has its own."""
     g = fit.grid
+    if settings.f_lo < g[0] or settings.f_hi > g[-1]:
+        # Nothing is corrected beyond what was measured (a narrowed measured range).
+        settings = replace(settings, f_lo=max(settings.f_lo, float(g[0])), f_hi=min(settings.f_hi, float(g[-1])))
     fixed = list(fixed or [])
     if settings.consensus and consensus is None:
         raise ValueError("this profile's consensus reference hasn't been computed")

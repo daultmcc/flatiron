@@ -21,6 +21,12 @@ SPREAD_OCT = 1 / 24  # tones spread over ±this around the sweep frequency
 MAX_PAIR_OCT = 0.4  # up/down taps further apart than this aren't the same feature
 
 
+def sweep_range(measured: tuple[float, float]) -> tuple[float, float]:
+    """The sweep's span: its usual one, inside the measured range."""
+    lo, hi = max(F_LO, measured[0]), min(F_HI, measured[1])
+    return (lo, hi) if hi / lo >= 2 else (float(measured[0]), float(measured[1]))
+
+
 @dataclass(frozen=True)
 class SweepTiming:
     f_lo: float = F_LO

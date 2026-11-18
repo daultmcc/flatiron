@@ -21,6 +21,7 @@ from flatiron.session.store import Profile, Session, TrialRecord, now_iso
 from flatiron.session.sweep import Mark
 
 MAX_SESSION_MIN = 15.0
+MAX_MATCH_BOOST_DB = 24.0
 FAST_MS = 150.0
 
 
@@ -40,10 +41,17 @@ class RunSettings:
     # A speaker block (DESIGN.md, "Speaker sessions"): {open_ear, channel,
     # position, block}. Trials are in the open ear; bursts go to the channel.
     speaker: dict | None = None
+    # Loudness matching (DESIGN.md, "Loudness matching"): the level is the
+    # average; bursts are raised by at most match_boost_db.
+    match: bool = True
+    match_boost_db: float = 12.0
+    debug: bool = False  # the trial screen can show each burst's frequency and level
 
     def __post_init__(self):
         if not 0.15 <= self.gap_s <= 0.6:
             raise ValueError("gap must be 150 to 600 ms")
+        if not 0 <= self.match_boost_db <= MAX_MATCH_BOOST_DB:
+            raise ValueError(f"the matching boost must be 0 to {MAX_MATCH_BOOST_DB:g} dB")
         if not 0 < self.session_minutes <= MAX_SESSION_MIN:
             raise ValueError(f"sessions are capped at {MAX_SESSION_MIN:g} minutes")
 
@@ -61,6 +69,10 @@ class PreparedTrial:
     retake: bool = False
     preview_gain_a: float = 0.0  # level change of each burst from the preview EQ (dB)
     preview_gain_b: float = 0.0
+    # What was played, in playing order (first, second): Hz and dBFS RMS, after
+    # the limiter and any preview EQ. For the debug readout.
+    freqs: tuple[float, float] = (0.0, 0.0)
+    levels: tuple[float, float] = (0.0, 0.0)
 
 
 class TrialRunner:
@@ -85,8 +97,11 @@ class TrialRunner:
         ears = (self.speaker["open_ear"],) if self.speaker else EARS
         if self.speaker:  # the position spread is fixed, not estimated
             config = replace(config, estimate_tau=False)
+        config = replace(config, match=settings.match, match_boost_db=settings.match_boost_db)
+        self.measured = profile.measured
         self.scheduler = Scheduler(config, seed=self.seed, stimulus_key=stimulus_key(settings.stimulus),
-                                   noise=noise, ears=ears, priors=profile_priors(profile))
+                                   noise=noise, ears=ears, priors=profile_priors(profile),
+                                   measured=self.measured)
         for e in ears:
             if len(hist[e]) or e in grids:
                 # The history's fit is the one `report` would use, so it's the
@@ -109,7 +124,8 @@ class TrialRunner:
             stimulus=asdict(settings.stimulus), level_dbfs=self.level_dbfs,
             gap_s=settings.gap_s, seed=self.seed, scheduler=asdict(config),
             preview=settings.preview.to_json() if settings.preview is not None else None,
-            speaker=dict(self.speaker, plugged=True) if self.speaker else None)
+            speaker=dict(self.speaker, plugged=True) if self.speaker else None,
+            measured=list(self.measured))
         if not self.speaker:
             self._apply_tone_marks()
         self._save()
@@ -175,6 +191,14 @@ class TrialRunner:
         self.level_dbfs = level_dbfs
         self._save()
 
+    def match_gain(self, ear: str, f: float) -> float:
+        """The level change loudness matching gives a burst at f (0 when it's
+        off, or for an ear this session doesn't measure), capped as trials are."""
+        cfg = self.scheduler.cfg
+        if not cfg.match or ear not in self.scheduler.ears:
+            return 0.0
+        return float(np.clip(self.scheduler.match_gain(ear, f), -cfg.match_cut_db, cfg.match_boost_db))
+
     def prepare(self) -> PreparedTrial:
         return self.render(self.scheduler.next_trial())
 
@@ -195,8 +219,12 @@ class TrialRunner:
         else:
             buf, lim = render_pair(b, a, lb, la, s.gap_s, channel, self.fs)
         d = a.size / self.fs
+        played = [(plan.f_a, la + pa + lim.gain_db), (plan.f_b, lb + pb + lim.gain_db)]
+        if not plan.a_first:
+            played.reverse()
         return PreparedTrial(plan, buf, 0.0, d, d + s.gap_s, 2 * d + s.gap_s, lim.gain_db,
-                             self.level_dbfs, retake, pa, pb)
+                             self.level_dbfs, retake, pa, pb,
+                             (played[0][0], played[1][0]), (played[0][1], played[1][1]))
 
     def eq_gains(self, plan: TrialPlan) -> tuple[float, float]:
         eq = self.settings.active_eq
@@ -206,7 +234,8 @@ class TrialRunner:
         return float(ga), float(gb)
 
     def answer(self, trial: PreparedTrial, first_louder: bool, rt_ms: float,
-               replays: int = 0, t: float = 0.0, rt_last_ms: float | None = None) -> TrialRecord:
+               replays: int = 0, t: float = 0.0, rt_last_ms: float | None = None,
+               peeked: bool = False) -> TrialRecord:
         """rt_ms counts from the end of B in the first presentation, so a
         quick answer after a replay isn't flagged as fast."""
         p = trial.plan
@@ -219,7 +248,7 @@ class TrialRunner:
             a_louder=(first_louder == p.a_first), rt_ms=float(rt_ms), replays=replays,
             fast=rt_ms < FAST_MS, eq_gain_a=ga, eq_gain_b=gb, t=round(t, 3),
             rt_last_ms=rt_ms if rt_last_ms is None else float(rt_last_ms),
-            level_dbfs=trial.level_dbfs, retake=trial.retake)
+            level_dbfs=trial.level_dbfs, retake=trial.retake, peeked=peeked)
         self.session.trials.append(rec)
         self._save()  # persist before the (slower) refit
         self.scheduler.record(p, rec.a_louder, known_gain_db=(ga, gb))

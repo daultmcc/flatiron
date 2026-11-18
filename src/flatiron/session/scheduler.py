@@ -6,7 +6,9 @@ the L_avg difference (weighted up where the curve bends), draw at random from
 the best, and set Δ near the 50% point of the current seating's curve, with
 ±1 SD jitter. About 5% are catch trials. An answer is about the current seating,
 L_g = L_avg + u_g, so it says less and less about L_avg once that seating is
-well known at a pair.
+well known at a pair. Pairs come from the grid points inside the measured
+range. With loudness matching, the pair's common level follows the curve, so
+every trial sounds about equally loud (DESIGN.md, "Loudness matching").
 """
 
 from dataclasses import dataclass, field
@@ -15,7 +17,7 @@ import numpy as np
 
 from flatiron import EARS
 from flatiron.audio.stimulus import POINT
-from flatiron.model.grid import MIN_STEP_OCT, log_grid, octaves
+from flatiron.model.grid import MEASURE_HI, MEASURE_LO, MIN_STEP_OCT, cover, in_range, log_grid, octaves
 from flatiron.model.hierarchical import TOL_REFIT, fit_hierarchical
 from flatiron.model.probit import Noise, Priors, ProbitFit, Trials, noise_sd
 from flatiron.model.refine import curvature_z, refine_grid
@@ -40,6 +42,12 @@ class SchedulerConfig:
     catch_rate: float = 0.05
     catch_offset_db: float = 6.0
     rove_db: float = 2.0
+    # Loudness matching: each pair plays around -(L_g(f) - its mean over the
+    # measured range), so quiet regions are boosted and loud ones cut. The A/B
+    # difference is unchanged; only the pair's common level moves.
+    match: bool = False
+    match_boost_db: float = 12.0  # most a burst is raised above the presentation level
+    match_cut_db: float = 30.0  # most it's lowered (a guard against a wild early fit)
     block_size: int = 50  # per ear: full refit (incl. noise) and refinement
     refit_every: int = 1  # per ear: fast refit of L with noise held fixed
     # Noise (sigma0, d0, lapse, treble_noise) stays at the prior until an ear has this many
@@ -99,16 +107,19 @@ def candidate_pairs(grid: np.ndarray, max_step: int, long_max_oct: float):
 class Scheduler:
     def __init__(self, config: SchedulerConfig = SchedulerConfig(), seed: int = 0,
                  ears=EARS, grid: np.ndarray | None = None, priors: Priors = Priors(),
-                 stimulus_key: str = POINT, noise: dict[str, Noise] | None = None):
+                 stimulus_key: str = POINT, noise: dict[str, Noise] | None = None,
+                 measured: tuple[float, float] = (MEASURE_LO, MEASURE_HI)):
         """noise: per ear, the listener's noise (DESIGN.md, "Shared noise"),
         held for the whole session. None: estimated from this ear's own
-        trials at block ends, once there are enough (simulations)."""
+        trials at block ends, once there are enough (simulations).
+        measured: the range trials are drawn from; the grid covers at least it."""
         self.cfg = config
+        self.measured = (float(measured[0]), float(measured[1]))
         self.stimulus_key = stimulus_key  # what this session's bursts are
         self.priors = priors
         self.noise = noise
         self.rng = np.random.default_rng(seed)
-        g = log_grid() if grid is None else np.asarray(grid, float)
+        g = log_grid(*self.measured) if grid is None else cover(grid, *self.measured)
         empty = Trials([], [], [], [])
         self.ears = {e: EarState(g, fit_hierarchical(empty, g, priors, fit_hyper=False, all_groups=False,
                                                      noise=self._noise(e)))
@@ -131,7 +142,7 @@ class Scheduler:
         full fit if it's already known (it holds the noise and the spread)."""
         st = self.ears[ear]
         if grid is not None and len(grid):
-            st.grid = np.asarray(grid, float)
+            st.grid = cover(grid, *self.measured)
         st.f_a, st.f_b = list(trials.f_a), list(trials.f_b)
         st.offset, st.a_louder = list(trials.offset), list(trials.a_louder)
         st.order = list(trials.order)
@@ -167,6 +178,22 @@ class Scheduler:
         st.fit = self._refit(st, grid=np.asarray(grid, float))
         st.grid = st.fit.grid
 
+    def _inside(self, grid: np.ndarray) -> np.ndarray:
+        """Indices of the grid points trials may use."""
+        idx = np.flatnonzero(in_range(grid, *self.measured))
+        return idx if idx.size >= 2 else np.arange(grid.size)
+
+    def match_gain(self, ear: str, f) -> np.ndarray:
+        """Loudness matching: the gain (dB) that brings f to the measured
+        range's average on this seating's curve, before any cap."""
+        st = self.ears[ear]
+        fit = st.fit
+        Lg = fit.L + (fit.u[st.current] if fit.u is not None and st.current < len(fit.u) else 0.0)
+        x = np.log2(st.grid)
+        lo, hi = np.log2(self.measured[0]), np.log2(self.measured[1])
+        mean = float(np.mean(np.interp(np.linspace(lo, hi, 200), x, Lg)))
+        return mean - np.interp(np.log2(np.asarray(f, float)), x, Lg)
+
     def pop_last(self, ear: str) -> None:
         """Withdraw the ear's most recent answer (undo) and refit."""
         st = self.ears[ear]
@@ -193,11 +220,13 @@ class Scheduler:
         cfg = self.cfg
         g = st.grid
 
+        inside = self._inside(g)
         if self.rng.random() < cfg.catch_rate:
-            f = float(self.rng.choice(g))
+            f = float(self.rng.choice(g[inside]))
             return self._plan(ear, f, f, float(self.rng.choice([-1, 1]) * cfg.catch_offset_db), True)
 
-        (si, sj), (li, lj) = candidate_pairs(g, cfg.max_step, cfg.long_max_oct)
+        (si, sj), (li, lj) = candidate_pairs(g[inside], cfg.max_step, cfg.long_max_oct)
+        si, sj, li, lj = inside[si], inside[sj], inside[li], inside[lj]
         i, j = (li, lj) if (li.size and self.rng.random() < cfg.long_frac) else (si, sj)
 
         if cfg.adaptive:
@@ -239,8 +268,17 @@ class Scheduler:
         return self._plan(ear, float(g[a]), float(g[b]), off, False, a_first)
 
     def _plan(self, ear, f_a, f_b, offset, catch, a_first: bool | None = None) -> TrialPlan:
-        # Put the offset on one randomly chosen stimulus.
-        if self.rng.random() < 0.5:
+        cfg = self.cfg
+        # Drawn either way, so a seed gives the same trials with matching on or off.
+        coin = self.rng.random() < 0.5
+        if cfg.match:
+            # Split the offset evenly around the pair's matched level, then
+            # move both together to respect the caps (the difference stays).
+            common = float(np.mean(self.match_gain(ear, [f_a, f_b])))
+            da, db = common + offset / 2, common - offset / 2
+            shift = min(cfg.match_boost_db - max(da, db), 0.0) + max(-cfg.match_cut_db - min(da, db), 0.0)
+            da, db = da + shift, db + shift
+        elif coin:  # put the offset on one randomly chosen stimulus
             da, db = offset, 0.0
         else:
             da, db = 0.0, -offset

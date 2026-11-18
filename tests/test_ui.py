@@ -469,3 +469,31 @@ async def test_switching_the_open_ear_gets_its_own_earplug_screen(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, BlockScreen)
         app.runner.discard()
+
+
+async def test_debug_readout_only_with_the_flag(tmp_path):
+    from textual.widgets import Static
+
+    for debug in (False, True):
+        prof = Profile.open(f"debug {debug}", root=tmp_path)
+        runners = []
+
+        def make():
+            runners.append(TrialRunner(prof, RunSettings(debug=debug), config=CFG, seed=1))
+            return runners[-1]
+
+        app = FlatironApp(make, NullPlayer())
+        async with app.run_test() as pilot:
+            await pass_channel_check(app, pilot)
+            scr = app.screen
+            await wait_for(pilot, lambda: scr.accepting)
+            await pilot.press("d")
+            await pilot.pause()
+            text = str(scr.query_one("#debug", Static).render())
+            assert ("Hz at" in text) == debug
+            if debug:
+                f1 = scr.trial.freqs[0]
+                assert f"A {f1:,.0f} Hz" in text
+            await pilot.press("left")
+            await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
+        assert runners[0].session.trials[0].peeked == debug
