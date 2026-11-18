@@ -802,6 +802,7 @@ LISTENER_OPTIONS = (("default-min-measured", "default_min_measured", "lo"),
                     ("default-max-measured", "default_max_measured", "hi"))
 LISTENER_RESET = tuple(n for n, *_ in LISTENER_OPTIONS)
 MIN_MEASURED_OCT = 1.0  # the narrowest measured range
+MEASURED_LIMITS = (50.0, 18_000.0)  # the widest measured range (Hz)
 
 # What --reset takes besides the settings above. "all" is every setting and the
 # session selection, but not the checkpoint, which has to be named.
@@ -898,10 +899,9 @@ def _describe_selection(prof) -> str:
 
 
 def _range_error(lo: float, hi: float) -> str | None:
-    from flatiron.audio.synth import F_MAX, F_MIN
-
-    if not F_MIN <= lo < hi <= F_MAX:
-        return f"The measured range must be within {F_MIN:g} Hz to {F_MAX / 1000:g} kHz, low end first"
+    f_min, f_max = MEASURED_LIMITS
+    if not f_min <= lo < hi <= f_max:
+        return f"The measured range must be within {f_min:g} Hz to {f_max / 1000:g} kHz, low end first"
     if np.log2(hi / lo) < MIN_MEASURED_OCT:
         return f"The measured range must span at least {MIN_MEASURED_OCT:g} octave"
     return None

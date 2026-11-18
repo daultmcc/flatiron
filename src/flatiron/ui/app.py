@@ -13,6 +13,7 @@ import time
 from typing import Callable
 
 import numpy as np
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -656,6 +657,11 @@ class TrialScreen(Screen):
         self.fetch_next(dict(trial=self.trial, first_louder=first_louder,
                              rt_ms=(now - self.first_end) * 1000, rt_last_ms=(now - self.last_end) * 1000,
                              replays=self.replays, t=now - self.started, peeked=self.show_debug))
+
+    def on_click(self, event: events.Click):
+        """Clicking A or B answers, as ← / → do."""
+        if event.widget is not None and event.widget.id in ("A", "B"):
+            self.action_answer(event.widget.id == "A")
 
     def action_replay(self):
         if self.trial is None or self.paused or self.busy:

@@ -62,7 +62,7 @@ Running either command bare prints a list, and each has `new`, `rename`, and `de
 `flatiron run <PROFILE>` begins a measurement run for the specified profile. This consists
 of a number of _sessions_, which last 12 minutes by default, each of which in turn contains a
 number of _trials_. During each trial, two tones will be played at different frequencies, and
-you will be asked to indicate the louder of the two with arrow keys. Spacebar will replay the tones.
+you will be asked to indicate the louder of the two with arrow keys (or by clicking A or B). Spacebar will replay the tones.
 Between sessions you'll be instructed to reseat your headphones to identify placement-dependent
 features of the frequency response.
 

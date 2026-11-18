@@ -630,7 +630,7 @@ The validation results, and the designs tried first, are under "Joint baseline" 
 `tone` is a real-time signal generator for hunting by hand. It renders block by block in the audio callback:
 
 - **Stimuli**: pure tone, warble, and 1/24, 1/12 and 1/3-octave noise. Noise is white noise through a per-block 2nd-order Butterworth band-pass whose state carries over, normalised by its equivalent noise bandwidth.
-- **Smoothing**: frequency (50 Hz to 18 kHz) glides with a 20 ms one-pole smoother in log-frequency. Level, ear, correction on/off and pauses ramp over 10 ms; a stimulus change fades out, swaps and fades in.
+- **Smoothing**: frequency (20 Hz to 20 kHz) glides with a 20 ms one-pole smoother in log-frequency. Level, ear, correction on/off and pauses ramp over 10 ms; a stimulus change fades out, swaps and fades in.
 - **Motion**: built around tapping, since terminals delay a held key's auto-repeat and report no releases. Each ←/→ press adds a bump to the glide speed: a Hann window over ±0.5 s whose area is one tap size (↑/↓, 1/96 to 1/6 octave, 1/24 by default), so tapping steadily at $r$ per second glides at $r$ tap sizes per second. A press enters the bump at its peak when the tone is still, so it moves at once (half a tap size in all), and at its start once the speed reaches a lone tap's peak (tap size / 0.5 s), so the speed then changes smoothly; between the two the entry point is linear in the speed. Tapping slower than about 2/s gives separate steps, and from about 3/s the speed ripples by under 20%. A press against the motion stops it and adds nothing; the next press moves. Auto-repeat from a held key counts as presses at no more than 10/s, about the fastest steady tapping.
 - **Profile**: given a profile, its correction (without its preamp) is applied per channel and can be toggled, and P/D marks are saved to the profile (see "Sweep and tone-generator marks").
 
@@ -711,7 +711,7 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Level | ↑/↓ ±1 dB, PgUp/PgDn ±5 dB, Enter continue, Esc cancel |
 | Channel check | ←/L left, →/R right, Space replay, Enter retry, Esc quit |
 | Sweep | Enter start, ↑/P peak, ↓/D dip, Q correction on/off, Esc skip |
-| Trials | ←/1 A louder, →/2 B louder, Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first), D frequencies and levels (with `run --debug`) |
+| Trials | ←/1 or click A: A louder, →/2 or click B: B louder, Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first), D frequencies and levels (with `run --debug`) |
 | End of session | N next session, Q quit |
 | Audition | Space switch, N next source, B blind, R reveal, Q/Esc quit |
 | Tone generator | ←/→ frequency, ↑/↓ tap size, G go to a frequency, E ear (left, right, both), S stimulus, +/− level, Q correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space pause, Esc quit |

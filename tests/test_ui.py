@@ -101,6 +101,22 @@ async def test_answers_ignored_before_second_interval(tmp_path):
         assert runners[0].session.trials == []
 
 
+async def test_clicking_a_or_b_answers(tmp_path):
+    app, runners, prof = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pass_channel_check(app, pilot)
+        scr = app.screen
+        await wait_for(pilot, lambda: scr.trial is not None and not scr.busy)
+        await pilot.click("#B")  # before B has played: ignored, as keys are
+        await pilot.pause(0.1)
+        assert runners[0].session.trials == []
+        for k, panel in enumerate(("#B", "#A")):
+            await wait_for(pilot, lambda: scr.accepting)
+            await pilot.click(panel)
+            await wait_for(pilot, lambda: len(runners[0].session.trials) == k + 1)
+    assert [t.response for t in prof.sessions()[0].trials] == ["second", "first"]
+
+
 async def test_pause_stops_the_clock(tmp_path):
     app, _, _ = make_app(tmp_path)
     async with app.run_test() as pilot:

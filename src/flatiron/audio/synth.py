@@ -17,7 +17,7 @@ from flatiron.audio.stimulus import StimulusSpec, band_edges
 # (kind, label, noise bandwidth in octaves)
 STIMULI = (("tone", "pure tone", None), ("warble", "warble", None), ("noise", "1/24-oct noise", 1 / 24),
            ("noise", "1/12-oct noise", 1 / 12), ("noise", "1/3-oct noise", 1 / 3))
-F_MIN, F_MAX = 50.0, 18_000.0
+F_MIN, F_MAX = 20.0, 20_000.0  # the tone generator's range
 GLIDE_TAU_S = 0.02
 RAMP_S = 0.01
 # Noise bandwidth of the 4th-order Butterworth band-pass relative to its
