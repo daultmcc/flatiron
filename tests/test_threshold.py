@@ -316,3 +316,10 @@ def test_cli_lists_and_deletes_threshold_sessions(tmp_path, monkeypatch, capsys)
     assert "Threshold sessions" in out and r.session.id in out and "yesno" in out
     assert main(["sessions", "hp", "--delete", r.session.id, "-y"]) == 0
     assert prof.threshold_sessions() == []
+
+
+def test_a_known_eq_gain_adds_to_the_level():
+    recs = [NS(ear="L", freq=2000.0, level_dbfs=-80.0, positive=True, kind="signal", undone=False, eq_gain=3.5),
+            NS(ear="R", freq=2000.0, level_dbfs=-80.0, positive=False, kind="signal", undone=False)]
+    data = ThresholdData.build([("yesno", "noise:0.083333", recs)])
+    assert list(data.level) == [-76.5, -80.0]

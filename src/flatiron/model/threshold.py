@@ -57,7 +57,7 @@ class ThresholdData:
     order; blank trials have signal False."""
     ear: np.ndarray  # 0: left, 1: right
     freq: np.ndarray
-    level: np.ndarray  # dBFS RMS of the burst (a blank's: what it would have been)
+    level: np.ndarray  # dBFS RMS of the burst (a blank's: what it would have been), plus any known EQ gain
     positive: np.ndarray
     signal: np.ndarray
     probe: np.ndarray
@@ -86,7 +86,8 @@ class ThresholdData:
                 if not r.undone:
                     wrong = task == "2ifc-neither" and getattr(r, "response", "") in ("first", "second") \
                         and not r.positive
-                    rows.append((EARS.index(r.ear), r.freq, r.level_dbfs, r.positive, r.kind != "blank",
+                    rows.append((EARS.index(r.ear), r.freq, r.level_dbfs + getattr(r, "eq_gain", 0.0),
+                                 r.positive, r.kind != "blank",
                                  r.kind == "probe", s, key, wrong))
         cols = list(zip(*rows)) if rows else [()] * 9
         return cls(np.asarray(cols[0], int), np.asarray(cols[1], float), np.asarray(cols[2], float),

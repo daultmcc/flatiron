@@ -164,6 +164,9 @@ class ThresholdRecord:
     undone: bool = False
     retake: bool = False
     peeked: bool = False  # answered with the debug readout showing
+    # Known EQ gain at the burst (dB, over its band, any preamp included), on
+    # top of level_dbfs: what reached the headphones was level_dbfs + eq_gain.
+    eq_gain: float = 0.0
 
 
 @dataclass
@@ -181,6 +184,7 @@ class ThresholdSession:
     system_volume: str | None = None  # as `wpctl` reported it, when it could
     grid: list = field(default_factory=list)
     measured: list | None = None  # the profile's measured range, [lo, hi] Hz: where trials were drawn
+    eq_context: dict = field(default_factory=dict)  # an EQ known to have been on, as for trial sessions
     channel_checks: list = field(default_factory=list)
     trials: list[ThresholdRecord] = field(default_factory=list)
     ended: str | None = None
