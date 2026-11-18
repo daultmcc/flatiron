@@ -837,6 +837,69 @@ class NeitherScreen(TwoIntervalScreen):
     ]
 
 
+class CentringIntroScreen(MessageScreen):
+    """Before a centring session (DESIGN.md, "Centring sessions")."""
+
+    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
+
+    def on_mount(self):
+        self.say("Centring session",
+                 "Each burst plays in both ears at once. Say where it sounds: ← left of centre, "
+                 "→ right of centre. If it seems centred, pick the side it leans to, or guess.",
+                 "Enter: start   Esc: quit")
+
+    def action_start(self):
+        self.dismiss(True)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class CentringScreen(TrialScreen):
+    """Centring trials: one burst in both ears; ← left of centre, → right.
+    Left and right keys are the point here, unlike loudness trials."""
+
+    PANELS = ("listen", "listen")
+    QUESTION = "Left or right of centre?"
+    inherit_bindings = False
+    BINDINGS = [
+        Binding("left,l,1", "answer(True)", "Left"),
+        Binding("right,r,2", "answer(False)", "Right"),
+        Binding("space", "replay", "Replay"),
+        Binding("p", "pause", "Pause"),
+        Binding("u,backspace", "undo", "Undo"),
+        Binding("q", "quit_session", "Quit"),
+        Binding("x", "discard", "Discard"),
+        Binding("d", "debug", "Debug"),  # only with centre --debug
+    ]
+
+    def panel_label(self, key: str) -> str:
+        return "LISTEN"
+
+    def answer_kwargs(self, first: bool) -> dict:
+        return {"left": first, "peeked": self.show_debug}
+
+    def show_status(self):
+        p = self.runner.progress()
+        t, lim = int(self.active_seconds()), int(self.limit_s)
+        self.query_one("#status", Static).update(
+            f"Trial {p['session_trials'] + 1} this session · {t // 60:02d}:{t % 60:02d} of "
+            f"{lim // 60:02d}:{lim % 60:02d}")
+
+    def show_readout(self):
+        """Debug: the burst's frequency, each ear's level and the running
+        estimate. Answers given while it shows are marked `peeked`."""
+        w = self.query_one("#debug", Static)
+        tr = self.trial
+        if not self.show_debug or tr is None:
+            w.update("")
+            return
+        p = tr.plan
+        (l, r) = tr.played
+        w.update(f"{p.freq:,.0f} Hz · L {l:+.1f} dBFS, R {r:+.1f} dBFS (L − R {p.ild_db:+.1f} dB)   "
+                 f"(balance estimate {tr.estimate_db:+.1f} dB, left louder)")
+
+
 class SessionEndScreen(MessageScreen):
     BINDINGS = [
         Binding("n", "next", "Next session"),
@@ -852,6 +915,9 @@ class SessionEndScreen(MessageScreen):
         p = r.progress()
         if getattr(r, "threshold", False):
             self.threshold_end(p)
+            return
+        if getattr(r, "centring", False):
+            self.centring_end(p)
             return
         acc = r.catch_accuracy()
         acc_s = f"catch trials {acc:.0%} right" if acc is not None else "no catch trials yet"
@@ -873,6 +939,14 @@ class SessionEndScreen(MessageScreen):
                      for e in EARS) + "\n\n"
                  "Take the headphones off and rest a few minutes before the next session.",
                  "N: next session   Q: quit")
+
+    def centring_end(self, p):
+        if self.reason == "discarded":
+            head, summary = "Session discarded.", ""
+        else:
+            head = "Time for a break." if self.reason == "time" else "Session saved."
+            summary = f"{p['session_trials']} trials, {p['left']} heard left of centre.\n\n"
+        self.say(head, summary + "Rest your ears a few minutes before the next session.", "N: next session   Q: quit")
 
     def threshold_end(self, p):
         if self.reason == "discarded":
@@ -947,6 +1021,9 @@ class FlatironApp(App):
         if getattr(self.runner, "threshold", False):
             self.push_screen(ThresholdIntroScreen(self.runner.task), self.after_intro)
             return
+        if getattr(self.runner, "centring", False):
+            self.push_screen(CentringIntroScreen(), self.after_intro)
+            return
         if self.runner.speaker and self.sessions_run:  # the level is set once a run
             self.after_level(self.runner.level_dbfs, switch=last_ear != self.runner.speaker["open_ear"], last=last)
             return
@@ -993,6 +1070,8 @@ class FlatironApp(App):
         if getattr(self.runner, "threshold", False):
             screen = {"yesno": YesNoScreen, "2ifc": TwoIntervalScreen,
                       "2ifc-neither": NeitherScreen}[self.runner.task]
+        elif getattr(self.runner, "centring", False):
+            screen = CentringScreen
         self.push_screen(screen(self.runner, self.clock), self.after_trials)
 
     def after_trials(self, reason):

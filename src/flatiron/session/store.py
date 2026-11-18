@@ -210,6 +210,73 @@ class ThresholdSession:
 
 # -- listeners (DESIGN.md, "Listeners") ----------------------------------------
 
+# -- centring sessions (DESIGN.md, "Centring sessions") ------------------------
+
+
+@dataclass
+class CentringRecord:
+    freq: float
+    ild_db: float  # left minus right (dB): left at +ild/2, right at −ild/2 around the burst's level
+    level_dbfs: float  # the burst's level before the split (listening level, rove and matching)
+    rove_db: float
+    response: str  # "left" or "right": where the image sounded, against the centre
+    rt_ms: float = 0.0  # from the end of the burst in the first presentation
+    rt_last_ms: float | None = None
+    replays: int = 0
+    fast: bool = False
+    t: float = 0.0
+    undone: bool = False
+    retake: bool = False
+    peeked: bool = False
+    eq_gain_l: float = 0.0  # known EQ gain at the burst in each ear (dB, over its band)
+    eq_gain_r: float = 0.0
+
+    @property
+    def left(self) -> bool:
+        return self.response == "left"
+
+    @property
+    def ild(self) -> float:
+        """The level difference that reached the ears, known EQ included."""
+        return self.ild_db + self.eq_gain_l - self.eq_gain_r
+
+
+@dataclass
+class CentringSession:
+    profile: str
+    id: str
+    started: str
+    device: dict = field(default_factory=dict)
+    sample_rate: int = 48_000
+    stimulus: dict = field(default_factory=dict)
+    level_dbfs: float = DEFAULT_LEVEL_DB
+    seed: int = 0
+    measured: list | None = None
+    match: bool = True
+    channel_checks: list = field(default_factory=list)
+    trials: list[CentringRecord] = field(default_factory=list)
+    ended: str | None = None
+    eq_context: dict = field(default_factory=dict)
+    version: int = FORMAT_VERSION
+
+    def to_json(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, d: dict) -> "CentringSession":
+        d = dict(d)
+        if d.get("version") != FORMAT_VERSION:
+            raise ValueError(f"unsupported centring session format {d.get('version')}")
+        d["trials"] = [CentringRecord(**t) for t in d.get("trials", [])]
+        return cls(**d)
+
+    def stimulus_key(self) -> str:
+        return stimulus_key(StimulusSpec(**self.stimulus)) if self.stimulus else POINT
+
+    def live(self) -> list[CentringRecord]:
+        return [t for t in self.trials if not t.undone]
+
+
 class AmbiguousListener(ValueError):
     pass
 
@@ -496,6 +563,31 @@ class Profile:
             return []
         return [ThresholdSession.from_json(json.loads(p.read_text()))
                 for p in sorted(self.thresholds_dir.glob("*.json"))]
+
+    # Centring sessions too (DESIGN.md, "Centring sessions").
+    @property
+    def centring_dir(self) -> Path:
+        return self.dir / "centring"
+
+    def new_centring_session(self, **kw) -> CentringSession:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        sid, k = stamp, 1
+        while (self.centring_dir / f"{sid}.json").exists():
+            k += 1
+            sid = f"{stamp}-{k}"
+        return CentringSession(profile=self.slug, id=sid, started=now_iso(), **kw)
+
+    def save_centring(self, s: CentringSession) -> None:
+        write_json(self.centring_dir / f"{s.id}.json", s.to_json())
+
+    def delete_centring(self, s: CentringSession) -> None:
+        (self.centring_dir / f"{s.id}.json").unlink(missing_ok=True)
+
+    def centring_sessions(self) -> list[CentringSession]:
+        if not self.centring_dir.exists():
+            return []
+        return [CentringSession.from_json(json.loads(p.read_text()))
+                for p in sorted(self.centring_dir.glob("*.json"))]
 
     def last_level(self, sessions: list[Session] | None = None) -> float | None:
         """Level of the most recent trial on record (or the latest session's)."""

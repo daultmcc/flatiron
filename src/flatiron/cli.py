@@ -277,6 +277,28 @@ def cmd_threshold(args):
     return 0
 
 
+def cmd_centre(args):
+    """Centring sessions (DESIGN.md, "Centring sessions"): collected only."""
+    from flatiron.session.centring import CentringRunner, CentringSettings
+    from flatiron.ui.app import FlatironApp
+
+    prof = _profile(args)
+    if prof is None:
+        return 1
+    if prof.kind == "speaker":
+        print(f"{prof.read()['label']!r} is a speaker profile: centring sessions are for headphones and IEMs.")
+        return 1
+    try:
+        settings = CentringSettings(stimulus=args.stimulus, session_minutes=args.minutes, level_dbfs=args.level,
+                                    match=args.match, debug=args.debug)
+    except ValueError as e:
+        print(e)
+        return 1
+    device = _device_info(args)
+    FlatironApp(lambda: CentringRunner(prof, settings, device=device), _player(args)).run()
+    return 0
+
+
 def _not_speaker(prof, what: str) -> bool:
     """False (after saying why) for a speaker profile: it's evidence about the
     listener's ears, not something to correct."""
@@ -711,25 +733,28 @@ def cmd_sessions(args):
         return 1
     sessions = prof.sessions()
     thresholds = prof.threshold_sessions()
+    centring = prof.centring_sessions()
     if args.delete:
         match = [(s, prof.delete) for s in sessions if s.id == args.delete]
         match += [(s, prof.delete_threshold) for s in thresholds if s.id == args.delete]
+        match += [(s, prof.delete_centring) for s in centring if s.id == args.delete]
         if not match:
             print(f"No session {args.delete!r} in {prof.read()['label']!r}.")
             return 1
         if len(match) > 1:
-            print(f"Both a trial session and a threshold session are called {args.delete!r}: "
-                  f"delete one by hand, from {prof.sessions_dir} or {prof.thresholds_dir}.")
+            print(f"Sessions of more than one kind are called {args.delete!r}: delete one by hand, from "
+                  f"{prof.sessions_dir}, {prof.thresholds_dir} or {prof.centring_dir}.")
             return 1
         s, delete = match[0]
-        what = "threshold session" if delete == prof.delete_threshold else "session"
+        what = {prof.delete_threshold: "threshold session", prof.delete_centring: "centring session"}.get(
+            delete, "session")
         if _confirm(f"Delete {what} {s.id} ({len(s.trials)} trials)? This can't be undone.", args.yes):
             delete(s)
             print("Deleted.")
         else:
             print("Not deleted.")
         return 0
-    if not sessions and not thresholds:
+    if not sessions and not thresholds and not centring:
         print(f"No sessions for {prof.read()['label']!r} yet.")
         return
     for s in sessions:
@@ -771,6 +796,14 @@ def cmd_sessions(args):
             fa = f"false alarms {fa:>4}"
         print(f"{s.id}  {s.task:12s}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  {fa}  "
               f"probes {hits:>4}{vol}{'' if s.ended else '  (not closed)'}")
+    if centring:
+        print("\nCentring sessions (collected only):")
+    for s in centring:
+        live = s.live()
+        mins = s.trials[-1].t / 60 if s.trials else 0
+        left = f"{np.mean([t.left for t in live]):.0%}" if live else "-"
+        print(f"{s.id}  {len(live):4d} trials  {mins:4.1f} min  level {s.level_dbfs:+.0f}  heard left {left:>4}"
+              f"{'' if s.ended else '  (not closed)'}")
 
 
 # Fit settings `config` can change: flags, CorrectionSettings field, argparse
@@ -1845,6 +1878,21 @@ def main(argv=None):
                    help="D during trials shows each burst's frequency, level and the threshold estimate "
                         "(answers given while it shows are marked in the session file)")
     s.set_defaults(func=cmd_threshold)
+
+    s = sub.add_parser("centre", help="centring session: is a burst in both ears left or right of centre? "
+                                      "(collected only: no fit uses it yet)")
+    profile_arg(s)
+    device_arg(s)
+    s.add_argument("-m", "--minutes", type=float, default=5.0, help="session length, at most 15 (default 5)")
+    s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(), metavar="noise[:N]|warble[:N]|tone",
+                   help="as for run (default noise:12)")
+    s.add_argument("--level", type=float, metavar="DBFS", help="listening level (default: the profile's last)")
+    s.add_argument("--no-match", dest="match", action="store_false",
+                   help="no loudness matching with the ears' fitted curves")
+    s.add_argument("--debug", action="store_true",
+                   help="D during trials shows each burst's frequency, levels and the running estimate "
+                        "(answers given while it shows are marked in the session file)")
+    s.set_defaults(func=cmd_centre)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")
     session_args(s)
