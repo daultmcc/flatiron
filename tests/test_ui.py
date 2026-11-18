@@ -71,7 +71,7 @@ async def test_trials_record_answers_and_quit_saves(tmp_path):
         assert isinstance(scr, TrialScreen)
         for k in range(3):
             await wait_for(pilot, lambda: scr.accepting)
-            await pilot.press("left" if k % 2 == 0 else "2")
+            await pilot.press("up" if k % 2 == 0 else "2")
             await wait_for(pilot, lambda: len(runners[0].session.trials) == k + 1)
         # Replays are counted on the next answer.
         await wait_for(pilot, lambda: scr.accepting)
@@ -96,7 +96,7 @@ async def test_answers_ignored_before_second_interval(tmp_path):
         await pass_channel_check(app, pilot)
         scr = app.screen
         await wait_for(pilot, lambda: scr.trial is not None and not scr.busy)
-        await pilot.press("left")  # still in the ITI / first burst
+        await pilot.press("up")  # still in the ITI / first burst
         await pilot.pause(0.1)
         assert runners[0].session.trials == []
 
@@ -137,7 +137,7 @@ async def test_time_limit_ends_session_and_next_session_reseats(tmp_path):
         scr = app.screen
         await wait_for(pilot, lambda: scr.accepting)
         await pilot.pause(1.3)
-        await pilot.press("left")
+        await pilot.press("up")
         await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
         await pilot.press("n")
         await pilot.pause()
@@ -214,7 +214,7 @@ async def test_replay_does_not_reset_reaction_time(tmp_path):
         # Still answerable during the replay, and the reference stays put.
         assert scr.accepting
         await wait_for(pilot, lambda: app.clock() > scr.last_end + 0.05)
-        await pilot.press("left")
+        await pilot.press("up")
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
     t = runners[0].session.trials[0]
     assert t.replays == 1
@@ -232,7 +232,7 @@ async def test_discard_session(tmp_path):
         scr = app.screen
         for k in range(2):
             await wait_for(pilot, lambda: scr.accepting)
-            await pilot.press("left")
+            await pilot.press("up")
             await wait_for(pilot, lambda: len(runners[0].session.trials) == k + 1)
         # Changing your mind keeps the session, paused.
         await pilot.press("x")
@@ -278,7 +278,7 @@ async def test_session_starts_with_level_from_last_session(tmp_path):
         await pass_channel_check(app, pilot)
         trial = app.screen
         await wait_for(pilot, lambda: trial.accepting)
-        await pilot.press("left")
+        await pilot.press("up")
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
         await pilot.press("q")
         await pilot.pause()
@@ -327,7 +327,7 @@ async def test_mid_session_level_change_warns_and_is_logged(tmp_path):
         await pass_channel_check(app, pilot)
         scr = app.screen
         await wait_for(pilot, lambda: scr.accepting)
-        await pilot.press("left")
+        await pilot.press("up")
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 1 and not scr.busy)
         start = runners[0].level_dbfs
         await pilot.press("l")
@@ -346,7 +346,7 @@ async def test_mid_session_level_change_warns_and_is_logged(tmp_path):
         assert app.screen is scr and not scr.paused
         assert scr.trial.level_dbfs == start - 2  # current pair re-rendered
         await wait_for(pilot, lambda: scr.accepting)
-        await pilot.press("left")
+        await pilot.press("up")
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 2)
     s = prof.sessions()[0]
     assert s.level_dbfs == start
@@ -365,14 +365,14 @@ async def test_undo_replays_the_pair_and_keeps_the_record(tmp_path):
         assert "Nothing to undo" in str(scr.query_one("#message").render())
         await wait_for(pilot, lambda: scr.accepting)
         first = scr.trial
-        await pilot.press("left")  # the typo
+        await pilot.press("up")  # the typo
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 1 and not scr.busy)
         assert scr.trial.plan is not first.plan
         await pilot.press("u")
         await wait_for(pilot, lambda: scr.trial is not None and scr.trial.plan is first.plan and not scr.busy)
         assert "undone" in str(scr.query_one("#message").render())
         await wait_for(pilot, lambda: scr.accepting)
-        await pilot.press("right")  # the intended answer
+        await pilot.press("down")  # the intended answer
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 2)
         await pilot.pause(0.2)
         assert runners[0].scheduler.n_trials(first.plan.ear) == 1
@@ -401,7 +401,7 @@ async def test_verify_session_ends_at_its_trial_count(tmp_path):
         scr = app.screen
         for k in range(2):
             await wait_for(pilot, lambda: scr.accepting)
-            await pilot.press("left")
+            await pilot.press("up")
             await wait_for(pilot, lambda: len(runners[0].session.trials) == k + 1)
         await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
         assert "Verify session complete" in str(app.screen.query_one("#title").render())
@@ -441,7 +441,7 @@ async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
             for k in range(3):
                 await wait_for(pilot, lambda: scr.accepting)
                 assert f"Trial {k + 1} of 3 this block" in str(scr.query_one("#status").render())
-                await pilot.press("left")
+                await pilot.press("up")
                 await wait_for(pilot, lambda: len(runner.session.trials) == k + 1)
             # No end screen between blocks: the next block's setup says how this one went.
             await wait_for(pilot, lambda: isinstance(app.screen, BlockScreen))
@@ -477,7 +477,7 @@ async def test_switching_the_open_ear_gets_its_own_earplug_screen(tmp_path):
         for _ in range(2):
             await wait_for(pilot, lambda: scr.accepting or not isinstance(app.screen, TrialScreen))
             if isinstance(app.screen, TrialScreen):
-                await pilot.press("left")
+                await pilot.press("up")
         await wait_for(pilot, lambda: isinstance(app.screen, EarplugScreen))
         msg = str(app.screen.query_one("#message").render())
         assert "Block saved: 2 trials." in msg and "out of your right ear" in msg and "into your left ear" in msg
@@ -510,6 +510,6 @@ async def test_debug_readout_only_with_the_flag(tmp_path):
             if debug:
                 f1 = scr.trial.freqs[0]
                 assert f"A {f1:,.0f} Hz" in text
-            await pilot.press("left")
+            await pilot.press("up")
             await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
         assert runners[0].session.trials[0].peeked == debug

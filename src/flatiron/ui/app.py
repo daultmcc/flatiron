@@ -40,7 +40,8 @@ Screen { align: center middle; }
 #message { width: 100%; content-align: center middle; padding: 1 2; }
 #status { width: 100%; content-align: center middle; color: $text-muted; padding: 1 0; }
 #debug { width: 100%; content-align: center middle; color: $warning; }
-#panels { height: 13; width: 100%; padding: 0 6; }
+#panels { height: 17; width: 100%; align: center middle; }
+#panels .panel { width: 44; height: 1fr; margin: 0 0 1 0; }
 .panel {
     width: 1fr; height: 100%; margin: 0 2; border: heavy $panel-lighten-2;
     content-align: center middle; text-style: bold;
@@ -445,8 +446,10 @@ class TrialScreen(Screen):
     PANELS = ("A", "B")  # panel ids: the first and second interval's
     QUESTION = "Which was louder?"
     BINDINGS = [
-        Binding("left,1", "answer(True)", "A louder"),
-        Binding("right,2", "answer(False)", "B louder"),
+        # Up and down, not left and right: a cross-ear trial whose first
+        # burst is in the right ear would otherwise put "first" on the wrong side.
+        Binding("up,1", "answer(True)", "A louder"),
+        Binding("down,2", "answer(False)", "B louder"),
         Binding("space", "replay", "Replay"),
         Binding("p", "pause", "Pause"),
         Binding("u,backspace", "undo", "Undo"),
@@ -481,7 +484,7 @@ class TrialScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.QUESTION, id="title")
-            with Horizontal(id="panels"):
+            with Vertical(id="panels"):  # stacked: the first interval on top (↑), the second below (↓)
                 for k in dict.fromkeys(self.PANELS):
                     yield Static(self.panel_label(k), id=k, classes="panel")
             yield Static("", id="message")
@@ -669,7 +672,7 @@ class TrialScreen(Screen):
                              replays=self.replays, t=now - self.started))
 
     def on_click(self, event: events.Click):
-        """Clicking A or B answers, as ← / → do."""
+        """Clicking A or B answers, as ↑ / ↓ do."""
         if event.widget is not None and event.widget.id in ("A", "B"):
             self.action_answer(event.widget.id == "A")
 
@@ -727,9 +730,9 @@ class ThresholdIntroScreen(MessageScreen):
         self.detection_task = task
 
     def on_mount(self):
-        how = ("After each marked interval: ← if you heard anything at all, → if not. "
+        how = ("After each marked interval: ↑ if you heard anything at all, ↓ if not. "
                "Some intervals are empty." if self.detection_task == "yesno" else
-               "The sound is in one of two marked intervals: ← the first, → the second. "
+               "The sound is in one of two marked intervals: ↑ the first, ↓ the second. "
                "Guess if you're not sure.")
         self.say("Threshold session",
                  "Very quiet bursts, one ear at a time, at the edge of hearing.\n\n"
@@ -781,8 +784,10 @@ class YesNoScreen(ThresholdScreen):
     PANELS = ("listen", "listen")
     QUESTION = "Did you hear anything?"
     BINDINGS = [
-        Binding("left,y,1", "answer(True)", "Heard"),
-        Binding("right,n,2", "answer(False)", "Nothing"),
+        # Up and down, not left and right, which would tempt answering with
+        # the ear the burst was in.
+        Binding("up,y,1", "answer(True)", "Heard"),
+        Binding("down,n,2", "answer(False)", "Nothing"),
         Binding("space", "replay", "Replay"),
         Binding("p", "pause", "Pause"),
         Binding("u,backspace", "undo", "Undo"),
@@ -799,8 +804,8 @@ class TwoIntervalScreen(ThresholdScreen):
     PANELS = ("A", "B")
     QUESTION = "Which interval had the sound?"
     BINDINGS = [
-        Binding("left,1", "answer(True)", "First"),
-        Binding("right,2", "answer(False)", "Second"),
+        Binding("up,1", "answer(True)", "First"),  # as in loudness trials
+        Binding("down,2", "answer(False)", "Second"),
         Binding("space", "replay", "Replay"),
         Binding("p", "pause", "Pause"),
         Binding("u,backspace", "undo", "Undo"),

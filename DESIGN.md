@@ -202,7 +202,7 @@ Audio goes through one persistent PortAudio output stream with a fixed 40 ms buf
 
 **In brief.** Every trial above compares two frequencies in one ear, so the overall level difference between the ears is a gauge the data can't see, and the shape of $L_\mathrm{L} - L_\mathrm{R}$ comes only from two separate fits and the channel-balance prior. A cross-ear trial plays A in one ear and B in the other and asks the same question. They're collected to see what they look like: no fit, correction or report uses them yet. Possible uses are an overall channel-balance correction in the exported presets, and a check on the ears' fitted difference (and on the balance prior).
 
-- **Share.** `run --cross-ear PCT`, 10% of trials by default (0 to 30; 0 for none). Never in speaker blocks or verify sessions.
+- **Share.** `run --cross-ear PCT`, 10% of trials by default (0 to 100; 0 for none, 100 for nothing else, aimed with the within-ear curves from earlier sessions). Never in speaker blocks or verify sessions.
 - **Pairs.** A frequency log-uniform over 1 to 13 kHz, cut to the measured range. Half are the same frequency in both ears; the other half have B 1 to 3 steps of 1/24 octave away, either side. Which ear gets A and which interval plays first are random. There are no catch trials among them, and the level rove is as usual.
 - **Aim.** The offset aims at the 50% point: the difference of the two ears' current seating curves, each centred to mean 0 over that same range (each ear's level is its own gauge), plus the time-order bias (the mean of the ears'), plus a running estimate of the overall L−R difference $c$. That estimate is the MAP of a probit on every cross answer so far, this profile's earlier sessions included, with noise 1.5 dB and a $\mathcal N(0, 3^2)$ prior on $c$. Jitter is $\mathcal N(0, 2^2)$ dB, clipped at ±4, and the offset is capped at 12 dB as usual. All of this is only for aiming.
 - **Loudness matching.** As for any trial (see "Loudness matching"), each burst matched in its own ear: the offset is split evenly around the mean of the two bursts' matched levels, with the same caps. Each ear's match is to its own mean, the same centring the aim uses; the L−R offset $c$ isn't matched out.
@@ -772,9 +772,9 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | Level | ↑/↓ ±1 dB, PgUp/PgDn ±5 dB, Enter continue, Esc cancel |
 | Channel check | ←/L left, →/R right, Space replay, Enter retry, Esc quit |
 | Sweep | Enter start, ↑/P peak, ↓/D dip, Q correction on/off, Esc skip |
-| Trials | ←/1 or click A: A louder, →/2 or click B: B louder, Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first), D frequencies and levels (with `run --debug`) |
+| Trials | ↑/1 or click A: A louder, ↓/2 or click B: B louder (the panels are stacked, A on top: ←/→ would point the wrong way on a cross-ear trial whose first burst is in the right ear), Space replay, P pause, U/Backspace undo (the pair plays again), L level (with a warning), Q save and quit, X discard (asks first), D frequencies and levels (with `run --debug`) |
 | Threshold introduction | Enter start, Esc quit |
-| Threshold trials | yes/no: ←/Y/1 heard, →/N/2 nothing; 2IFC: ←/1 or click 1: first, →/2 or click 2: second; both: Space replay, P pause, U/Backspace undo, Q save and quit, X discard, D the burst and the estimate (with `threshold --debug`) |
+| Threshold trials | yes/no: ↑/Y/1 heard, ↓/N/2 nothing (not ←/→, which would tempt answering with the ear the burst was in); 2IFC: ↑/1 or click 1: first, ↓/2 or click 2: second (stacked, as for trials); both: Space replay, P pause, U/Backspace undo, Q save and quit, X discard, D the burst and the estimate (with `threshold --debug`) |
 | End of session | N next session, Q quit |
 | Audition | Space switch, N next source, B blind, R reveal, Q/Esc quit |
 | Tone generator | ←/→ frequency, ↑/↓ tap size, G go to a frequency, E ear (left, right, both), S stimulus, +/− level, Q correction on/off (given a profile), P/D mark a peak/dip, U undo the last mark, Space pause, Esc quit |

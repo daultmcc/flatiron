@@ -377,3 +377,17 @@ def test_cross_ear_trials_follow_the_measured_range_and_loudness_matching(tmp_pa
         assert (p.ear, p.f_a, p.f_b, p.a_first) == (q.ear, q.f_a, q.f_b, q.a_first)
         assert 2000 * 2 ** (-3 / 24) - 1e-6 <= min(p.f_a, p.f_b) and max(p.f_a, p.f_b) <= 9000 * 2 ** (3 / 24) + 1e-6
     assert any(abs(p.delta_a + p.delta_b - q.delta_a - q.delta_b) > 0.5 for p, q in zip(on, off))
+
+
+def test_cross_ear_only_session(tmp_path):
+    prof = Profile.open("x", root=tmp_path)
+    r = TrialRunner(prof, RunSettings(cross_rate=1.0), config=FAST_CFG, seed=0)
+    for k in range(10):
+        tr = r.prepare()
+        assert len(tr.plan.ear) == 2
+        r.answer(tr, True, 400, t=k)
+    r.finish()
+    (s,) = prof.sessions()
+    assert len(s.cross_trials()) == 10
+    trials, _ = prof.history()
+    assert len(trials["L"]) == len(trials["R"]) == 0

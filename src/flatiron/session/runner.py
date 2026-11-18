@@ -58,8 +58,8 @@ class RunSettings:
             raise ValueError(f"the matching boost must be 0 to {MAX_MATCH_BOOST_DB:g} dB")
         if not 0 < self.session_minutes <= MAX_SESSION_MIN:
             raise ValueError(f"sessions are capped at {MAX_SESSION_MIN:g} minutes")
-        if not 0 <= self.cross_rate <= 0.3:
-            raise ValueError("the cross-ear share must be 0 to 30%")
+        if not 0 <= self.cross_rate <= 1:
+            raise ValueError("the cross-ear share must be 0 to 100%")
 
 
 @dataclass

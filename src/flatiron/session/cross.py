@@ -50,8 +50,8 @@ class CrossPlanner:
     start the offset estimate."""
 
     def __init__(self, scheduler: Scheduler, rate: float, seed: int, history=()):
-        if not 0 <= rate < 1:
-            raise ValueError("the cross-ear rate must be at least 0 and below 1")
+        if not 0 <= rate <= 1:
+            raise ValueError("the cross-ear rate must be 0 to 1")
         self.sched = scheduler
         self.rate = rate
         self.f_lo, self.f_hi = cross_range(scheduler.measured)

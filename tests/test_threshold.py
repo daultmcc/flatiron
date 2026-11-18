@@ -173,8 +173,8 @@ async def wait_for(pilot, cond, timeout=10.0):
     raise AssertionError("timed out")
 
 
-@pytest.mark.parametrize("task,screen,keys", [("yesno", YesNoScreen, ["y", "n", "left"]),
-                                              ("2ifc", TwoIntervalScreen, ["1", "2", "right"])])
+@pytest.mark.parametrize("task,screen,keys", [("yesno", YesNoScreen, ["y", "n", "up"]),
+                                              ("2ifc", TwoIntervalScreen, ["1", "2", "down"])])
 async def test_threshold_session_ui(tmp_path, task, screen, keys):
     app, runners, prof = make_app(tmp_path, task)
     async with app.run_test() as pilot:
@@ -224,7 +224,7 @@ async def test_threshold_debug_readout_only_with_the_flag(tmp_path, task):
                 p = scr.trial.plan
                 assert f"{p.ear} · {p.freq:,.0f} Hz at {scr.trial.played_db:+.1f} dBFS" in text
                 assert ("interval" in text) == (task == "2ifc") and "estimate" in text
-            await pilot.press("left")
+            await pilot.press("1")
             await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
         assert runners[0].session.trials[0].peeked == debug
 

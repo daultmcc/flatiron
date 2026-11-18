@@ -332,8 +332,8 @@ def cmd_run(args):
         print("--block is for speaker profiles.")
         return 1
     cross = CROSS_EAR_PCT if args.cross_ear is None else args.cross_ear
-    if not 0 <= cross <= 30:
-        print("--cross-ear must be 0 to 30 (%)")
+    if not 0 <= cross <= 100:
+        print("--cross-ear must be 0 to 100 (%)")
         return 1
     return _launch(args, sweep=args.sweep, profile=prof, cross_rate=cross / 100)
 
@@ -1819,7 +1819,7 @@ def main(argv=None):
                    help="D during trials shows each burst's frequency and level (answers given while it "
                         "shows are marked in the session file)")
     s.add_argument("--cross-ear", type=float, metavar="PCT",
-                   help="share of trials comparing the two ears (0 to 30, default 10; 0: none). "
+                   help="share of trials comparing the two ears (0 to 100, default 10; 0: none). "
                         "Collected only: no fit uses them yet")
     s.set_defaults(func=cmd_run)
 
