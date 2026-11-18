@@ -51,6 +51,7 @@ Each listening device (headphone or speaker) has its own _profile_, which is ass
 to a single _listener_. Profiles are specified with the syntax `<LISTENER>/<PROFILE>`, but
 if only a single listener exists then the listener can be
 omitted, as in the examples above. By default there is a single listener called `default`.
+If only a single profile exists it can be omitted as well.
 A listener should correspond to a single individual who is performing the tests; certain
 fitted parameters of the perceptual model are shared across profiles for the same listener.
 
@@ -100,9 +101,10 @@ and prints only the simplified summary to the command line.
 ### Configuration
 
 There are many options that can be configured to control the statistical model and correction
-scheme used. These can be set using `flatiron config <PROFILE> --<OPTION1> <VALUE1> --<OPTION2> <VALUE2> ...`.
+scheme used. These can be set using `flatiron config <TARGET> --<OPTION1> <VALUE1> --<OPTION2> <VALUE2> ...`.
 `--reset <OPTION1>,<OPTION2>,...` resets the specified options to their default values, and
-`--reset all` resets all options. `flatiron config -h` prints a full list of options.
+`--reset all` resets all options. For most options, `<TARGET>` is a profile, but a handful
+of options are associated to listeners instead. `flatiron config -h` prints a full list of options.
 
 ### Exporting presets
 
