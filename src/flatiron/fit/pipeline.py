@@ -206,6 +206,17 @@ class EarCorrection:
         return [f for f in self.fit.filters if id(f) not in keep]
 
 
+# The default correction range sits this far inside the measured range (the
+# defaults' own margins: 850 Hz to 1 kHz, 13 to 15 kHz), so it follows a
+# changed measured range unless it's set itself.
+CORRECTED_INSIDE = (1000.0 / 850.0, 13000.0 / 15000.0)
+
+
+def corrected_default(measured: tuple[float, float]) -> tuple[float, float]:
+    # Rounded (to 3 figures) so the derived range reads cleanly: 850 Hz-12 kHz gives 1 to 10.4 kHz.
+    return tuple(float(f"{m * k:.3g}") for m, k in zip(measured, CORRECTED_INSIDE))
+
+
 def taper(freqs, f_lo, f_hi, width_lo_oct, width_hi_oct) -> np.ndarray:
     """1 inside [f_lo, f_hi], raised-cosine to 0 over the given widths outside
     it (DESIGN.md step 7), 0 beyond. A zero width is a hard edge."""

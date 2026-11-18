@@ -587,6 +587,7 @@ def cmd_profiles(args):
 def cmd_listeners(args):
     from flatiron.fit.run import listener_noise
     from flatiron.session.store import LISTENER_ENV, Listener, slugify
+    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
 
     action = getattr(args, "action", None)
     if action == "new":
@@ -647,6 +648,10 @@ def cmd_listeners(args):
         mark = "  (FLATIRON_LISTENER)" if env and Listener.find(env) and Listener.find(env).slug == x.slug else ""
         print(f"{x.slug}  ({x.label}){mark}")
         print(f"    {len(profiles)} profiles, L {trials['L']} / R {trials['R']} trials")
+        lo, hi = x.measured_default
+        if (lo, hi) != (MEASURE_LO, MEASURE_HI):
+            print(f"    measured range {KHZ[1](lo)} to {KHZ[1](hi)} (config {x.slug} --default-min-measured, "
+                  "--default-max-measured)")
         noise = listener_noise(x.root, fit=False)
         for e in EARS:
             n = noise.get(e)
@@ -789,43 +794,18 @@ FIT_OPTIONS = [
     (("--smooth-width",), "smooth_oct",
      dict(type=float, help="smoothing width (FWHM) in octaves for --method smooth, 1/8 to 1")),
 ]
-# The measured range: a profile setting `config` changes, but not a fit
-# setting (it decides where trials go, not how they're fitted).
+# The measured range: a profile setting `config` changes (each end overrides the
+# listener's default), but not a fit setting: it decides where trials go.
 MEASURED_OPTIONS = (("min-measured", "min_measured", "lo"), ("max-measured", "max_measured", "hi"))
+# The listener's own settings (`config LISTENER`): names disjoint from a profile's.
+LISTENER_OPTIONS = (("default-min-measured", "default_min_measured", "lo"),
+                    ("default-max-measured", "default_max_measured", "hi"))
+LISTENER_RESET = tuple(n for n, *_ in LISTENER_OPTIONS)
 MIN_MEASURED_OCT = 1.0  # the narrowest measured range
 
 # What --reset takes besides the settings above. "all" is every setting and the
 # session selection, but not the checkpoint, which has to be named.
 RESET_EXTRA = ("sessions", "checkpoint") + tuple(n for n, *_ in MEASURED_OPTIONS)
-
-
-def _show_measured(prof) -> dict[str, str]:
-    lo, hi = prof.measured
-    return {"min-measured": KHZ[1](lo), "max-measured": KHZ[1](hi)}
-
-
-def _set_measured(prof, lo=None, hi=None) -> bool:
-    """Change the measured range (None: leave that end). Prints what changed;
-    False (nothing changed) if the range is invalid."""
-    from flatiron.audio.synth import F_MAX, F_MIN
-    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
-
-    old = _show_measured(prof)
-    cur_lo, cur_hi = prof.measured
-    lo, hi = cur_lo if lo is None else lo, cur_hi if hi is None else hi
-    if not F_MIN <= lo < hi <= F_MAX:
-        print(f"The measured range must be within {F_MIN:g} Hz to {F_MAX / 1000:g} kHz, low end first "
-              "(nothing changed).")
-        return False
-    if np.log2(hi / lo) < MIN_MEASURED_OCT:
-        print(f"The measured range must span at least {MIN_MEASURED_OCT:g} octave (nothing changed).")
-        return False
-    keep = {} if (lo, hi) == (MEASURE_LO, MEASURE_HI) else {"lo": lo, "hi": hi}
-    prof.update(measured=keep or None)
-    for name, v in _show_measured(prof).items():
-        if v != old[name]:
-            print(f"{name}: {old[name]} -> {v}")
-    return True
 
 
 def _option_name(flags) -> str:
@@ -917,52 +897,214 @@ def _describe_selection(prof) -> str:
     return ", ".join(x if x in session_ids else f"all of {label(x)}'s" for x in ids)
 
 
+def _range_error(lo: float, hi: float) -> str | None:
+    from flatiron.audio.synth import F_MAX, F_MIN
+
+    if not F_MIN <= lo < hi <= F_MAX:
+        return f"The measured range must be within {F_MIN:g} Hz to {F_MAX / 1000:g} kHz, low end first"
+    if np.log2(hi / lo) < MIN_MEASURED_OCT:
+        return f"The measured range must span at least {MIN_MEASURED_OCT:g} octave"
+    return None
+
+
+def _quiet_profile(name: str):
+    """The profile `name` resolves to, as _profile would, or None; prints nothing."""
+    from flatiron.session.store import Profile, current_listener, split_name
+
+    try:
+        listener, pname = split_name(name) if name else (current_listener(), "")
+    except ValueError:
+        return None
+    if pname:
+        return Profile.existing(pname, listener.root)
+    profiles = Profile.all(listener.root)
+    return profiles[0] if len(profiles) == 1 else None
+
+
+def _quiet_listener(name: str):
+    """The listener `name` names (`NAME` or `NAME/`), or the current one if
+    there's no name; None if there isn't one. Prints nothing."""
+    from flatiron.session.store import Listener, current_listener
+
+    if not name:
+        try:
+            return current_listener()
+        except ValueError:
+            return None
+    who = name[:-1] if name.endswith("/") else name
+    return None if "/" in who else Listener.find(who)
+
+
+def _profile_summary(p) -> tuple:
+    """What a listener's change can move in a profile: its measured and correction ranges."""
+    from flatiron.fit.run import profile_settings
+
+    st = profile_settings(p)
+    lo, hi = p.measured
+    return {"min-measured": KHZ[1](lo), "max-measured": KHZ[1](hi),
+            "min-corrected": KHZ[1](st.f_lo), "max-corrected": KHZ[1](st.f_hi)}
+
+
+def _config_listener(args, reset):
+    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
+    from flatiron.session.store import AmbiguousListener, current_listener
+
+    x = _quiet_listener(args.profile or "")
+    if x is None:
+        if args.profile and _quiet_profile(args.profile) is not None:
+            print(f"{args.profile!r} is a profile; --default-min-measured and --default-max-measured are the "
+                  "listener's (nothing changed). Name the listener: flatiron config LISTENER --default-max-measured "
+                  "12k, or set the profile's own with --min-measured / --max-measured.")
+        elif args.profile:
+            print(f"No listener {args.profile!r} (nothing changed). See: flatiron listeners")
+        else:
+            try:
+                current_listener()
+            except AmbiguousListener as e:
+                print(str(e).replace("name the profile as LISTENER/PROFILE", "name the listener") + " (nothing changed)")
+        return 1
+    old_lo, old_hi = x.measured_default
+    if reset is not None:
+        every = "all" in reset
+        lo = MEASURE_LO if every or "default-min-measured" in reset else old_lo
+        hi = MEASURE_HI if every or "default-max-measured" in reset else old_hi
+    else:
+        lo = old_lo if args.default_min_measured is None else args.default_min_measured
+        hi = old_hi if args.default_max_measured is None else args.default_max_measured
+    err = _range_error(lo, hi)
+    if err:
+        print(f"{err} (nothing changed).")
+        return 1
+    profiles = x.profiles()
+    for p in profiles:
+        own = p.measured_override
+        if _range_error(own.get("lo", lo), own.get("hi", hi)):
+            print(f"That would leave {p.read()['label']!r} with no valid measured range: it sets one end itself "
+                  f"({', '.join(f'{k} {KHZ[1](v)}' for k, v in own.items())}). Change or reset that first "
+                  "(nothing changed).")
+            return 1
+    before = {p.slug: _profile_summary(p) for p in profiles}
+    x.set_measured_default(lo, hi)
+    for name, a, b in (("default-min-measured", old_lo, lo), ("default-max-measured", old_hi, hi)):
+        if a != b:
+            print(f"{name}: {KHZ[1](a)} -> {KHZ[1](b)}")
+    for p in profiles:
+        after = _profile_summary(p)
+        moved = [f"{k} {before[p.slug][k]} -> {v}" for k, v in after.items() if v != before[p.slug][k]]
+        if moved:
+            print(f"  {p.read()['label']}: " + ", ".join(moved))
+    return 0
+
+
+def _show_listener(x):
+    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
+
+    lo, hi = x.measured_default
+    print(f"Listener settings for {x.slug!r} (* = changed from the default):")
+    for name, v, dflt in (("default-min-measured", lo, MEASURE_LO), ("default-max-measured", hi, MEASURE_HI)):
+        mark = "*" if v != dflt else " "
+        print(f"  {mark} {name:20} {KHZ[1](v)}" + (f"   (default {KHZ[1](dflt)})" if mark == "*" else ""))
+
+
 def cmd_config(args):
-    from dataclasses import fields, replace
+    """Profile settings, or, given only listener settings, the listener's."""
+    reset = None
+    if args.reset is not None:
+        reset = [x.strip() for x in args.reset.split(",") if x.strip()]
+    listener_given = any(getattr(args, f) is not None for _, f, _ in LISTENER_OPTIONS)
+    profile_given = (any(getattr(args, f) is not None for _, f, *_ in FIT_OPTIONS)
+                     or any(getattr(args, f) is not None for _, f, _ in MEASURED_OPTIONS)
+                     or args.sessions or args.checkpoint)
+    names = LISTENER_RESET + ("all",)
+    listener_reset = bool(reset) and all(n in names for n in reset) and (
+        any(n in LISTENER_RESET for n in reset)
+        # --reset all: the listener's when the name is a listener's and not a profile's
+        or (args.profile and _quiet_profile(args.profile) is None and _quiet_listener(args.profile) is not None))
+    if reset and any(n in LISTENER_RESET for n in reset) and not all(n in names for n in reset):
+        print("Listener settings (default-min-measured, default-max-measured) and profile settings can't be reset "
+              "together (nothing changed).")
+        return 1
+    if listener_given or listener_reset:
+        if profile_given or (listener_given and reset is not None):
+            print("Listener settings (--default-min-measured, --default-max-measured) can't be changed together with "
+                  "profile settings or a reset (nothing changed).")
+            return 1
+        return _config_listener(args, reset)
+    if reset is None and not profile_given and _quiet_profile(args.profile or "") is None:
+        x = _quiet_listener(args.profile or "")
+        if x is not None and (not args.profile or _quiet_listener(args.profile) is not None):
+            # A listener named, or no single profile to show: the listener's settings.
+            _show_listener(x)
+            if not args.profile:
+                print("Name a profile for its settings: flatiron config PROFILE")
+            return 0
+    return _config_profile(args, reset)
+
+
+def _config_profile(args, reset):
+    from dataclasses import replace
 
     from flatiron.fit.pipeline import CorrectionSettings
     from flatiron.fit.reference import CONSENSUS_PREFIX, reference
-    from flatiron.fit.run import checkpoint, profile_settings, set_checkpoint, set_profile_settings
+    from flatiron.fit.run import (checkpoint, default_settings, profile_settings, set_checkpoint,
+                                  set_profile_settings)
+    from flatiron.session.store import listener_of
 
     prof = _profile(args)
     if prof is None:
         return 1
     label = prof.read()["label"]
     old = profile_settings(prof)
+    old_measured = prof.measured
     names = {_option_name(flags): f for flags, f, *_ in FIT_OPTIONS}
-    default = CorrectionSettings()
     measured = {end: getattr(args, f) for _, f, end in MEASURED_OPTIONS}
     changing = (any(getattr(args, f) is not None for _, f, *_ in FIT_OPTIONS) or args.sessions or args.checkpoint
                 or any(v is not None for v in measured.values()))
 
-    if args.reset is not None:
+    def report_changes():
+        new_lo, new_hi = prof.measured
+        for name, a, b in (("min-measured", old_measured[0], new_lo), ("max-measured", old_measured[1], new_hi)):
+            if a != b:
+                print(f"{name}: {KHZ[1](a)} -> {KHZ[1](b)}")
+        final = profile_settings(prof)
+        for flags, f, *_ in FIT_OPTIONS:
+            if _show(old, f) != _show(final, f):
+                print(f"{_option_name(flags)}: {_show(old, f)} -> {_show(final, f)}")
+        return final
+
+    if reset is not None:
         if changing:
             print("--reset can't be combined with other changes (nothing changed): reset first, then change.")
             return 1
-        listed = [x.strip() for x in args.reset.split(",") if x.strip()]
-        unknown = [n for n in listed if n not in names and n not in RESET_EXTRA and n != "all"]
-        if unknown or not listed:
+        unknown = [n for n in reset if n not in names and n not in RESET_EXTRA and n != "all"]
+        if unknown or not reset:
             print(f"Unknown setting(s) {', '.join(unknown) or '(none given)'}; they are: all, "
-                  f"{', '.join(list(names) + list(RESET_EXTRA))}")
+                  f"{', '.join(list(names) + list(RESET_EXTRA))}; and the listener's {', '.join(LISTENER_RESET)}")
             return 1
+        listed = reset
         if "all" in listed:
             listed = (list(names) + ["sessions"] + [n for n, *_ in MEASURED_OPTIONS]
                       + (["checkpoint"] if "checkpoint" in listed else []))
-        new = old
+        # The measured range first: the correction range's default follows it.
+        own = prof.measured_override
+        for n, _, end in MEASURED_OPTIONS:
+            if n in listed:
+                own.pop(end, None)
+        lo, hi = listener_of(prof).measured_default
+        err = _range_error(own.get("lo", lo), own.get("hi", hi))
+        if err:
+            print(f"{err} (nothing changed).")
+            return 1
+        prof.update(measured=own or None)
+        default = default_settings(prof)
+        new = profile_settings(prof)
         for n in listed:
             if n in names:
-                was = _show(new, names[n])
                 f = names[n]
                 new = replace(new, **{f: getattr(default, f)},
                               **({"preserve_tonality": default.preserve_tonality} if f == "broad_strength" else {}))
-                if _show(new, f) != was:
-                    print(f"{n}: {was} -> {_show(new, f)}")
         set_profile_settings(prof, new)
-        from flatiron.model.grid import MEASURE_HI, MEASURE_LO
-
-        ends = [end for n, _, end in MEASURED_OPTIONS if n in listed]
-        if ends:
-            _set_measured(prof, MEASURE_LO if "lo" in ends else None, MEASURE_HI if "hi" in ends else None)
+        report_changes()
         if "sessions" in listed and (prof.read().get("sessions_used") or prof.read().get("pool")):
             prof.update(sessions_used=None, pool=None)
             print("sessions: all of this profile's (no pooling)")
@@ -981,7 +1123,7 @@ def cmd_config(args):
             continue
         if f == "broad_strength":
             if v == 0:
-                changes.update(preserve_tonality=True, broad_strength=default.broad_strength)
+                changes.update(preserve_tonality=True, broad_strength=CorrectionSettings().broad_strength)
             else:
                 changes.update(preserve_tonality=False, broad_strength=PERCENT[0](v))
         else:
@@ -1002,6 +1144,14 @@ def cmd_config(args):
     if changes.get("veto"):
         changes["veto"] = _slug_list(changes["veto"], "veto", prof.dir.parent.parent)
         if changes["veto"] is None:
+            return 1
+    own = prof.measured_override
+    if any(v is not None for v in measured.values()):
+        own.update({end: float(v) for end, v in measured.items() if v is not None})
+        lo, hi = listener_of(prof).measured_default
+        err = _range_error(own.get("lo", lo), own.get("hi", hi))
+        if err:
+            print(f"{err} (nothing changed).")
             return 1
     try:
         new = replace(old, **changes)
@@ -1036,9 +1186,6 @@ def cmd_config(args):
         selection = _session_selection(prof, args.sessions)
         if selection is None:
             return 1
-    if any(v is not None for v in measured.values()):
-        if not _set_measured(prof, measured["lo"], measured["hi"]):
-            return 1
     if "reference" in changes or "veto" in changes:
         # Checked here too, so a bad list never gets saved. Only when one's being
         # set: --reset sessions has to work on a profile pooling has put in conflict.
@@ -1051,8 +1198,12 @@ def cmd_config(args):
         except ValueError as e:
             print(f"{e} (nothing changed)")
             return 1
+    # The measured range first: a correction range left at its default follows it.
+    if own != prof.measured_override:
+        prof.update(measured=own or None)
     if changes:
-        set_profile_settings(prof, new)
+        set_profile_settings(prof, replace(profile_settings(prof), **changes))
+    new = report_changes()
     if "reference" in changes and new.consensus and new.reference != old.reference:
         from flatiron.session.store import Profile
 
@@ -1080,13 +1231,11 @@ def cmd_config(args):
         set_checkpoint(prof, pf)
         n = " / ".join(f"{e} {len(c.filters)}" for e, c in pf.correction.ears.items())
         print(f"Checkpoint: the current filters ({n}) are fixed; later fits only add to them.")
-    for flags, f, *_ in FIT_OPTIONS:
-        if _show(old, f) != _show(new, f):
-            print(f"{_option_name(flags)}: {_show(old, f)} -> {_show(new, f)}")
     if changing:
         return 0
     # Nothing to change: show the settings.
     st = profile_settings(prof)
+    default = default_settings(prof)
     print(f"Fit settings for {label!r} (* = changed from the default):")
     for flags, f, *_ in FIT_OPTIONS:
         mark = "*" if _show(st, f) != _show(default, f) else " "
@@ -1098,12 +1247,11 @@ def cmd_config(args):
                   "   (unused without --veto)" if f in ("veto_mode", "veto_import_db", "veto_softness") and not st.veto
                   else "")
         print(f"  {mark} {_option_name(flags):20} {_show(st, f)}{dflt}{unused}")
-    from flatiron.model.grid import MEASURE_HI, MEASURE_LO
-
-    defaults = {"min-measured": KHZ[1](MEASURE_LO), "max-measured": KHZ[1](MEASURE_HI)}
-    for name, v in _show_measured(prof).items():
-        changed = v != defaults[name]
-        print(f"  {'*' if changed else ' '} {name:20} {v}" + (f"   (default {defaults[name]})" if changed else ""))
+    own = prof.measured_override
+    x = listener_of(prof)
+    for (name, _, end), v, dflt in zip(MEASURED_OPTIONS, prof.measured, x.measured_default):
+        note = f"   (listener {x.slug!r}: {KHZ[1](dflt)})" if end in own else "   (the listener's)"
+        print(f"  {'*' if end in own else ' '} {name:20} {KHZ[1](v)}{note}")
     print(f"  {'*' if prof.read().get('sessions_used') or prof.read().get('pool') else ' '} "
           f"{'sessions':20} {_describe_selection(prof)}")
     cp = prof.read().get("checkpoint")
@@ -1631,8 +1779,10 @@ def main(argv=None):
     s.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     s.set_defaults(func=cmd_sessions)
 
-    s = sub.add_parser("config", help="show or change a profile's fit settings; checkpoint its filters")
-    profile_arg(s)
+    s = sub.add_parser("config", help="show or change a profile's fit settings, or a listener's defaults; "
+                                      "checkpoint a profile's filters")
+    profile_arg(s, help="profile name (LISTENER/PROFILE when there are several listeners; default: the only "
+                          "profile), or, for the listener settings, a listener (default: the only one)")
     for flags, f, kw, *_ in FIT_OPTIONS:
         if not ({"metavar", "choices", "action"} & set(kw)):
             kw = dict(kw, metavar=_option_name(flags).upper().replace("-", "_"))
@@ -1648,11 +1798,17 @@ def main(argv=None):
                    help="keep the current filters fixed from now on; later fits only add filters "
                         "(e.g. before a verify session)")
     s.add_argument("--min-measured", dest="min_measured", type=_hz, metavar="HZ",
-                   help="lowest frequency trials use (Hz, or kHz with a k; default 850). Earlier trials "
-                        "outside the range still count")
+                   help="this profile's lowest trial frequency (Hz, or kHz with a k), in place of the listener's "
+                        "default. Earlier trials outside the range still count; the correction range follows it "
+                        "unless it's set itself")
     s.add_argument("--max-measured", dest="max_measured", type=_hz, metavar="HZ",
-                   help="highest frequency trials use (default 15k): lower it if the top of the range is "
-                        "hard to hear")
+                   help="this profile's highest trial frequency, in place of the listener's default")
+    s.add_argument("--default-min-measured", dest="default_min_measured", type=_hz, metavar="HZ",
+                   help="listener setting (give a listener, or none for the only one): the lowest trial frequency "
+                        "for all their profiles (default 850)")
+    s.add_argument("--default-max-measured", dest="default_max_measured", type=_hz, metavar="HZ",
+                   help="listener setting: the highest trial frequency for all their profiles (default 15k); "
+                        "lower it if the top of the range is hard to hear")
     s.set_defaults(func=cmd_config)
 
     s = sub.add_parser("report", help="the current fit: filters and features, and the HTML report with figures")

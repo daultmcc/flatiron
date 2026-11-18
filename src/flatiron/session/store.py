@@ -198,6 +198,28 @@ class Listener:
     def profiles(self) -> list["Profile"]:
         return Profile.all(self.root)
 
+    @property
+    def measured_default(self) -> tuple[float, float]:
+        """The measured range this listener's profiles use unless they set
+        their own (`config LISTENER --default-min-measured/--default-max-measured`)."""
+        return measured_default(self.path)
+
+    def set_measured_default(self, lo: float, hi: float) -> None:
+        self.ensure()
+        d = json.loads(self.path.read_text())
+        keep = {k: v for k, v, dflt in (("lo", lo, MEASURE_LO), ("hi", hi, MEASURE_HI)) if v != dflt}
+        if keep:
+            d["measured"] = keep
+        else:
+            d.pop("measured", None)
+        write_json(self.path, d)
+
+
+def measured_default(listener_json: Path) -> tuple[float, float]:
+    """A listener's default measured range, from their listener.json."""
+    m = (json.loads(listener_json.read_text()).get("measured") if listener_json.exists() else None) or {}
+    return float(m.get("lo", MEASURE_LO)), float(m.get("hi", MEASURE_HI))
+
 
 def migrate(data: Path | None = None) -> "Listener | None":
     """Once: the single-listener layout (profiles/ at the top) becomes the
@@ -314,10 +336,18 @@ class Profile:
         return self.read().get("kind", "headphone")
 
     @property
+    def measured_override(self) -> dict:
+        """This profile's own ends of the measured range ({"lo": Hz, "hi": Hz},
+        either or both; `config --min-measured/--max-measured`)."""
+        return dict(self.read().get("measured") or {})
+
+    @property
     def measured(self) -> tuple[float, float]:
-        """The range trials are drawn from (`config --min-measured/--max-measured`)."""
-        m = self.read().get("measured") or {}
-        return float(m.get("lo", MEASURE_LO)), float(m.get("hi", MEASURE_HI))
+        """The range trials are drawn from: each end the profile's own if it
+        has one, else its listener's default, else 850 Hz to 15 kHz."""
+        own = self.measured_override
+        lo, hi = measured_default(self.dir.parent.parent / "listener.json")
+        return float(own.get("lo", lo)), float(own.get("hi", hi))
 
     def update(self, **kw) -> None:
         d = self.read()

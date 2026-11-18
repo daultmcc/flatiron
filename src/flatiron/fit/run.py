@@ -216,17 +216,26 @@ class ProfileFit:
 
 # -- per-profile fit settings (`flatiron config`) ----------------------------
 
+def default_settings(profile: Profile) -> CorrectionSettings:
+    """The profile's defaults: the correction range follows its measured range."""
+    from flatiron.fit.pipeline import corrected_default
+
+    lo, hi = corrected_default(profile.measured)
+    return CorrectionSettings(f_lo=lo, f_hi=hi)
+
+
 def profile_settings(profile: Profile) -> CorrectionSettings:
     """The profile's settings: defaults, with its changes applied."""
     known = {f.name for f in fields(CorrectionSettings)}
     changed = dict(profile.read().get("settings") or {})
-    return CorrectionSettings(**{k: v for k, v in changed.items() if k in known})
+    return replace(default_settings(profile), **{k: v for k, v in changed.items() if k in known})
 
 
 def set_profile_settings(profile: Profile, settings: CorrectionSettings) -> None:
     """Stores only what differs from the defaults, so improved defaults reach
-    existing profiles."""
-    default = asdict(CorrectionSettings())
+    existing profiles (and the correction range keeps following the measured
+    range unless it's been set to something else)."""
+    default = asdict(default_settings(profile))
     changed = {k: v for k, v in asdict(settings).items() if v != default[k]}
     profile.update(settings=changed)
 

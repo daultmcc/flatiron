@@ -117,18 +117,70 @@ def test_runner_uses_the_profile_range_and_reports_what_it_played(tmp_path):
         RunSettings(match_boost_db=30)
 
 
-def test_config_measured_range(tmp_path, monkeypatch, capsys):
+
+
+def cli_env(tmp_path, monkeypatch):
     from flatiron.cli import main
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr("sys.platform", "linux")
-    Profile.open("HD 600")
-    assert main(["config", "HD 600", "--max-measured", "12k"]) == 0
-    assert "max-measured: 15k -> 12k" in capsys.readouterr().out
-    assert main(["config", "HD 600"]) == 0
+    monkeypatch.delenv("FLATIRON_LISTENER", raising=False)
+    return main
+
+
+def test_listener_default_and_profile_override(tmp_path, monkeypatch, capsys):
+    from flatiron.fit.run import profile_settings
+    from flatiron.session.store import current_listener
+
+    main = cli_env(tmp_path, monkeypatch)
+    prof = Profile.open("HD 600")
+    # The only listener and the only profile, no name: the setting names say which.
+    assert main(["config", "--default-max-measured", "12k"]) == 0
     out = capsys.readouterr().out
-    assert "* max-measured         12k   (default 15k)" in out and "  min-measured         0.85k" in out
-    assert main(["config", "HD 600", "--min-measured", "11k"]) == 1  # under an octave
-    assert main(["config", "HD 600", "--min-measured", "20k"]) == 1
-    assert main(["config", "HD 600", "--reset", "max-measured"]) == 0
-    assert "max-measured: 12k -> 15k" in capsys.readouterr().out
+    assert "default-max-measured: 15k -> 12k" in out
+    # The profile follows, and its correction range with it (same margin inside).
+    assert "HD 600: max-measured 15k -> 12k, max-corrected 13k -> 10.4k" in out
+    assert prof.measured == (850.0, 12000.0)
+    assert profile_settings(prof).f_hi == pytest.approx(10400)
+    assert "settings" not in prof.read() or "f_hi" not in prof.read()["settings"]  # still a default
+    # A profile's own end overrides the listener's.
+    assert main(["config", "--max-measured", "14k"]) == 0
+    out = capsys.readouterr().out
+    assert "max-measured: 12k -> 14k" in out and "max-corrected: 10.4k -> 12.1k" in out
+    assert main(["config", "--default-max-measured", "10k"]) == 0
+    assert prof.measured == (850.0, 14000.0)  # kept its own
+    # An explicit correction range stays put.
+    assert main(["config", "--max-corrected", "11k"]) == 0
+    capsys.readouterr()
+    assert main(["config", "--reset", "max-measured"]) == 0
+    out = capsys.readouterr().out
+    assert "max-measured: 14k -> 10k" in out and "max-corrected" not in out
+    assert profile_settings(prof).f_hi == 11000
+    # Showing: the profile, with where its range comes from.
+    assert main(["config"]) == 0
+    out = capsys.readouterr().out
+    assert "    max-measured         10k   (the listener's)" in out
+    assert main(["config", "default"]) == 0  # the listener by name
+    assert "* default-max-measured 10k   (default 15k)" in capsys.readouterr().out
+    assert main(["config", "--reset", "default-max-measured"]) == 0
+    assert current_listener().measured_default == (850.0, 15000.0)
+
+
+def test_config_scope_errors(tmp_path, monkeypatch, capsys):
+    main = cli_env(tmp_path, monkeypatch)
+    Profile.open("HD 600")
+    assert main(["config", "HD 600", "--default-max-measured", "12k"]) == 1
+    assert "is a profile" in capsys.readouterr().out
+    assert main(["config", "--default-max-measured", "12k", "-w", "0.5"]) == 1
+    assert main(["config", "--reset", "width,default-max-measured"]) == 1
+    assert main(["config", "--max-measured", "11k", "--min-measured", "10k"]) == 1  # under an octave
+    assert main(["config", "--default-max-measured", "20k"]) == 1
+    # A listener default that a profile's own end would make invalid is refused.
+    assert main(["config", "--min-measured", "7k"]) == 0
+    assert main(["config", "--default-max-measured", "12k"]) == 1
+    assert "no valid measured range" in capsys.readouterr().out
+    # Several profiles and no name: the listener's settings are shown.
+    Profile.open("Sundara")
+    capsys.readouterr()
+    assert main(["config"]) == 0
+    assert "Listener settings for 'default'" in capsys.readouterr().out
