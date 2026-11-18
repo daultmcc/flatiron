@@ -21,7 +21,8 @@ from flatiron.fit.features import weighted_median
 from flatiron.fit.reference import CONSENSUS_PREFIX, reference
 from flatiron.fit.veto import (LOBE_HI_DB, LOBE_LO_DB, MIN_LOBE_DB, OWN_LABEL, OWN_WINS, Candidate, correction,
                                correction_rule, judge, judge_soft, smoothstep, soft_correction)
-from flatiron.model.grid import interp_matrix, local_linear_smoother, log_grid, smoother_matrix
+from flatiron.model.grid import (MEASURE_HI, MEASURE_LO, interp_matrix, local_linear_smoother, log_grid,
+                                 smoother_matrix)
 from flatiron.model.probit import ProbitFit
 
 FINE_STEP_OCT = 1 / 96
@@ -32,6 +33,23 @@ BASELINES = ("robust", "joint")
 # Broad lobes that aren't corrected as a whole are searched for narrow
 # features against a local smooth over this width (FWHM, octaves).
 INNER_SMOOTH_OCT = 0.5
+
+
+# The default correction range sits this far inside the measured range, so the
+# baseline and taper have room at the edges and the range follows a changed
+# measured range unless it's set itself. An explicit one closer than
+# CORRECTED_WARN_OCT draws a warning.
+CORRECTED_MARGIN_OCT = 0.2
+CORRECTED_WARN_OCT = 0.15
+
+
+def corrected_default(measured: tuple[float, float]) -> tuple[float, float]:
+    # Rounded to 3 figures so it reads cleanly: 850 Hz to 15 kHz gives 976 Hz to 13.1 kHz.
+    k = 2.0 ** CORRECTED_MARGIN_OCT
+    return float(f"{measured[0] * k:.3g}"), float(f"{measured[1] / k:.3g}")
+
+
+DEFAULT_CORRECTED = corrected_default((MEASURE_LO, MEASURE_HI))
 
 
 @dataclass(frozen=True)
@@ -59,8 +77,8 @@ class CorrectionSettings:
     max_cut_db: float = 12.0
     max_boost_narrow_db: float = 4.0
     max_boost_broad_db: float = 6.0
-    f_lo: float = 1000.0
-    f_hi: float = 13000.0  # trials near the top of the range are hard to judge; don't go below 12 kHz
+    f_lo: float = DEFAULT_CORRECTED[0]  # follows the measured range (see default_settings in fit.run)
+    f_hi: float = DEFAULT_CORRECTED[1]  # trials near the top of the range are hard to judge; don't go below 12 kHz
     taper_oct: float = 1 / 3  # fade beyond [f_lo, f_hi], limited by the measured margin
     bands: int = 24  # per channel; LSP x32 and EasyEffects hold 32, TinCan 128 (256 in all)
     q_min: float = 0.7
@@ -204,17 +222,6 @@ class EarCorrection:
         """Filters this fit adds (all of them, unless it's incremental)."""
         keep = {id(f) for f in self.fixed}
         return [f for f in self.fit.filters if id(f) not in keep]
-
-
-# The default correction range sits this far inside the measured range (the
-# defaults' own margins: 850 Hz to 1 kHz, 13 to 15 kHz), so it follows a
-# changed measured range unless it's set itself.
-CORRECTED_INSIDE = (1000.0 / 850.0, 13000.0 / 15000.0)
-
-
-def corrected_default(measured: tuple[float, float]) -> tuple[float, float]:
-    # Rounded (to 3 figures) so the derived range reads cleanly: 850 Hz-12 kHz gives 1 to 10.4 kHz.
-    return tuple(float(f"{m * k:.3g}") for m, k in zip(measured, CORRECTED_INSIDE))
 
 
 def taper(freqs, f_lo, f_hi, width_lo_oct, width_hi_oct) -> np.ndarray:

@@ -29,7 +29,7 @@ This document describes how Flatiron works as built, the evidence behind its des
 
 Flatiron does:
 
-- Find features from about 1/12 octave wide up to a configurable maximum width $W$ (default 1 octave), between 1 kHz and 13 kHz by default.
+- Find features from about 1/12 octave wide up to a configurable maximum width $W$ (default 1 octave), between about 1 kHz and 13 kHz by default (976 Hz to 13.1 kHz: 0.2 octave inside the measured range).
 - Measure left and right independently, so a feature in one ear doesn't leak into the other. (A prior that the two ears are alike shrinks their difference where the data are weak; see "Channel balance".)
 - Use a two-alternative forced-choice task ("A or B louder?"), never knob-matching.
 - Report how confident it is in each feature, and correct only features it is sure of.
@@ -109,7 +109,7 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 | $k$, $k_\text{broad}$ | Significance thresholds in SDs for narrow and broad features | `k`, `k_broad` |
 | $w_\text{soft}$ | Soft-rejection width, in SDs | `soft_width` |
 | $C(f)$ | The correction target, in dB (negative cuts) | `target` |
-| $f_\text{lo}$, $f_\text{hi}$ | The correction range (1 to 13 kHz) | `f_lo`, `f_hi` |
+| $f_\text{lo}$, $f_\text{hi}$ | The correction range (976 Hz to 13.1 kHz by default) | `f_lo`, `f_hi` |
 
 **Several profiles**
 
@@ -152,8 +152,8 @@ Symbols are per ear unless they say otherwise. Frequencies are in Hz, widths and
 
 ## Frequency grid
 
-- Measured range 850 Hz to 15 kHz by default, a little past the default correction range (1 to 13 kHz) so the baseline and taper aren't distorted at the edges. A listener who can't comfortably hear the top of the range can narrow it: it's a listener setting (`config LISTENER --default-min-measured`, `--default-max-measured`), since it's mostly about their hearing, and each end can be overridden per profile (`config PROFILE --min-measured`, `--max-measured`). Each end is the profile's own if it has one, else the listener's, else the default; the result must be at least an octave wide, within 50 Hz to 18 kHz. New trials use only the grid points inside it.
-- The default correction range follows the measured range, staying inside it by the default margins (×1000/850 at the bottom, ×13/15 at the top: about 0.23 and 0.21 octave), rounded to 3 figures: a measured range up to 12 kHz corrects up to 10.4 kHz. A correction range set explicitly stays where it's set. A range wider than the profile's grid extends the grid at 1/24 octave; a narrower one leaves the grid as it is, so earlier trials outside the range still count in the fit. The correction never reaches past the fit's grid: the correction range is clipped to it.
+- Measured range 850 Hz to 15 kHz by default, a little past the correction range so the baseline and taper aren't distorted at the edges. A listener who can't comfortably hear the top of the range can narrow it: it's a listener setting (`config LISTENER --default-min-measured`, `--default-max-measured`), since it's mostly about their hearing, and each end can be overridden per profile (`config PROFILE --min-measured`, `--max-measured`). Each end is the profile's own if it has one, else the listener's, else the default; the result must be at least an octave wide, within 50 Hz to 18 kHz. New trials use only the grid points inside it.
+- The default correction range follows the measured range, 0.2 octave inside it at each end, rounded to 3 figures: 976 Hz to 13.1 kHz for the default range, and up to 10.4 kHz for a measured range up to 12 kHz. A correction range set explicitly stays where it's set; `config` warns, when it changes or shows the settings, while one is less than 0.15 octave inside the measured range (or outside it), since the baseline and taper need room at the edges. A range wider than the profile's grid extends the grid at 1/24 octave; a narrower one leaves the grid as it is, so earlier trials outside the range still count in the fit. The correction never reaches past the fit's grid: the correction range is clipped to it.
 - Initial grid: 1/24-octave log spacing, about 100 points per ear.
 - Refinement: log midpoints, down to 1/48 octave (see "Adaptive selection"). Each session saves its final grid per ear; the next session starts from it.
 
@@ -378,7 +378,7 @@ The listener has settings of their own, with names no profile setting shares: `-
 | Band budget | 24 per channel (at most 128) | `-b`/`--bands` |
 | Filter fit tolerance | 0.5 dB | `--fit-tolerance` |
 | Boost caps; cut cap | +4 narrow, +6 broad; −12 dB | `--max-boost-narrow`, `--max-boost-broad`; `--max-cut` |
-| Correction range $[f_\text{lo}, f_\text{hi}]$ | 1 to 13 kHz | `--min-corrected`, `--max-corrected` (Hz, or kHz with a `k`: `12.5k`) |
+| Correction range $[f_\text{lo}, f_\text{hi}]$ | 0.2 octave inside the measured range: 976 Hz to 13.1 kHz | `--min-corrected`, `--max-corrected` (Hz, or kHz with a `k`: `12.5k`) |
 | Measured range (this profile's ends) | the listener's | `--min-measured`, `--max-measured` (see "Frequency grid") |
 | Listener: default measured range | 850 Hz to 15 kHz | `config LISTENER --default-min-measured`, `--default-max-measured` |
 | Seating step | on | `--seating` / `--no-seating` |
@@ -1106,7 +1106,7 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
     - A shared baseline doesn't stop it tipping, but both ears now tip together. On `sundaratone` against ISO 226 the shared robust baseline still steps by up to 1.2 dB per 2.5% of SD, in both ears (1.9 and 0.6 dB apart).
 - **The shared baseline takes the ears' errors as independent.** The balance prior correlates the two ears' curves, but the fits don't keep that covariance, so the other ear's share of a residual's error bars is approximate.
 - **Broad corrections are only as good as the reference.** With `--broad-strength` above 0, individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
-- **The treble is noisy.** Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13 kHz by default and shouldn't go below 12 kHz.
+- **The treble is noisy.** Fit variability above about 8 kHz is high. Reseats and the seating model mitigate it; the correction range stops at 13.1 kHz by default and shouldn't go below 12 kHz unless the measured range itself stops short (a listener's hearing, say).
 - **Findings before 2026-11-14 used ISO 226 as the fixed reference**, and simulated listeners built on it. Since then the default and the simulated listeners' shape are `diffuse`. Results quoted "against ISO 226" weren't rerun.
 - **Equaliser's (macOS) handling of imported Q and filter mode is unverified.**
 - **The veto depends on detection.** Which features exist, and how wide they are, decides what matches, and a feature's own part can stay merged with a neighbour's. The pointwise mode avoids this, but its separate baselines make it sensitive to broad differences between headphones.

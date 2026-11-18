@@ -935,6 +935,28 @@ def _quiet_listener(name: str):
     return None if "/" in who else Listener.find(who)
 
 
+def _margin_warnings(prof, prefix: str = "") -> list[str]:
+    """Warnings for a correction range set explicitly too near (or past) the
+    measured range's ends: the baseline and taper need room there."""
+    from flatiron.fit.pipeline import CORRECTED_MARGIN_OCT, CORRECTED_WARN_OCT
+    from flatiron.fit.run import profile_settings
+
+    own = prof.read().get("settings") or {}
+    st = profile_settings(prof)
+    lo, hi = prof.measured
+    out = []
+    for f, name, measured, inside in (("f_lo", "min", lo, np.log2(st.f_lo / lo)),
+                                      ("f_hi", "max", hi, np.log2(hi / st.f_hi))):
+        if f not in own or inside >= CORRECTED_WARN_OCT - 1e-9:
+            continue
+        where = (f"is only {inside:.2f} octave inside" if inside > 1e-9 else
+                 "is at" if inside > -1e-9 else "is outside")
+        out.append(f"{prefix}Warning: {name}-corrected {KHZ[1](getattr(st, f))} {where} {name}-measured "
+                   f"{KHZ[1](measured)}; keep it at least {CORRECTED_WARN_OCT:g} octave inside, so the baseline and "
+                   f"taper have room (the default is {CORRECTED_MARGIN_OCT:g}; --reset {name}-corrected follows it).")
+    return out
+
+
 def _profile_summary(p) -> tuple:
     """What a listener's change can move in a profile: its measured and correction ranges."""
     from flatiron.fit.run import profile_settings
@@ -993,6 +1015,8 @@ def _config_listener(args, reset):
         moved = [f"{k} {before[p.slug][k]} -> {v}" for k, v in after.items() if v != before[p.slug][k]]
         if moved:
             print(f"  {p.read()['label']}: " + ", ".join(moved))
+        for w in _margin_warnings(p, prefix=f"  {p.read()['label']}: "):
+            print(w)
     return 0
 
 
@@ -1105,6 +1129,8 @@ def _config_profile(args, reset):
                               **({"preserve_tonality": default.preserve_tonality} if f == "broad_strength" else {}))
         set_profile_settings(prof, new)
         report_changes()
+        for w in _margin_warnings(prof):
+            print(w)
         if "sessions" in listed and (prof.read().get("sessions_used") or prof.read().get("pool")):
             prof.update(sessions_used=None, pool=None)
             print("sessions: all of this profile's (no pooling)")
@@ -1204,6 +1230,8 @@ def _config_profile(args, reset):
     if changes:
         set_profile_settings(prof, replace(profile_settings(prof), **changes))
     new = report_changes()
+    for w in _margin_warnings(prof):
+        print(w)
     if "reference" in changes and new.consensus and new.reference != old.reference:
         from flatiron.session.store import Profile
 
@@ -1261,6 +1289,8 @@ def _config_profile(args, reset):
               "(drop it with --reset checkpoint)")
     else:
         print("  checkpoint: none")
+    for w in _margin_warnings(prof):
+        print(w)
     return 0
 
 

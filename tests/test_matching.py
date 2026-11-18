@@ -139,14 +139,14 @@ def test_listener_default_and_profile_override(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "default-max-measured: 15k -> 12k" in out
     # The profile follows, and its correction range with it (same margin inside).
-    assert "HD 600: max-measured 15k -> 12k, max-corrected 13k -> 10.4k" in out
+    assert "HD 600: max-measured 15k -> 12k, max-corrected 13.1k -> 10.4k" in out
     assert prof.measured == (850.0, 12000.0)
     assert profile_settings(prof).f_hi == pytest.approx(10400)
     assert "settings" not in prof.read() or "f_hi" not in prof.read()["settings"]  # still a default
     # A profile's own end overrides the listener's.
     assert main(["config", "--max-measured", "14k"]) == 0
     out = capsys.readouterr().out
-    assert "max-measured: 12k -> 14k" in out and "max-corrected: 10.4k -> 12.1k" in out
+    assert "max-measured: 12k -> 14k" in out and "max-corrected: 10.4k -> 12.2k" in out
     assert main(["config", "--default-max-measured", "10k"]) == 0
     assert prof.measured == (850.0, 14000.0)  # kept its own
     # An explicit correction range stays put.
@@ -154,7 +154,8 @@ def test_listener_default_and_profile_override(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert main(["config", "--reset", "max-measured"]) == 0
     out = capsys.readouterr().out
-    assert "max-measured: 14k -> 10k" in out and "max-corrected" not in out
+    assert "max-measured: 14k -> 10k" in out and "max-corrected:" not in out
+    assert "Warning: max-corrected 11k is outside max-measured 10k" in out
     assert profile_settings(prof).f_hi == 11000
     # Showing: the profile, with where its range comes from.
     assert main(["config"]) == 0
@@ -184,3 +185,25 @@ def test_config_scope_errors(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert main(["config"]) == 0
     assert "Listener settings for 'default'" in capsys.readouterr().out
+
+
+def test_correction_range_near_the_measured_edge_warns(tmp_path, monkeypatch, capsys):
+    main = cli_env(tmp_path, monkeypatch)
+    Profile.open("HD 600")
+    # The default stays 0.2 octave inside, and never warns.
+    assert main(["config", "--max-measured", "12k"]) == 0
+    assert "Warning" not in capsys.readouterr().out
+    assert main(["config", "--max-corrected", "11k"]) == 0  # 0.13 octave inside 12k
+    out = capsys.readouterr().out
+    assert "Warning: max-corrected 11k is only 0.13 octave inside max-measured 12k" in out
+    assert main(["config", "--max-corrected", "10k"]) == 0  # 0.26: fine
+    assert "Warning" not in capsys.readouterr().out
+    assert main(["config", "--min-corrected", "0.9k"]) == 0
+    assert "Warning: min-corrected 0.9k is only 0.08 octave inside min-measured 0.85k" in capsys.readouterr().out
+    assert main(["config"]) == 0  # shown with the settings too
+    assert "Warning: min-corrected" in capsys.readouterr().out
+    # A narrower range can put an explicit correction range outside it.
+    assert main(["config", "--reset", "max-measured"]) == 0
+    assert main(["config", "--default-max-measured", "9k"]) == 0
+    out = capsys.readouterr().out
+    assert "HD 600: Warning: max-corrected 10k is outside max-measured 9k" in out
