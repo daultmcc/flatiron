@@ -25,3 +25,15 @@ import pytest  # noqa: E402
 def _no_browser(monkeypatch):
     """report and compare open their HTML unless -H: never in tests."""
     monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    """Tests often use tmp_path as a listener's folder (Profile.open(name,
+    root=tmp_path)), and listener_of() takes the listener's data folder to be
+    two levels up: with pytest's own layout that's the run's base folder,
+    shared by every xdist worker, so two tests whose folders got the same name
+    raced on one listener.json. One level more makes it the test's own."""
+    path = tmp_path / "data" / "listeners" / "default"
+    path.mkdir(parents=True)
+    return path

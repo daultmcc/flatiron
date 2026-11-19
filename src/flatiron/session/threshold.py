@@ -295,18 +295,38 @@ class ThresholdRunner:
         self._last = (trial, state)
         return rec
 
+    def _passes(self, ear: str) -> tuple[set[float], set[float]]:
+        """This session's start-up levels in the ear: those passed (heard; in
+        forced 2IFC, right twice in a row there, since a guess is right half
+        the time) and those failed."""
+        same = [t for t in self.live_trials() if t.ear == ear and t.kind == "startup"]
+        passed, failed = set(), set()
+        for k, t in enumerate(same):
+            if not t.positive:
+                failed.add(t.level_dbfs)
+            elif self.task != "2ifc" or (k and same[k - 1].positive and same[k - 1].level_dbfs == t.level_dbfs):
+                passed.add(t.level_dbfs)
+        return passed, failed
+
     def _startup_step(self, p: ThresholdPlan, positive: bool) -> None:
+        """Down a step after each pass, until the first miss once something has
+        passed. A miss before any pass means the start was below threshold (the
+        volume turned down since the last session, say): up a step instead, as
+        far as the listening level."""
+        step = self.cfg.startup_step_db
+        passed, failed = self._passes(p.ear)
         if not positive:
-            self.startup[p.ear] = None
-            return
-        if self.task == "2ifc":
-            # A level passes after two right answers in a row there (a guess
-            # is right half the time; with "neither" one is enough).
-            same = [t for t in self.live_trials() if t.ear == p.ear and t.kind == "startup"]
-            if len(same) < 2 or same[-2].level_dbfs != p.level_db:
+            if passed:
+                self.startup[p.ear] = None
                 return
-        nxt = p.level_db - self.cfg.startup_step_db
-        self.startup[p.ear] = nxt if nxt >= MIN_LEVEL_DB else None
+            nxt = p.level_db + step
+            self.startup[p.ear] = nxt if nxt <= self.level_dbfs else None
+            return
+        if p.level_db not in passed:  # forced 2IFC: once more at this level
+            return
+        nxt = p.level_db - step
+        # Below a level already missed: the threshold is bracketed.
+        self.startup[p.ear] = nxt if nxt >= MIN_LEVEL_DB and nxt not in failed else None
 
     def can_undo(self) -> bool:
         return self._last is not None

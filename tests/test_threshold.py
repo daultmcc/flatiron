@@ -88,6 +88,42 @@ def test_startup_descends_until_the_first_miss_then_adapts(tmp_path):
     assert start - 25 < mean[0] < start
 
 
+def test_startup_climbs_when_it_starts_below_threshold(tmp_path):
+    for task in ("2ifc-neither", "2ifc"):
+        startup_climbs(tmp_path / task, task)
+
+
+def startup_climbs(tmp_path, task):
+    """The volume turned down since the last session: the run's first bursts
+    aren't heard, so it goes up until one is, then down to bracket it."""
+    r = runner(tmp_path, task)
+    start = r.level_dbfs - 30
+    heard = lambda x: x >= start + 15  # threshold 15 dB above the start
+    levels = []
+    while r.startup["L"] is not None:
+        tr = r.prepare()
+        p = tr.plan
+        if p.ear == "R" or p.kind != "startup":
+            r.answer(tr, None if task == "2ifc-neither" else True, 500)
+            continue
+        levels.append(p.level_db)
+        right = heard(p.level_db)
+        r.answer(tr, (p.interval == 1) if right else (None if task == "2ifc-neither" else p.interval != 1), 500)
+    if task == "2ifc":  # a level passes after two right answers
+        assert levels == [start, start + 10, start + 20, start + 20]
+    else:  # down from the first level heard would be one already missed: done
+        assert levels == [start, start + 10, start + 20]
+    # Never above the listening level.
+    r2 = runner(tmp_path, "2ifc-neither", name="y")
+    for _ in range(40):
+        tr = r2.prepare()
+        if r2.startup["L"] is None and r2.startup["R"] is None:
+            break
+        assert tr.plan.kind != "startup" or tr.plan.level_db <= r2.level_dbfs
+        r2.answer(tr, None, 500)
+    assert r2.startup == {"L": None, "R": None}
+
+
 def test_neither_model_estimates_false_claims_from_wrong_intervals():
     rng = np.random.default_rng(1)
     claim, recs = 0.2, []
@@ -162,7 +198,7 @@ def test_sessions_are_kept_apart_from_trial_sessions_and_undo_restores_the_run(t
     again = r.undo_last()
     assert again.retake and r.startup[tr.plan.ear] == tr.plan.level_db and not r.can_undo()
     rec = r.answer(again, False, 500)
-    assert rec.retake and r.startup[tr.plan.ear] is None
+    assert rec.retake and r.startup[tr.plan.ear] == tr.plan.level_db + 10  # nothing heard yet: up
     r.finish()
     assert prof.sessions() == []
     (s,) = prof.threshold_sessions()
