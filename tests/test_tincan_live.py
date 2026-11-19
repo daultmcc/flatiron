@@ -159,34 +159,25 @@ def test_centring_and_trial_runners_record_the_eq(tmp_path, tc):
     assert t.eq_message().startswith("TinCan is off now")
 
 
-async def test_notice_before_the_session_then_toast_on_a_change(tmp_path, tc):
+async def test_the_introduction_says_when_tincan_is_on_and_follows_it(tmp_path, tc):
     from flatiron.audio.player import NullPlayer
-    from flatiron.ui.app import ChannelCheckScreen, FlatironApp, ThresholdIntroScreen, TinCanNoticeScreen
+    from flatiron.ui.app import ChannelCheckScreen, FlatironApp, IntroScreen, LevelScreen
 
     w = watch(tc)
     prof = Profile.open("x", root=tmp_path)
-    app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(tincan=w), seed=0),
-                      NullPlayer())
+    app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(tincan=w), seed=0), NullPlayer())
+    text = lambda: str(app.screen.query_one("#message").render())
     async with app.run_test() as pilot:
-        assert isinstance(app.screen, TinCanNoticeScreen)
+        assert isinstance(app.screen, IntroScreen) and "TinCan is on: One" in text()
+        state(tc[0], bypass=True)  # pass-through: the introduction follows within a second
+        await pilot.pause(1.2)
+        assert "TinCan" not in text()
         await pilot.press("enter")
         await pilot.pause()
-        assert isinstance(app.screen, ThresholdIntroScreen)
-        await pilot.press("escape")
-        await pilot.pause()
-    assert prof.threshold_sessions() == []
-    # Esc on the notice keeps nothing either.
-    app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(tincan=w), seed=0), NullPlayer())
-    async with app.run_test() as pilot:
-        assert isinstance(app.screen, TinCanNoticeScreen)
-        await pilot.press("escape")
-        await pilot.pause()
-    assert prof.threshold_sessions() == []
-    # Off at the start: no notice.
-    state(tc[0], bypass=True)
-    app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(tincan=w), seed=0), NullPlayer())
-    async with app.run_test() as pilot:
-        assert isinstance(app.screen, ThresholdIntroScreen)
-        await pilot.press("enter", "enter")  # introduction, level
+        assert isinstance(app.screen, LevelScreen)
+        await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, ChannelCheckScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+    assert prof.threshold_sessions() == []

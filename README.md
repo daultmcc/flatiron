@@ -36,7 +36,7 @@ For full usage instructions, use the `--help/-h` flag or see [the design doc](DE
 flatiron profiles new HD600
 
 # perform the listening trials
-flatiron run HD600
+flatiron measure HD600
 
 # view a report of the measured response
 flatiron report HD600
@@ -60,7 +60,7 @@ Running either command bare prints a list, and each has `new`, `rename`, and `de
 
 ### Measurement
 
-`flatiron run <PROFILE>` begins a measurement run for the specified profile. This consists
+`flatiron measure <PROFILE>` begins a measurement run for the specified profile. This consists
 of a number of _sessions_, which last 12 minutes by default, each of which in turn contains a
 number of _trials_. During each trial, two tones will be played at different frequencies, and
 you will be asked to indicate the louder of the two with the up and down arrow keys (or by clicking A or B). Spacebar will replay the tones.
@@ -71,7 +71,7 @@ One profile can have any number of sessions and you can quit an active session a
 Previous sessions can be listed (and deleted) using the `flatiron sessions` command.
 
 Three stimulus types are available: white noise (`noise`), a warble tone (`warble`), and a pure sine
-wave (`tone`), which can be selected with the `--stimulus` flag of `run`. The default is 12th-octave white noise
+wave (`tone`), which can be selected with the `--stimulus` flag of `measure`. The default is 12th-octave white noise
 (`noise:12`).
 
 If the `--sweep` flag is present, before the sessions a tone sweep will be played. You can mark
@@ -79,8 +79,8 @@ regions where you hear a rise or fall in the volume and this will be used to nar
 frequency regions of interest during the trials.
 
 As it learns how loud each frequency sounds to you, Flatiron adjusts the volume of each pair of
-tones so that all trials sound about equally loud, with the level you choose at the start of each
-session as the average. Quiet regions are raised by at most 12 dB (`--max-match-boost`), and
+tones so that all trials sound about equally loud, with the level you choose at the start of a run
+as the average (it's remembered for the profile, and `L` between sessions changes it). Quiet regions are raised by at most 12 dB (`--max-match-boost`), and
 `--no-match` turns this off. If the highest (or lowest) frequencies are hard for you to hear,
 narrow the range trials are drawn from for all your profiles with
 `flatiron config <LISTENER> --default-max-measured 12k` (or `--default-min-measured`), or for one
@@ -89,10 +89,14 @@ profile with `flatiron config <PROFILE> --max-measured 12k`. The range that gets
 About one trial in ten plays its two tones in different ears (`--cross-ear` sets the share, 0 to
 100%). These help pin down the difference between your left and right channels. Many people hear one
 ear as louder than it is when comparing across ears, so Flatiron estimates that bias for you, from all
-your profiles together, and leaves it out. `flatiron centre <PROFILE>` runs a short session of
+your profiles together, and leaves it out. `flatiron measure <PROFILE> --centre` runs a short session of
 another kind: a sound plays in both ears at once and you say whether it's left or right of centre,
 which measures the channel balance with no such bias. `flatiron config <PROFILE> --no-cross-ear-fit`
 leaves all of this out of the fit.
+
+`flatiron measure <PROFILE> --threshold` runs a session of a third kind: very quiet sounds at the
+edge of hearing, where you say which of two intervals had the sound, or that you heard neither.
+For now these only help with the channel balance.
 
 300-400 trials is enough for a very basic measurement and 1000 should give reasonably accurate
 results. That may sound like a lot, but even 1000 trials should take less than an hour. If you find
@@ -132,7 +136,7 @@ There are a few commands that let you verify the accuracy of a current fitted re
 `flatiron tone` is a tone generator that lets you manually sweep the frequency (in either
 or both ears, with any stimulus type) to look for resonances. This can be useful in its own
 right for manual EQ, but if you provide a profile you can also toggle the corrections on and
-off to see the effect they have. `flatiron verify` runs trials similar to `run` but with the
+off to see the effect they have. `flatiron verify` runs trials similar to `measure` but with the
 correction applied, and `flatiron audition` lets you toggle the corrections while playing a
 provided audio clip.
 
@@ -140,7 +144,7 @@ provided audio clip.
 
 The same loudness judgement trial methodology can be used with speakers, to further refine a
 personalized target curve. A speaker preset can be created with `flatiron profiles new --kind
-speaker --channel <L|R>`. The behavior of `run` for speaker profiles is slightly different,
+speaker --channel <L|R>`. The behavior of `measure` for speaker profiles is slightly different,
 with shorter sessions ("blocks") that ask you to plug a specific ear with an ear plug and change the position
 of your head between each.
 

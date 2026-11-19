@@ -7,7 +7,7 @@ from scipy.special import ndtr
 from flatiron.audio.player import NullPlayer
 from flatiron.session.centring import CentringRunner, CentringSettings
 from flatiron.session.store import Profile
-from flatiron.ui.app import CentringIntroScreen, CentringScreen, ChannelCheckScreen, FlatironApp, SessionEndScreen
+from flatiron.ui.app import CentringScreen, ChannelCheckScreen, FlatironApp, IntroScreen, LevelScreen, SessionEndScreen
 
 FLAT = {"L": None, "R": None}
 
@@ -30,7 +30,8 @@ def answer_like(r, n, balance, sigma=1.5, seed=0):
 
 
 def test_one_burst_in_both_ears_split_by_the_level_difference(tmp_path):
-    r = runner(tmp_path, level_dbfs=-40)
+    r = runner(tmp_path)
+    r.set_level(-40)  # as the level screen does
     for _ in range(5):
         tr = r.prepare()
         left, right = tr.buffer[:, 0], tr.buffer[:, 1]
@@ -102,7 +103,11 @@ async def test_centring_session_ui(tmp_path, debug):
 
     app = FlatironApp(make, NullPlayer())
     async with app.run_test() as pilot:
-        assert isinstance(app.screen, CentringIntroScreen)
+        assert isinstance(app.screen, IntroScreen)
+        assert "Centring session" in str(app.screen.query_one("#title").render())
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, LevelScreen)
         await pilot.press("enter")
         await pilot.pause()
         for _ in range(2):

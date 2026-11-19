@@ -50,7 +50,7 @@ class RunSettings:
     match_boost_db: float = 12.0
     debug: bool = False  # the trial screen can show each burst's frequency and level
     # Share of trials that are cross-ear (DESIGN.md, "Cross-ear trials").
-    # Off unless asked for (`run` asks); never in speaker blocks or verify sessions.
+    # Off unless asked for (`measure` asks); never in speaker blocks or verify sessions.
     cross_rate: float = 0.0
 
     def __post_init__(self):

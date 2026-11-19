@@ -20,7 +20,7 @@ def _profile(args, create: bool = False):
 
     name = args.profile or ""
     if create and not name.split("/")[-1]:
-        print("--new needs a name for the new profile: flatiron run 'Headphone name' --new")
+        print("--new needs a name for the new profile: flatiron measure 'Headphone name' --new")
         return None
     try:
         listener, pname = split_name(name) if name else (current_listener(), "")
@@ -38,7 +38,7 @@ def _profile(args, create: bool = False):
         return None
     if pname:
         if prof is None:
-            hint = (f" Start it with: flatiron run {name!r} --new" if args.cmd == "run"
+            hint = (f" Start it with: flatiron measure {name!r} --new" if args.cmd == "measure"
                     else " See: flatiron profiles")
             print(f"No profile {name!r}.{hint}")
         return prof
@@ -46,7 +46,7 @@ def _profile(args, create: bool = False):
     if len(profiles) == 1:
         return profiles[0]
     if not profiles:
-        print("No profiles yet. Start one with: flatiron run 'Headphone name' --new")
+        print("No profiles yet. Start one with: flatiron measure 'Headphone name' --new")
     else:
         print(f"Several profiles; name one (flatiron {args.cmd} NAME): "
               + ", ".join(p.read()["label"] for p in profiles))
@@ -150,7 +150,7 @@ def _current(prof):
     try:
         return current_fit(prof, on_fit=on_fit)
     except NotEnoughTrials as e:
-        print(f"Can't fit {prof.read()['label']!r} yet: {e}. Run some sessions first: flatiron run")
+        print(f"Can't fit {prof.read()['label']!r} yet: {e}. Run some sessions first: flatiron measure")
     except (ValueError, FileNotFoundError) as e:
         print(e)
     return None
@@ -188,7 +188,7 @@ def _settings(args, profile):
         eq = parse_apo(text)
         note = args.eq_note or f"APO file {args.active_eq}"
     return RunSettings(stimulus=args.stimulus, session_minutes=args.minutes,
-                       active_eq=eq, eq_note=note, eq_text=text, match=args.match,
+                       active_eq=eq, eq_note=note, eq_text=text, match=args.match is not False,
                        match_boost_db=args.max_match_boost, debug=getattr(args, "debug", False))
 
 
@@ -278,49 +278,27 @@ def _device_info(args) -> dict:
     return device
 
 
-def cmd_threshold(args):
-    """Threshold sessions (DESIGN.md, "Threshold sessions"): collected only."""
+def _launch_detection(args, prof, mode: str):
+    """A threshold or centring session (DESIGN.md, "Threshold sessions",
+    "Centring sessions")."""
+    from flatiron.session.centring import CentringRunner, CentringSettings
     from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
     from flatiron.ui.app import FlatironApp
 
-    prof = _profile(args)
-    if prof is None:
-        return 1
-    if prof.kind == "speaker":
-        print(f"{prof.read()['label']!r} is a speaker profile: threshold sessions are for headphones and IEMs.")
-        return 1
     try:
-        settings = ThresholdSettings(stimulus=args.stimulus, session_minutes=args.minutes,
-                                     debug=args.debug)
+        if mode == "threshold":
+            settings = ThresholdSettings(stimulus=args.stimulus, session_minutes=args.minutes, debug=args.debug)
+            runner = ThresholdRunner
+        else:
+            settings = CentringSettings(stimulus=args.stimulus, session_minutes=args.minutes,
+                                        match=args.match is not False, debug=args.debug)
+            runner = CentringRunner
     except ValueError as e:
         print(e)
         return 1
     device = _device_info(args)
     settings.tincan = _tincan(args, device)
-    FlatironApp(lambda: ThresholdRunner(prof, settings, device=device), _player(args)).run()
-    return 0
-
-
-def cmd_centre(args):
-    """Centring sessions (DESIGN.md, "Centring sessions"): collected only."""
-    from flatiron.session.centring import CentringRunner, CentringSettings
-    from flatiron.ui.app import FlatironApp
-
-    prof = _profile(args)
-    if prof is None:
-        return 1
-    if prof.kind == "speaker":
-        print(f"{prof.read()['label']!r} is a speaker profile: centring sessions are for headphones and IEMs.")
-        return 1
-    try:
-        settings = CentringSettings(stimulus=args.stimulus, session_minutes=args.minutes, level_dbfs=args.level,
-                                    match=args.match, debug=args.debug)
-    except ValueError as e:
-        print(e)
-        return 1
-    device = _device_info(args)
-    settings.tincan = _tincan(args, device)
-    FlatironApp(lambda: CentringRunner(prof, settings, device=device), _player(args)).run()
+    FlatironApp(lambda: runner(prof, settings, device=device), _player(args)).run()
     return 0
 
 
@@ -363,14 +341,39 @@ def _launch_speaker(args, prof):
     return _launch(args, sweep=False, profile=prof, speaker=speaker, max_trials=block)
 
 
-CROSS_EAR_PCT = 10.0  # default share of cross-ear trials in `run` (DESIGN.md, "Cross-ear trials")
+CROSS_EAR_PCT = 10.0  # default share of cross-ear trials in loudness sessions (DESIGN.md, "Cross-ear trials")
+# Per kind of session: its default length (minutes) and stimulus.
+MEASURE_DEFAULTS = {"loudness": (12.0, StimulusSpec()), "threshold": (8.0, StimulusSpec()),
+                    "centre": (5.0, StimulusSpec(bandwidth_oct=1.0))}
+# Options that only some kinds of session take: (attribute, flag, the kinds).
+MEASURE_ONLY = (("cross_ear", "--cross-ear", ("loudness",)), ("active_eq", "--active-eq", ("loudness",)),
+                ("eq_note", "--eq-note", ("loudness",)), ("max_match_boost", "--max-match-boost", ("loudness",)),
+                ("sweep", "-s/--sweep", ("loudness",)), ("sweep_seconds", "--sweep-seconds", ("loudness",)),
+                ("block", "--block", ("loudness",)), ("match", "--no-match", ("loudness", "centre")))
 
 
-def cmd_run(args):
+def cmd_measure(args):
+    """Loudness sessions (or speaker blocks), or with --threshold or --centre
+    those kinds; one flow in the UI (DESIGN.md, "Session flow")."""
+    mode = "threshold" if args.threshold else "centre" if args.centre else "loudness"
+    for attr, flag, modes in MEASURE_ONLY:
+        value = getattr(args, attr)
+        given = value is False if attr == "match" else value not in (None, False)
+        if given and mode not in modes:
+            print(f"{flag} is for {' and '.join({'loudness': 'loudness', 'centre': 'centring'}[m] for m in modes)} "
+                  "sessions.")
+            return 1
+    minutes, stimulus = MEASURE_DEFAULTS[mode]
+    args.minutes = minutes if args.minutes is None else args.minutes
+    args.stimulus = stimulus if args.stimulus is None else args.stimulus
+    args.max_match_boost = 12.0 if args.max_match_boost is None else args.max_match_boost
     prof = _profile(args, create=args.new)
     if prof is None:
         return 1
     if prof.kind == "speaker":
+        if mode != "loudness":
+            print(f"{prof.read()['label']!r} is a speaker profile: {mode} sessions are for headphones and IEMs.")
+            return 1
         if args.cross_ear is not None:
             print("--cross-ear isn't for speaker profiles: a block has one ear open.")
             return 1
@@ -378,6 +381,8 @@ def cmd_run(args):
     if args.block is not None:
         print("--block is for speaker profiles.")
         return 1
+    if mode != "loudness":
+        return _launch_detection(args, prof, mode)
     cross = CROSS_EAR_PCT if args.cross_ear is None else args.cross_ear
     if not 0 <= cross <= 100:
         print("--cross-ear must be 0 to 100 (%)")
@@ -567,7 +572,7 @@ def cmd_profiles(args):
         prof.update(kind=args.kind, **({"channel": args.channel} if args.channel else {}))
         print(f"Created {args.name!r} ({args.kind}" + (f", channel {args.channel}" if args.channel else "") + ").")
         if args.kind == "speaker":
-            print(f"Measure it with: flatiron run {args.name!r} (blocks of one ear and one position each)")
+            print(f"Measure it with: flatiron measure {args.name!r} (blocks of one ear and one position each)")
         return 0
     if action in ("set", "move", "rename", "delete") and prof is None:
         print(f"No profile {args.name!r}. See: flatiron profiles")
@@ -663,7 +668,7 @@ def cmd_profiles(args):
         return
     profiles = Profile.all(current_listener().root)
     if not profiles:
-        print("No profiles yet. Start one with: flatiron run 'Headphone name' --new")
+        print("No profiles yet. Start one with: flatiron measure 'Headphone name' --new")
         return
     for p in profiles:
         _profile_listing(p)
@@ -682,7 +687,7 @@ def cmd_listeners(args):
             print(e)
             return 1
         print(f"Created listener {x.slug!r}. Name its profiles as {x.slug}/PROFILE, e.g. "
-              f"flatiron run '{x.slug}/Headphone name' --new")
+              f"flatiron measure '{x.slug}/Headphone name' --new")
         return 0
     if action == "rename":
         x = Listener.find(args.name)
@@ -1879,48 +1884,42 @@ def main(argv=None):
                        help="loudness matching: the most a quiet region is raised above the set level "
                             "(0 to 24 dB, default 12)")
 
-    s = sub.add_parser("run", help="run forced-choice sessions")
-    session_args(s)
+    s = sub.add_parser("measure", help="measuring sessions: loudness (the default), or --threshold or --centre")
+    profile_arg(s)
+    device_arg(s)
+    kind = s.add_mutually_exclusive_group()
+    kind.add_argument("--threshold", action="store_true",
+                      help="threshold sessions: very quiet bursts, which of two intervals had one (or neither)")
+    kind.add_argument("--centre", action="store_true",
+                      help="centring sessions: is a burst in both ears left or right of centre?")
     s.add_argument("--new", action="store_true", help="start a new profile with this name")
+    s.add_argument("-m", "--minutes", type=float,
+                   help="session length, at most 15 (default 12; threshold 8, centring 5)")
+    s.add_argument("--stimulus", type=_stimulus, metavar="noise[:N]|warble[:N]|tone",
+                   help="noise:N, a 1/N-octave noise band; warble:N, a tone swinging over 1/N octave; tone, a "
+                        "pure tone (default noise:12; centring noise:1, since narrower bands are hard to place)")
+    s.add_argument("--no-match", dest="match", action="store_false", default=None,
+                   help="loudness and centring: play every burst at the set level instead of matching their "
+                        "loudness to the fit so far (matching keeps quiet regions audible without the loud "
+                        "ones getting uncomfortable)")
+    s.add_argument("--debug", action="store_true",
+                   help="D during trials shows each burst's frequency and level (and the running estimate); "
+                        "answers given while it shows are marked in the session file")
+    s.add_argument("--cross-ear", type=float, metavar="PCT",
+                   help="loudness: share of trials comparing the two ears (0 to 100, default 10; 0: none)")
+    s.add_argument("--active-eq", metavar="APO_TXT",
+                   help="loudness: system EQ in effect while measuring (Equalizer APO / AutoEQ text; TinCan is "
+                        "read by itself)")
+    s.add_argument("--eq-note", help="loudness: free-text note on the EQ context")
+    s.add_argument("--max-match-boost", type=float, metavar="DB",
+                   help="loudness: the most loudness matching raises a quiet region above the set level "
+                        "(0 to 24 dB, default 12)")
     s.add_argument("-s", "--sweep", action="store_true",
-                   help="start with the coarse sweep, through the current correction if there is one")
-    s.add_argument("--sweep-seconds", type=float, help="sweep length each way (default 30)")
+                   help="loudness: start with the coarse sweep, through the current correction if there is one")
+    s.add_argument("--sweep-seconds", type=float, help="loudness: sweep length each way (default 30)")
     s.add_argument("--block", type=int, metavar="N",
                    help="speaker profiles: trials per block, one position each (16 to 60, default 32)")
-    s.add_argument("--debug", action="store_true",
-                   help="D during trials shows each burst's frequency and level (answers given while it "
-                        "shows are marked in the session file)")
-    s.add_argument("--cross-ear", type=float, metavar="PCT",
-                   help="share of trials comparing the two ears (0 to 100, default 10; 0: none). "
-                        "Collected only: no fit uses them yet")
-    s.set_defaults(func=cmd_run)
-
-    s = sub.add_parser("threshold", help="threshold-of-hearing session (collected only: no fit uses it yet)")
-    profile_arg(s)
-    device_arg(s)
-    s.add_argument("-m", "--minutes", type=float, default=8.0, help="session length, at most 15 (default 8)")
-    s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(), metavar="noise[:N]|warble[:N]|tone",
-                   help="as for run (default noise:12)")
-    s.add_argument("--debug", action="store_true",
-                   help="D during trials shows each burst's frequency, level and the threshold estimate "
-                        "(answers given while it shows are marked in the session file)")
-    s.set_defaults(func=cmd_threshold)
-
-    s = sub.add_parser("centre", help="centring session: is a burst in both ears left or right of centre? "
-                                      "(collected only: no fit uses it yet)")
-    profile_arg(s)
-    device_arg(s)
-    s.add_argument("-m", "--minutes", type=float, default=5.0, help="session length, at most 15 (default 5)")
-    s.add_argument("--stimulus", type=_stimulus, default=StimulusSpec(bandwidth_oct=1.0),
-                   metavar="noise[:N]|warble[:N]|tone",
-                   help="as for run, but default noise:1 (one-octave bands: narrower ones are hard to place)")
-    s.add_argument("--level", type=float, metavar="DBFS", help="listening level (default: the profile's last)")
-    s.add_argument("--no-match", dest="match", action="store_false",
-                   help="no loudness matching with the ears' fitted curves")
-    s.add_argument("--debug", action="store_true",
-                   help="D during trials shows each burst's frequency, levels and the running estimate "
-                        "(answers given while it shows are marked in the session file)")
-    s.set_defaults(func=cmd_centre)
+    s.set_defaults(func=cmd_measure)
 
     s = sub.add_parser("verify", help="short session with the current correction applied to every burst")
     session_args(s)

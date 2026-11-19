@@ -24,10 +24,20 @@ def make_app(tmp_path, sweep=False, minutes=12.0, sweep_eq=None):
     return app, runners, prof
 
 
+async def pass_intro(app, pilot):
+    """Start from the introduction, if it's showing."""
+    from flatiron.ui.app import IntroScreen
+
+    if isinstance(app.screen, IntroScreen):
+        await pilot.press("enter")
+        await pilot.pause()
+
+
 async def pass_channel_check(app, pilot):
-    """Accept the session-start level screen, then answer the channel check."""
+    """Accept the introduction and the level screen, then answer the channel check."""
     from flatiron.ui.app import LevelScreen
 
+    await pass_intro(app, pilot)
     if isinstance(app.screen, LevelScreen):
         await pilot.press("enter")
         await pilot.pause()
@@ -49,7 +59,7 @@ async def wait_for(pilot, cond, timeout=10.0):
 async def test_channel_check_rejects_wrong_side(tmp_path):
     app, runners, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
-        await pilot.press("enter")  # level screen
+        await pilot.press("enter", "enter")  # introduction, level screen
         await pilot.pause()
         scr = app.screen
         wrong = "right" if scr.order[0] == "L" else "left"
@@ -139,12 +149,7 @@ async def test_time_limit_ends_session_and_next_session_reseats(tmp_path):
         await pilot.pause(1.3)
         await pilot.press("up")
         await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
-        await pilot.press("n")
-        await pilot.pause()
-        from flatiron.ui.app import LevelScreen
-
-        assert isinstance(app.screen, LevelScreen)
-        await pilot.press("enter")
+        await pilot.press("enter")  # next session: the level was set once, so straight to the channel check
         await pilot.pause()
         assert isinstance(app.screen, ChannelCheckScreen)
         assert len(runners) == 2 and runners[1].prior_trials["L"] + runners[1].prior_trials["R"] == 1
@@ -248,7 +253,7 @@ async def test_discard_session(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, SessionEndScreen)
         assert "discarded" in str(app.screen.query_one("#title").render()).lower()
-        await pilot.press("n")
+        await pilot.press("enter")
         await pilot.pause()
         assert runners[1].prior_trials == {"L": 0, "R": 0}
     assert prof.sessions() == []
@@ -260,6 +265,7 @@ async def test_session_starts_with_level_from_last_session(tmp_path):
 
     app, runners, prof = make_app(tmp_path)
     async with app.run_test() as pilot:
+        await pass_intro(app, pilot)
         scr = app.screen
         assert isinstance(scr, LevelScreen) and scr.level == DEFAULT_LEVEL_DB
         for _ in range(3):
@@ -282,9 +288,12 @@ async def test_session_starts_with_level_from_last_session(tmp_path):
         await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
         await pilot.press("q")
         await pilot.pause()
-        await pilot.press("n")  # next session: starts at the level just used
+        await pilot.press("enter")  # next session: at the level just used, with no level screen
         await pilot.pause()
-        assert isinstance(app.screen, LevelScreen) and app.screen.level == MAX_LEVEL_DB - 3
+        assert isinstance(app.screen, ChannelCheckScreen) and runners[1].level_dbfs == MAX_LEVEL_DB - 3
+        await pilot.press("escape")
+        await pilot.pause()
+    assert prof.last_level() == MAX_LEVEL_DB - 3  # kept with the profile, for any kind of session
     assert prof.sessions()[0].level_dbfs == MAX_LEVEL_DB - 3
     assert prof.sessions()[0].trials[0].level_dbfs == MAX_LEVEL_DB - 3
     # Each change restarts the loop at the new level; the loudest loop was at the cap.
@@ -295,6 +304,7 @@ async def test_session_starts_with_level_from_last_session(tmp_path):
 async def test_escape_on_session_level_quits_without_a_session(tmp_path):
     app, runners, prof = make_app(tmp_path)
     async with app.run_test() as pilot:
+        await pass_intro(app, pilot)
         await pilot.press("escape")
         await pilot.pause()
         assert not app.is_running
@@ -307,6 +317,7 @@ async def test_level_sequence_is_like_the_trials(tmp_path):
 
     app, _, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
+        await pass_intro(app, pilot)
         buf = app.player.played[-1]
         n = int(0.4 * 48000)
         step = n + int(LevelScreen.GAP_S * 48000)
@@ -426,6 +437,7 @@ async def test_speaker_blocks_set_the_level_once_and_follow_the_plan(tmp_path):
     async with app.run_test() as pilot:
         for block in range(2):
             if block == 0:
+                await pass_intro(app, pilot)
                 assert isinstance(app.screen, LevelScreen)
                 await pilot.press("enter")
                 await pilot.pause()
@@ -468,6 +480,7 @@ async def test_switching_the_open_ear_gets_its_own_earplug_screen(tmp_path):
 
     app = FlatironApp(make, NullPlayer())
     async with app.run_test() as pilot:
+        await pass_intro(app, pilot)
         for screen in (LevelScreen, EarplugScreen, BlockScreen):
             assert isinstance(app.screen, screen)
             await pilot.press("enter")
@@ -513,3 +526,33 @@ async def test_debug_readout_only_with_the_flag(tmp_path):
             await pilot.press("up")
             await wait_for(pilot, lambda: len(runners[0].session.trials) == 1)
         assert runners[0].session.trials[0].peeked == debug
+
+
+async def test_intro_and_the_screen_between_sessions_take_enter_and_esc_or_q(tmp_path):
+    from flatiron.ui.app import IntroScreen, LevelScreen
+
+    app, runners, prof = make_app(tmp_path, minutes=0.02)
+    async with app.run_test() as pilot:
+        assert isinstance(app.screen, IntroScreen)
+        assert "Loudness session" in str(app.screen.query_one("#title").render())
+        await pass_channel_check(app, pilot)
+        scr = app.screen
+        await wait_for(pilot, lambda: scr.accepting)
+        await pilot.pause(1.3)
+        await pilot.press("up")
+        await wait_for(pilot, lambda: isinstance(app.screen, SessionEndScreen))
+        end = app.screen
+        await pilot.press("l")  # the level for the next session
+        await pilot.pause()
+        assert isinstance(app.screen, LevelScreen)
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app.screen is end and prof.last_level() == runners[0].level_dbfs - 1
+        await pilot.press("q")
+        await pilot.pause()
+        assert not app.is_running
+    app, _, _ = make_app(tmp_path / "b")
+    async with app.run_test() as pilot:
+        await pilot.press("q")  # on the introduction
+        await pilot.pause()
+        assert not app.is_running

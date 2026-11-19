@@ -502,6 +502,11 @@ class Profile:
         d.pop("fit", None)  # saved by the old `fit` command; fits are computed on demand now
         write_json(self.path, d)
 
+    def set_level(self, level_dbfs: float) -> None:
+        """Remember the listening level, for every kind of session (and the tone generator)."""
+        if self.read().get("level_dbfs") != float(level_dbfs):
+            self.update(level_dbfs=float(level_dbfs))
+
     def marks(self) -> list[dict]:
         """Frequencies marked in the tone generator: {ear, freq, kind,
         stimulus, at, session}. `session` is the trial session whose grid
@@ -597,7 +602,12 @@ class Profile:
                 for p in sorted(self.centring_dir.glob("*.json"))]
 
     def last_level(self, sessions: list[Session] | None = None) -> float | None:
-        """Level of the most recent trial on record (or the latest session's)."""
+        """The profile's listening level: the last one set on the level screen
+        (or mid-session) in any kind of session; before any was, the level of
+        the most recent trial on record (or the latest session's)."""
+        level = self.read().get("level_dbfs")
+        if level is not None:
+            return float(level)
         sessions = self.sessions() if sessions is None else sessions
         for s in reversed(sessions):
             for t in reversed(s.trials):

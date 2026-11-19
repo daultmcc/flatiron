@@ -246,7 +246,7 @@ class EarplugScreen(MessageScreen):
 
     BINDINGS = [
         Binding("enter", "ready", "Earplug in"),
-        Binding("escape", "app.quit", "Quit"),
+        Binding("escape,q", "app.quit", "Quit"),
     ]
 
     def __init__(self, ear: str, first: bool, last: str = ""):
@@ -271,7 +271,7 @@ class EarplugScreen(MessageScreen):
                 f"Take the earplug out of your {EAR_NAMES[self.ear].lower()} ear and put it (or a fresh one) "
                 f"fully into your {other} ear.")
         last = f"{self.last}\n\n" if self.last else ""
-        self.say(head, last + what, "Enter when the earplug is in   Esc: quit")
+        self.say(head, last + what, "Enter when the earplug is in   Esc/Q: quit")
 
     def action_ready(self):
         self.dismiss(True)
@@ -284,7 +284,7 @@ class BlockScreen(MessageScreen):
 
     BINDINGS = [
         Binding("enter", "ready", "In position"),
-        Binding("escape", "app.quit", "Quit"),
+        Binding("escape,q", "app.quit", "Quit"),
     ]
 
     def __init__(self, runner: TrialRunner, done: int, total: int, last: str = ""):
@@ -322,7 +322,7 @@ class BlockScreen(MessageScreen):
         last = f"{self.last}\n\n" if self.last else ""
         self.say(f"Block {self.done + 1} of {self.total} · {EAR_NAMES[pos.ear].lower()} ear · {pos.label}",
                  last + pos.instructions() + f"\n\n{info['block']} trials.",
-                 "Enter when you're in position   Esc: quit")
+                 "Enter when you're in position   Esc/Q: quit")
 
     def action_ready(self):
         self.dismiss(True)
@@ -654,6 +654,7 @@ class TrialScreen(Screen):
         def done(level):
             if level is not None and level != self.runner.level_dbfs:
                 self.runner.set_level(level)
+                self.runner.profile.set_level(level)
                 if self.trial is not None and not self.busy:
                     self.trial = self.runner.render(self.trial.plan, retake=self.trial.retake)
                     self.show_readout()
@@ -723,53 +724,67 @@ class TrialScreen(Screen):
             "will be used. Earlier sessions are kept."), done)
 
 
-class TinCanNoticeScreen(MessageScreen):
-    """Before a session, when TinCan is applying an EQ (DESIGN.md, "Measurement context").
-    Rechecked every second, so bypassing it in TinCan shows here straight away."""
+def session_kind(runner) -> str:
+    """loudness, verify, speaker, threshold or centring."""
+    if getattr(runner, "threshold", False):
+        return "threshold"
+    if getattr(runner, "centring", False):
+        return "centring"
+    if runner.speaker:
+        return "speaker"
+    return "verify" if runner.settings.preview is not None else "loudness"
 
-    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
 
-    def __init__(self, watch):
+class IntroScreen(MessageScreen):
+    """Before the first session of a run (DESIGN.md, "Session flow"): what the
+    session is and how to answer, and whether TinCan is applying an EQ
+    (DESIGN.md, "Measurement context"), rechecked every second so putting it
+    in pass-through shows here straight away."""
+
+    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape,q", "cancel", "Quit")]
+    TEXT = {
+        "loudness": ("Loudness session",
+                     "Pairs of short bursts. Say which was louder: ↑ the first, ↓ the second. Some pairs have one "
+                     "burst in each ear. If they seem equal, pick the likelier one."),
+        "verify": ("Verify session",
+                   "As a loudness session, with the current correction applied to every burst: ↑ the first "
+                   "was louder, ↓ the second."),
+        "speaker": ("Speaker blocks",
+                    "Pairs of bursts from the speaker, one ear open (the other plugged). Say which was louder: "
+                    "↑ the first, ↓ the second. Each block is one listening position."),
+        "threshold": ("Threshold session",
+                      "Very quiet bursts, one ear at a time, at the edge of hearing. A quiet room, please.\n\n"
+                      "The sound is in one of two marked intervals: ↑ the first, ↓ the second, N if you heard "
+                      "nothing in either. If you heard something but aren't sure where, pick the likelier one."),
+        "centring": ("Centring session",
+                     "Each burst plays in both ears at once. Say where it sounds: ← left of centre, → right of "
+                     "centre. If it seems centred, pick the side it leans to, or guess."),
+    }
+
+    def __init__(self, runner):
         super().__init__()
-        self.watch = watch
+        self.runner = runner
+        tc = getattr(runner, "tincan", None)
+        self.watch = tc.watch if tc is not None else None
 
     def on_mount(self):
-        self.refresh_state()
-        self.set_interval(1.0, self.refresh_state)
+        self.show()
+        if self.watch is not None:
+            self.set_interval(1.0, self.show)
 
-    def refresh_state(self):
-        from flatiron.tincan_live import notice
+    def show(self):
+        title, how = self.TEXT[session_kind(self.runner)]
+        minutes = self.runner.settings.session_minutes
+        text = (how + f"\n\nSessions of up to {minutes:g} minutes. Keep the system volume where it normally "
+                "is, and don't change it during a session: Flatiron sets its own level next.")
+        if self.watch is not None:
+            from flatiron.tincan_live import notice
 
-        eq = self.watch.current()
-        if eq is None:
-            self.say("TinCan", "TinCan is off now (pass-through, or nothing active).", "Enter: start   Esc: quit")
-            return
-        self.say("TinCan is on",
-                 notice(eq) + "\n\nFlatiron records its gain at every burst, so the session still counts. "
-                 "To run without it, put TinCan in pass-through now; it's checked again at every burst.",
-                 "Enter: start   Esc: quit")
-
-    def action_start(self):
-        self.dismiss(True)
-
-    def action_cancel(self):
-        self.dismiss(None)
-
-
-class ThresholdIntroScreen(MessageScreen):
-    """Before a threshold session: what to do, and to keep the volume where it is."""
-
-    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
-
-    def on_mount(self):
-        how = ("The sound is in one of two marked intervals: ↑ the first, ↓ the second, "
-               "N if you heard nothing in either. If you heard something but aren't "
-               "sure where, pick the likelier one.")
-        self.say("Threshold session",
-                 "Very quiet bursts, one ear at a time, at the edge of hearing.\n\n"
-                 "A quiet room, the system volume at its usual setting, and don't change it during "
-                 "the session.\n\n" + how,
-                 "Enter: start   Esc: quit")
+            eq = self.watch.current()
+            if eq is not None:
+                text += ("\n\n" + notice(eq) + " Flatiron records its gain at every burst, so the session "
+                         "still counts. To run without it, put TinCan in pass-through now.")
+        self.say(title, text, "Enter: start   Esc/Q: quit")
 
     def action_start(self):
         self.dismiss(True)
@@ -824,24 +839,6 @@ class ThresholdScreen(TrialScreen, inherit_bindings=False):
             + f"{start} · {t // 60:02d}:{t % 60:02d} of {lim // 60:02d}:{lim % 60:02d}")
 
 
-class CentringIntroScreen(MessageScreen):
-    """Before a centring session (DESIGN.md, "Centring sessions")."""
-
-    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
-
-    def on_mount(self):
-        self.say("Centring session",
-                 "Each burst plays in both ears at once. Say where it sounds: ← left of centre, "
-                 "→ right of centre. If it seems centred, pick the side it leans to, or guess.",
-                 "Enter: start   Esc: quit")
-
-    def action_start(self):
-        self.dismiss(True)
-
-    def action_cancel(self):
-        self.dismiss(None)
-
-
 class CentringScreen(TrialScreen, inherit_bindings=False):
     """Centring trials: one burst in both ears; ← left of centre, → right.
     Left and right keys are the point here, unlike loudness trials."""
@@ -886,10 +883,16 @@ class CentringScreen(TrialScreen, inherit_bindings=False):
                  f"(balance estimate {tr.estimate_db:+.1f} dB, left louder)")
 
 
+NEXT = "Enter: next session   L: level   Esc/Q: quit"
+
+
 class SessionEndScreen(MessageScreen):
+    """Between sessions (DESIGN.md, "Session flow")."""
+
     BINDINGS = [
-        Binding("n", "next", "Next session"),
-        Binding("q", "app.quit", "Quit"),
+        Binding("enter", "next", "Next session"),
+        Binding("l", "level", "Level"),
+        Binding("escape,q", "app.quit", "Quit"),
     ]
 
     def __init__(self, runner: TrialRunner, reason: str):
@@ -923,8 +926,7 @@ class SessionEndScreen(MessageScreen):
                  summary + "Totals: " + " / ".join(
                      f"{e} {prior[e] + (0 if self.reason == 'discarded' else p['session_trials_ear'][e])}"
                      for e in EARS) + "\n\n"
-                 "Take the headphones off and rest a few minutes before the next session.",
-                 "N: next session   Q: quit")
+                 "Take the headphones off and rest a few minutes before the next session.", NEXT)
 
     def centring_end(self, p):
         if self.reason == "discarded":
@@ -932,7 +934,7 @@ class SessionEndScreen(MessageScreen):
         else:
             head = "Time for a break." if self.reason == "time" else "Session saved."
             summary = f"{p['session_trials']} trials, {p['left']} heard left of centre.\n\n"
-        self.say(head, summary + "Rest your ears a few minutes before the next session.", "N: next session   Q: quit")
+        self.say(head, summary + "Rest your ears a few minutes before the next session.", NEXT)
 
     def threshold_end(self, p):
         if self.reason == "discarded":
@@ -944,7 +946,7 @@ class SessionEndScreen(MessageScreen):
                 parts.append(f"{p['probe_hits']} of {p['probes']} clear bursts picked")
             parts.append(f"neither in {p['neither']}, the wrong interval in {p['wrong']}")
             summary = ", ".join(parts) + ".\n\n"
-        self.say(head, summary + "Rest your ears a few minutes before the next session.", "N: next session   Q: quit")
+        self.say(head, summary + "Rest your ears a few minutes before the next session.", NEXT)
 
     def speaker_end(self, p):
         from flatiron.session.speaker import next_block, progress
@@ -955,11 +957,21 @@ class SessionEndScreen(MessageScreen):
         summary = "" if self.reason == "discarded" else f"{p['session_trials']} trials this block. "
         summary += f"{done} of {total} blocks done."
         if nxt is None:
-            self.say(head, summary + " That's the whole plan.", "Q: quit")
+            self.say(head, summary + " That's the whole plan.", "Esc/Q: quit")
             return
         ear = "same ear" if nxt.ear == self.runner.speaker["open_ear"] else \
             f"{EAR_NAMES[nxt.ear].lower()} ear (move the earplug)"
-        self.say(head, summary + f"\n\nNext: {ear}, {nxt.label}.", "N: next block   Q: quit")
+        self.say(head, summary + f"\n\nNext: {ear}, {nxt.label}.", "Enter: next block   L: level   Esc/Q: quit")
+
+    def action_level(self):
+        """The level for the next session (and the profile's from now on)."""
+        r = self.runner
+
+        def done(level):
+            if level is not None:
+                r.profile.set_level(level)
+
+        self.app.push_screen(LevelScreen(r.profile.last_level(), measured=r.measured, gain=level_gain(r)), done)
 
     def action_next(self):
         if self.runner.speaker:
@@ -970,9 +982,16 @@ class SessionEndScreen(MessageScreen):
         self.dismiss("next")
 
 
+def level_gain(runner):
+    """The level screen's matching for a runner's bursts: (ear, f) -> dB."""
+    return getattr(runner, "level_gain", runner.match_gain)
+
+
 class FlatironApp(App):
-    """Per session: level → channel check → sweep (first session, if asked) →
-    trials → end screen (reseat, then the next session)."""
+    """One flow for every kind of session (DESIGN.md, "Session flow"): an
+    introduction → the level → per session: channel check → sweep (the first,
+    if asked) → trials → the screen between sessions. Speaker blocks have their
+    earplug and position screens in place of the channel check."""
 
     CSS = CSS
     TITLE = "Flatiron"
@@ -990,7 +1009,7 @@ class FlatironApp(App):
         self.clock = clock
         self.runner: TrialRunner | None = None
         self.sessions_run = 0
-        self.tincan_seen = None  # the TinCan EQ last shown in a notice (not shown again for the next session)
+        self.tincan_seen = None  # the TinCan EQ as last shown or announced
 
     def on_mount(self):
         self.start_session()
@@ -1002,46 +1021,30 @@ class FlatironApp(App):
 
         self.sub_title = f"{qualified(self.runner.profile)} · session {self.runner.session.id}"
         tc = getattr(self.runner, "tincan", None)
-        if tc is not None and tc.at_start is not None and tc.at_start != self.tincan_seen:
-            self.tincan_seen = tc.at_start
-
+        if self.sessions_run == 0:
             def after(ok):
                 if ok is None:
                     self.runner.finish()  # nothing recorded: deleted
                     self.exit()
                     return
-                tc.at_start = tc.watch.start()  # whatever it is now; changes from here are announced
-                self.begin_session(last, last_ear)
+                if tc is not None and tc.watch is not None:
+                    self.tincan_seen = tc.at_start = tc.watch.start()  # changes from here are announced
+                self.push_screen(self.level_screen(), self.after_level)
 
-            self.push_screen(TinCanNoticeScreen(tc.watch), after)
+            self.push_screen(IntroScreen(self.runner), after)
             return
-        self.begin_session(last, last_ear)
-
-    def begin_session(self, last: str = "", last_ear: str | None = None):
-        if getattr(self.runner, "threshold", False):
-            self.push_screen(ThresholdIntroScreen(), self.after_intro)
-            return
-        if getattr(self.runner, "centring", False):
-            self.push_screen(CentringIntroScreen(), self.after_intro)
-            return
-        if self.runner.speaker and self.sessions_run:  # the level is set once a run
-            self.after_level(self.runner.level_dbfs, switch=last_ear != self.runner.speaker["open_ear"], last=last)
-            return
-        self.push_screen(self.level_screen(), self.after_level)
+        if tc is not None and tc.watch is not None and tc.at_start != self.tincan_seen:
+            self.tincan_seen = tc.at_start
+            self.notify("TinCan is off now." if tc.at_start is None else
+                        f"TinCan is on: {' + '.join(tc.at_start.names)}. Its gain at each burst is recorded.",
+                        severity="warning", timeout=10)
+        # The level is set once a run (and on the screen between sessions).
+        self.after_level(self.runner.level_dbfs, switch=last_ear != (self.runner.speaker or {}).get("open_ear"),
+                         last=last)
 
     def level_screen(self, mid_session: bool = False) -> LevelScreen:
         r = self.runner
-        return LevelScreen(r.level_dbfs, mid_session=mid_session, measured=r.measured, gain=r.match_gain)
-
-    def after_intro(self, ok):
-        if ok is None:
-            self.runner.finish()  # nothing recorded: deleted
-            self.exit()
-            return
-        if getattr(self.runner, "threshold", False):  # a consistent start for the descending run
-            self.push_screen(self.level_screen(), self.after_level)
-            return
-        self.push_screen(ChannelCheckScreen(self.runner), lambda _: self.start_trials())
+        return LevelScreen(r.level_dbfs, mid_session=mid_session, measured=r.measured, gain=level_gain(r))
 
     def after_level(self, level, switch: bool = True, last: str = ""):
         if level is None:
@@ -1049,6 +1052,7 @@ class FlatironApp(App):
             self.exit()
             return
         self.runner.set_level(level)
+        self.runner.profile.set_level(level)
         if self.runner.speaker:
             from flatiron.session.speaker import progress
 

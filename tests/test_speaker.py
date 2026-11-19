@@ -94,11 +94,11 @@ def test_speaker_commands(data, capsys, monkeypatch):
     capsys.readouterr()
     for cmd in (["export", "Phone", "-t", "apo"], ["verify", "Phone", "-n"], ["audition", "Phone", "-n"]):
         assert main(cmd) == 1 and "speaker profile" in capsys.readouterr().out
-    assert main(["run", "Phone", "--sweep", "-n"]) == 1
-    assert main(["run", "Phone", "--block", "100", "-n"]) == 1
+    assert main(["measure", "Phone", "--sweep", "-n"]) == 1
+    assert main(["measure", "Phone", "--block", "100", "-n"]) == 1
     launched = []
     monkeypatch.setattr("flatiron.cli._launch", lambda args, **kw: launched.append(kw) or 0)
-    assert main(["run", "Phone"]) == 0 and launched[0]["max_trials"] == 32  # the default block
+    assert main(["measure", "Phone"]) == 0 and launched[0]["max_trials"] == 32  # the default block
     assert main(["profiles", "set", "Phone", "--kind", "headphone"]) == 1  # it has sessions
     assert main(["profiles"]) is None and "speaker, channel R" in capsys.readouterr().out
     assert main(["sessions", "Phone"]) is None and "° ear level]" in capsys.readouterr().out

@@ -50,7 +50,6 @@ class CentringSettings:
     stimulus: StimulusSpec = field(default_factory=lambda: StimulusSpec(bandwidth_oct=1.0))
     session_minutes: float = 5.0
     max_trials: int | None = None
-    level_dbfs: float | None = None  # None: the profile's last
     match: bool = True
     debug: bool = False
     tincan: object = None  # tincan_live.TinCanWatch: TinCan's gain is read at every burst
@@ -58,8 +57,6 @@ class CentringSettings:
     def __post_init__(self):
         if not 0 < self.session_minutes <= MAX_SESSION_MIN:
             raise ValueError(f"sessions are capped at {MAX_SESSION_MIN:g} minutes")
-        if self.level_dbfs is not None and self.level_dbfs > MAX_LEVEL_DB:
-            raise ValueError(f"the level is capped at {MAX_LEVEL_DB:g} dBFS")
 
 
 @dataclass
@@ -122,7 +119,7 @@ class CentringRunner:
         self.measured = profile.measured
         self.f_lo, self.f_hi = cross_range(self.measured)
         self.curves = ear_curves(profile, self.key, self.f_lo, self.f_hi) if curves is None else curves
-        start = settings.level_dbfs if settings.level_dbfs is not None else profile.last_level()
+        start = profile.last_level()
         self.level_dbfs = float(DEFAULT_LEVEL_DB if start is None else start)
         self.earlier = profile.centring_sessions()
         self.session = profile.new_centring_session(
@@ -240,7 +237,15 @@ class CentringRunner:
     # -- setup steps and the end -------------------------------------------------
 
     def set_level(self, level_dbfs: float) -> None:
-        self.level_dbfs = float(level_dbfs)
+        """The listening level (the level screen, before any trials)."""
+        if self.live_trials():
+            return
+        self.level_dbfs = self.session.level_dbfs = float(level_dbfs)
+        self._save()
+
+    def level_gain(self, ear: str, f: float) -> float:
+        """For the level screen: the matching a burst at f gets (both ears alike)."""
+        return self.match_gain(f)
 
     def record_channel_check(self, played: str, heard: str) -> bool:
         ok = played == heard

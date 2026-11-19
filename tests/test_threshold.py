@@ -13,7 +13,7 @@ from flatiron.model.threshold import ThresholdData, fit_thresholds, prior_shape
 from flatiron.session.store import Profile
 from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
 from flatiron.sim.listener import ThresholdListener
-from flatiron.ui.app import ChannelCheckScreen, FlatironApp, LevelScreen, SessionEndScreen, ThresholdIntroScreen, \
+from flatiron.ui.app import ChannelCheckScreen, FlatironApp, IntroScreen, LevelScreen, SessionEndScreen, \
     ThresholdScreen
 
 GRID = log_grid()
@@ -215,7 +215,8 @@ async def wait_for(pilot, cond, timeout=10.0):
 async def test_threshold_session_ui(tmp_path):
     app, runners, prof = make_app(tmp_path)
     async with app.run_test() as pilot:
-        assert isinstance(app.screen, ThresholdIntroScreen)
+        assert isinstance(app.screen, IntroScreen)
+        assert "Threshold session" in str(app.screen.query_one("#title").render())
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, LevelScreen)

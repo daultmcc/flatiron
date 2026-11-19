@@ -536,10 +536,10 @@ def test_none_is_not_a_profile_name(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     with pytest.raises(ValueError, match="veto none"):
         Profile.open("None")
-    assert main(["run", "none", "--new", "--dry-run"]) == 1
+    assert main(["measure", "none", "--new", "--dry-run"]) == 1
     assert "can't be a profile name" in capsys.readouterr().out and not Profile.all()
-    assert main(["run", "!!!", "--new", "--dry-run"]) == 1  # no letters or digits: a message, not a traceback
-    assert main(["run", "Typo", "--dry-run"]) == 1  # without --new, run doesn't create a profile
+    assert main(["measure", "!!!", "--new", "--dry-run"]) == 1  # no letters or digits: a message, not a traceback
+    assert main(["measure", "Typo", "--dry-run"]) == 1  # without --new, measure doesn't create a profile
     assert "--new" in capsys.readouterr().out and not Profile.all()
 
 
