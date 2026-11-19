@@ -148,7 +148,7 @@ class ThresholdListener:
     threshold: dict
     sigma: float = 3.0
     lapse: float = 0.02
-    false_alarm: float = 0.05
+    claim: float = 0.1  # how often an unheard burst is claimed (its interval then guessed)
     seed: int = 0
 
     def __post_init__(self):
@@ -157,17 +157,11 @@ class ThresholdListener:
     def p_detect(self, ear, freq, level_db) -> float:
         return float(ndtr((level_db - self.threshold[ear](np.atleast_1d(freq))[0]) / self.sigma))
 
-    def answer(self, plan, task: str) -> bool | None:
-        """The upper key: heard (yes/no) or the first interval (2IFC); None:
-        neither (2ifc-neither, when nothing was heard and nothing claimed)."""
+    def answer(self, plan) -> bool | None:
+        """True: the first interval; False: the second; None: neither."""
         lapse = self.rng.random() < self.lapse
-        if task == "yesno":
-            if plan.kind == "blank":
-                return bool(self.rng.random() < self.false_alarm)
-            heard = self.rng.random() < self.p_detect(plan.ear, plan.freq, plan.level_db)
-            return bool(not lapse and (heard or self.rng.random() < self.false_alarm))
         heard = not lapse and self.rng.random() < self.p_detect(plan.ear, plan.freq, plan.level_db)
-        if task == "2ifc-neither" and not heard and (lapse or self.rng.random() >= self.false_alarm):
+        if not heard and (lapse or self.rng.random() >= self.claim):
             return None
         chosen = plan.interval if heard else int(self.rng.integers(1, 3))
         return chosen == 1

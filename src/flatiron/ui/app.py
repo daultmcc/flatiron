@@ -761,18 +761,10 @@ class ThresholdIntroScreen(MessageScreen):
 
     BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
 
-    def __init__(self, task: str):
-        super().__init__()
-        self.detection_task = task
-
     def on_mount(self):
-        how = {"yesno": "After each marked interval: ↑ if you heard anything at all, ↓ if not. "
-                        "Some intervals are empty.",
-               "2ifc": "The sound is in one of two marked intervals: ↑ the first, ↓ the second. "
-                       "Guess if you're not sure.",
-               "2ifc-neither": "The sound is in one of two marked intervals: ↑ the first, ↓ the second, "
-                               "N if you heard nothing in either. If you heard something but aren't "
-                               "sure where, pick the likelier one."}[self.detection_task]
+        how = ("The sound is in one of two marked intervals: ↑ the first, ↓ the second, "
+               "N if you heard nothing in either. If you heard something but aren't "
+               "sure where, pick the likelier one.")
         self.say("Threshold session",
                  "Very quiet bursts, one ear at a time, at the edge of hearing.\n\n"
                  "A quiet room, the system volume at its usual setting, and don't change it during "
@@ -787,8 +779,25 @@ class ThresholdIntroScreen(MessageScreen):
 
 
 class ThresholdScreen(TrialScreen, inherit_bindings=False):
-    """Detection trials (DESIGN.md, "Threshold sessions"): one marked interval
-    (yes/no) or two (2IFC). The left-hand key is "heard" or "the first"."""
+    """Detection trials (DESIGN.md, "Threshold sessions"): two marked
+    intervals; ↑ the first, ↓ the second, N neither."""
+
+    PANELS = ("A", "B")
+    QUESTION = "Which interval had the sound? (N: neither)"
+    BINDINGS = [
+        Binding("up,1", "answer(True)", "First"),  # as in loudness trials
+        Binding("down,2", "answer(False)", "Second"),
+        Binding("n,0", "answer(None)", "Neither"),
+        Binding("space", "replay", "Replay"),
+        Binding("p", "pause", "Pause"),
+        Binding("u,backspace", "undo", "Undo"),
+        Binding("q", "quit_session", "Quit"),
+        Binding("x", "discard", "Discard"),
+        Binding("d", "debug", "Debug"),  # only with --debug
+    ]
+
+    def panel_label(self, key: str) -> str:
+        return {"A": "1", "B": "2"}[key]
 
     def answer_kwargs(self, first: bool) -> dict:
         return {"first": first, "peeked": self.show_debug}
@@ -802,9 +811,7 @@ class ThresholdScreen(TrialScreen, inherit_bindings=False):
             w.update("")
             return
         p = tr.plan
-        level = f"{tr.played_db:+.1f} dBFS" + (" (blank: nothing played)" if p.kind == "blank" else "")
-        where = f" in interval {p.interval}" if self.runner.two_interval else ""
-        w.update(f"{p.ear} · {p.freq:,.0f} Hz at {level}{where} · {p.kind}   "
+        w.update(f"{p.ear} · {p.freq:,.0f} Hz at {tr.played_db:+.1f} dBFS in interval {p.interval} · {p.kind}   "
                  f"(estimate {tr.estimate_db:+.1f} ± {tr.estimate_sd:.1f} dBFS)")
 
     def show_status(self):
@@ -815,60 +822,6 @@ class ThresholdScreen(TrialScreen, inherit_bindings=False):
             f"Trial {p['session_trials'] + 1} this session · "
             + " / ".join(f"{e} {p['session_trials_ear'][e]}" for e in EARS)
             + f"{start} · {t // 60:02d}:{t % 60:02d} of {lim // 60:02d}:{lim % 60:02d}")
-
-
-class YesNoScreen(ThresholdScreen):
-    PANELS = ("listen", "listen")
-    QUESTION = "Did you hear anything?"
-    BINDINGS = [
-        # Up and down, not left and right, which would tempt answering with
-        # the ear the burst was in.
-        Binding("up,y,1", "answer(True)", "Heard"),
-        Binding("down,n,2", "answer(False)", "Nothing"),
-        Binding("space", "replay", "Replay"),
-        Binding("p", "pause", "Pause"),
-        Binding("u,backspace", "undo", "Undo"),
-        Binding("q", "quit_session", "Quit"),
-        Binding("x", "discard", "Discard"),
-        Binding("d", "debug", "Debug"),  # only with threshold --debug
-    ]
-
-    def panel_label(self, key: str) -> str:
-        return "LISTEN"
-
-
-class TwoIntervalScreen(ThresholdScreen):
-    PANELS = ("A", "B")
-    QUESTION = "Which interval had the sound?"
-    BINDINGS = [
-        Binding("up,1", "answer(True)", "First"),  # as in loudness trials
-        Binding("down,2", "answer(False)", "Second"),
-        Binding("space", "replay", "Replay"),
-        Binding("p", "pause", "Pause"),
-        Binding("u,backspace", "undo", "Undo"),
-        Binding("q", "quit_session", "Quit"),
-        Binding("x", "discard", "Discard"),
-        Binding("d", "debug", "Debug"),  # only with threshold --debug
-    ]
-
-    def panel_label(self, key: str) -> str:
-        return {"A": "1", "B": "2"}[key]
-
-
-class NeitherScreen(TwoIntervalScreen):
-    """2ifc-neither: as 2IFC, plus N for "heard nothing in either"."""
-    QUESTION = "Which interval had the sound? (N: neither)"
-    BINDINGS = [
-        Binding("up,1", "answer(True)", "First"),
-        Binding("down,2", "answer(False)", "Second"),
-        Binding("n,0", "answer(None)", "Neither"),
-        Binding("space", "replay", "Replay"),
-        Binding("p", "pause", "Pause"),
-        Binding("u,backspace", "undo", "Undo"),
-        Binding("q", "quit_session", "Quit"),
-        Binding("x", "discard", "Discard"),
-        Binding("d", "debug", "Debug"),  # only with threshold --debug
-    ]
 
 
 class CentringIntroScreen(MessageScreen):
@@ -987,13 +940,9 @@ class SessionEndScreen(MessageScreen):
         else:
             head = "Time for a break." if self.reason == "time" else "Session saved."
             parts = [f"{p['session_trials']} trials"]
-            if p["blanks"]:
-                parts.append(f"heard something in {p['false_alarms']} of {p['blanks']} empty intervals")
             if p["probes"]:
-                parts.append(f"{p['probe_hits']} of {p['probes']} clear bursts "
-                             + ("heard" if self.runner.task == "yesno" else "picked"))
-            if self.runner.task == "2ifc-neither":
-                parts.append(f"neither in {p['neither']}, the wrong interval in {p['wrong']}")
+                parts.append(f"{p['probe_hits']} of {p['probes']} clear bursts picked")
+            parts.append(f"neither in {p['neither']}, the wrong interval in {p['wrong']}")
             summary = ", ".join(parts) + ".\n\n"
         self.say(head, summary + "Rest your ears a few minutes before the next session.", "N: next session   Q: quit")
 
@@ -1070,7 +1019,7 @@ class FlatironApp(App):
 
     def begin_session(self, last: str = "", last_ear: str | None = None):
         if getattr(self.runner, "threshold", False):
-            self.push_screen(ThresholdIntroScreen(self.runner.task), self.after_intro)
+            self.push_screen(ThresholdIntroScreen(), self.after_intro)
             return
         if getattr(self.runner, "centring", False):
             self.push_screen(CentringIntroScreen(), self.after_intro)
@@ -1123,8 +1072,7 @@ class FlatironApp(App):
     def start_trials(self):
         screen = TrialScreen
         if getattr(self.runner, "threshold", False):
-            screen = {"yesno": YesNoScreen, "2ifc": TwoIntervalScreen,
-                      "2ifc-neither": NeitherScreen}[self.runner.task]
+            screen = ThresholdScreen
         elif getattr(self.runner, "centring", False):
             screen = CentringScreen
         self.push_screen(screen(self.runner, self.clock), self.after_trials)

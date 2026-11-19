@@ -143,19 +143,19 @@ class Session:
 
 # -- threshold sessions (DESIGN.md, "Threshold sessions") ----------------------
 
-THRESHOLD_TASKS = ("yesno", "2ifc", "2ifc-neither")
-THRESHOLD_KINDS = ("signal", "blank", "probe", "startup")
+THRESHOLD_TASK = "2ifc-neither"  # the only one: two intervals, or "neither" (DESIGN.md, "Threshold sessions")
+THRESHOLD_KINDS = ("signal", "probe", "startup")
 
 
 @dataclass
 class ThresholdRecord:
     ear: str
     freq: float
-    level_dbfs: float  # the burst's RMS level (a blank's: what it would have been)
-    kind: str  # signal, blank (nothing played), probe (well above threshold), startup (the descending run)
-    response: str  # yesno: "heard" or "nothing"; 2ifc: "first" or "second"; 2ifc-neither: those or "neither"
-    positive: bool  # heard, or chose the burst's interval
-    interval: int = 1  # 2ifc: the interval the burst was in (1 or 2)
+    level_dbfs: float  # the burst's RMS level
+    kind: str  # signal, probe (well above threshold), startup (the start-up run)
+    response: str  # "first", "second" or "neither"
+    positive: bool  # chose the burst's interval
+    interval: int = 1  # the interval the burst was in (1 or 2)
     rt_ms: float = 0.0  # from the end of the (last) interval in the first presentation
     rt_last_ms: float | None = None
     replays: int = 0
@@ -174,7 +174,7 @@ class ThresholdSession:
     profile: str
     id: str
     started: str
-    task: str = "yesno"
+    task: str = THRESHOLD_TASK
     device: dict = field(default_factory=dict)
     sample_rate: int = 48_000
     stimulus: dict = field(default_factory=dict)
@@ -198,6 +198,8 @@ class ThresholdSession:
         d = dict(d)
         if d.get("version") != FORMAT_VERSION:
             raise ValueError(f"unsupported threshold session format {d.get('version')}")
+        if d.get("task", THRESHOLD_TASK) != THRESHOLD_TASK:
+            raise ValueError(f"a {d['task']!r} threshold session: only {THRESHOLD_TASK} is supported now")
         d["trials"] = [ThresholdRecord(**t) for t in d.get("trials", [])]
         return cls(**d)
 
@@ -561,8 +563,13 @@ class Profile:
     def threshold_sessions(self) -> list[ThresholdSession]:
         if not self.thresholds_dir.exists():
             return []
-        return [ThresholdSession.from_json(json.loads(p.read_text()))
-                for p in sorted(self.thresholds_dir.glob("*.json"))]
+        out = []
+        for p in sorted(self.thresholds_dir.glob("*.json")):
+            try:
+                out.append(ThresholdSession.from_json(json.loads(p.read_text())))
+            except ValueError as e:
+                raise ValueError(f"{p}: {e}") from None
+        return out
 
     # Centring sessions too (DESIGN.md, "Centring sessions").
     @property

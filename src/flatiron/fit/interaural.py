@@ -108,7 +108,7 @@ def _threshold_observation(profile: Profile, ref_grid: np.ndarray) -> tuple[floa
     ss = profile.threshold_sessions()
     if not ss:
         return None
-    data = ThresholdData.build([(s.task, s.stimulus_key(), s.trials) for s in ss])
+    data = ThresholdData.build([(s.stimulus_key(), s.trials) for s in ss])
     if int(data.signal.sum()) < MIN_THRESHOLD_SIGNAL:
         return None
     lo, hi = profile.measured

@@ -119,7 +119,7 @@ def watch(tc):
 
 def test_threshold_runner_aims_through_and_records_the_eq(tmp_path, tc):
     w = watch(tc)
-    r = ThresholdRunner(Profile.open("x", root=tmp_path), ThresholdSettings(task="2ifc-neither", tincan=w), seed=1)
+    r = ThresholdRunner(Profile.open("x", root=tmp_path), ThresholdSettings(tincan=w), seed=1)
     r.startup = {"L": None, "R": None}
     eq = w.eq
     for k in range(40):
@@ -165,7 +165,7 @@ async def test_notice_before_the_session_then_toast_on_a_change(tmp_path, tc):
 
     w = watch(tc)
     prof = Profile.open("x", root=tmp_path)
-    app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(task="2ifc-neither", tincan=w), seed=0),
+    app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(tincan=w), seed=0),
                       NullPlayer())
     async with app.run_test() as pilot:
         assert isinstance(app.screen, TinCanNoticeScreen)

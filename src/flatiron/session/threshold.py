@@ -1,22 +1,20 @@
 """Threshold sessions: detection trials near the threshold of hearing
-(DESIGN.md, "Threshold sessions"). Collected only: no fit uses them yet.
+(DESIGN.md, "Threshold sessions").
 
 Per trial, one burst in one ear (drawn at random, so the listener
 can't know which to attend to), at a level near the current
-estimate of the threshold there. In the yes/no task the listener says whether
-they heard anything in the marked interval; some trials are blank, to measure
-false alarms. In the two-interval task (2IFC) the burst is in one of two
-marked intervals and the listener says which: forced to guess (2ifc), or
-allowed to answer "neither" (2ifc-neither), when the right interval counts as
-heard. In all, some trials are probes well above threshold, to measure lapses.
+estimate of the threshold there. The burst is in one of two marked intervals
+and the listener says which, or "neither" if they heard nothing; the right
+interval counts as heard. Some trials are probes well above threshold, to
+measure lapses.
 
 Frequencies come from the profile's measured range; the grid spans it, and
 any earlier threshold session's frequencies, since one fit covers them all.
 
 Each session starts with a descending run in each ear at 2 kHz (or the
 nearest end of the measured range): 10 dB down
-after each positive answer (in 2IFC, after two in a row at that level, since
-a guess is right half the time), until the first negative one. That finds the
+after each positive answer, until the first negative one (or up, if the first
+bursts aren't heard). That finds the
 session's level (the system volume, which only the session's offset knows)
 before the adaptive trials start. The UI drives this like a TrialRunner:
 prepare(), answer(), undo_last() and so on.
@@ -36,14 +34,13 @@ from flatiron.audio.stimulus import StimulusSpec, make_stimulus, stimulus_key
 from flatiron.model.grid import in_range, log_grid
 from flatiron.model.threshold import ThresholdData, ThresholdFit, fit_thresholds
 from flatiron.session.runner import FAST_MS, MAX_SESSION_MIN
-from flatiron.session.store import THRESHOLD_TASKS, Profile, ThresholdRecord, ThresholdSession, now_iso
+from flatiron.session.store import THRESHOLD_TASK, Profile, ThresholdRecord, ThresholdSession, now_iso
 
 MIN_LEVEL_DB = -140.0  # no burst is played quieter than this (dBFS RMS)
 
 
 @dataclass(frozen=True)
 class ThresholdConfig:
-    blank_rate: float = 0.10  # yes/no only
     probe_rate: float = 0.04
     probe_db: float = 15.0  # above the estimated threshold
     top_k: int = 8
@@ -58,7 +55,6 @@ class ThresholdConfig:
 @dataclass
 class ThresholdSettings:
     stimulus: StimulusSpec = field(default_factory=StimulusSpec)
-    task: str = "yesno"
     gap_s: float = 0.3
     session_minutes: float = 8.0
     max_trials: int | None = None
@@ -66,8 +62,6 @@ class ThresholdSettings:
     tincan: object = None  # tincan_live.TinCanWatch: TinCan's gain is read at every burst
 
     def __post_init__(self):
-        if self.task not in THRESHOLD_TASKS:
-            raise ValueError(f"the task must be one of {', '.join(THRESHOLD_TASKS)}")
         if not 0 < self.session_minutes <= MAX_SESSION_MIN:
             raise ValueError(f"sessions are capped at {MAX_SESSION_MIN:g} minutes")
 
@@ -78,7 +72,7 @@ class ThresholdPlan:
     freq: float
     level_db: float
     kind: str
-    interval: int = 1  # 2ifc: which interval holds the burst
+    interval: int = 1  # which interval holds the burst
     eq_gain: float = 0.0  # known EQ gain at the burst (TinCan's), set when it's rendered
 
 
@@ -93,7 +87,7 @@ class PreparedThreshold:
     level_dbfs: float  # the session's listening level (the UI compares it, as for a trial)
     retake: bool = False
     # For the debug readout: the burst's level as played (dBFS RMS, after the
-    # limiter; a blank's is what it would have been), and this session's
+    # limiter), and this session's
     # threshold estimate at its frequency, with its SD, when it was planned.
     played_db: float = 0.0
     estimate_db: float = 0.0
@@ -115,10 +109,7 @@ def system_volume() -> str | None:
 class ThresholdRunner:
     threshold = True  # the UI's flag for this kind of session
     speaker = None
-
-    @property
-    def two_interval(self) -> bool:
-        return self.task != "yesno"
+    task = THRESHOLD_TASK
 
     def __init__(self, profile: Profile, settings: ThresholdSettings = ThresholdSettings(),
                  config: ThresholdConfig = ThresholdConfig(), seed: int | None = None,
@@ -126,7 +117,6 @@ class ThresholdRunner:
         self.profile, self.settings, self.cfg, self.fs = profile, settings, config, fs
         self.seed = secrets.randbelow(2**31) if seed is None else seed
         self.rng = np.random.default_rng(self.seed)
-        self.task = settings.task
         self.key = stimulus_key(settings.stimulus)
         self.earlier = profile.threshold_sessions()
         self.measured = profile.measured
@@ -192,8 +182,8 @@ class ThresholdRunner:
     # -- the model ---------------------------------------------------------
 
     def data(self) -> ThresholdData:
-        parts = [(s.task, s.stimulus_key(), s.trials) for s in self.earlier]
-        parts.append((self.task, self.key, self.session.trials))
+        parts = [(s.stimulus_key(), s.trials) for s in self.earlier]
+        parts.append((self.key, self.session.trials))
         return ThresholdData.build(parts)
 
     def _fit(self, fit_sigma: bool = False) -> ThresholdFit:
@@ -211,7 +201,7 @@ class ThresholdRunner:
     def next_plan(self) -> ThresholdPlan:
         cfg, rng = self.cfg, self.rng
         ear = EARS[int(rng.integers(2))]  # at random: no pattern to track
-        interval = int(rng.integers(1, 3)) if self.two_interval else 1
+        interval = int(rng.integers(1, 3))
         level = self.startup[ear]
         if level is not None:
             return ThresholdPlan(ear, self.startup_freq, level, "startup", interval)
@@ -226,32 +216,26 @@ class ThresholdRunner:
         i = int(rng.choice(top))
         f = float(g[i])
         self._last_freq = f
-        r = rng.random()
-        blank = self.task == "yesno" and r < cfg.blank_rate
-        probe = not blank and r < cfg.blank_rate * (self.task == "yesno") + cfg.probe_rate
+        probe = rng.random() < cfg.probe_rate
         if probe:
             x = mean[i] + cfg.probe_db
         else:
             # Around the threshold, so the answers also say how steep the
-            # psychometric function is; a little above it for forced 2IFC,
-            # whose midpoint is 75% correct.
-            x = mean[i] + self.fit.sigma * (rng.normal() + (0.5 if self.task == "2ifc" else 0.0))
+            # psychometric function is.
+            x = mean[i] + self.fit.sigma * rng.normal()
         x -= self.tincan.gain(f, ear)  # the estimate is of what reaches the headphones, EQ included
         x = float(np.clip(x, MIN_LEVEL_DB, MAX_LEVEL_DB))
-        return ThresholdPlan(ear, f, x, "blank" if blank else "probe" if probe else "signal", interval)
+        return ThresholdPlan(ear, f, x, "probe" if probe else "signal", interval)
 
     def render(self, plan: ThresholdPlan, retake: bool = False) -> PreparedThreshold:
         d = self.settings.stimulus.duration
         plan.eq_gain = self.tincan.gain(plan.freq, plan.ear)
         burst = make_stimulus(plan.freq, self.settings.stimulus, seed=self.seed, fs=self.fs)
-        burst = np.zeros_like(burst) if plan.kind == "blank" else burst * db_to_amp(plan.level_db)
-        if self.task == "yesno":
-            parts, times = [burst], (0.0, d, 0.0, d)
-        else:
-            g = self.settings.gap_s
-            gap, quiet = np.zeros(int(round(g * self.fs))), np.zeros_like(burst)
-            parts = [burst, gap, quiet] if plan.interval == 1 else [quiet, gap, burst]
-            times = (0.0, d, d + g, 2 * d + g)
+        burst = burst * db_to_amp(plan.level_db)
+        g = self.settings.gap_s
+        gap, quiet = np.zeros(int(round(g * self.fs))), np.zeros_like(burst)
+        parts = [burst, gap, quiet] if plan.interval == 1 else [quiet, gap, burst]
+        times = (0.0, d, d + g, 2 * d + g)
         lim = limit(np.concatenate(parts))
         (est,), (sd,) = self.estimate(plan.ear, [plan.freq])
         return PreparedThreshold(plan, monaural(lim.signal, plan.ear), *times, self.level_dbfs, retake,
@@ -267,15 +251,10 @@ class ThresholdRunner:
 
     def answer(self, trial: PreparedThreshold, first: bool | None, rt_ms: float, replays: int = 0,
                t: float = 0.0, rt_last_ms: float | None = None, peeked: bool = False) -> ThresholdRecord:
-        """first: the upper answer: "heard" (yes/no) or the first interval
-        (2IFC); None: "neither" (2ifc-neither only)."""
+        """first: True for the first interval, False the second, None "neither"."""
         p = trial.plan
         if first is None:
-            if self.task != "2ifc-neither":
-                raise ValueError(f"no \"neither\" answer in a {self.task} session")
             response, positive = "neither", False
-        elif self.task == "yesno":
-            response, positive = ("heard" if first else "nothing"), first
         else:
             response, positive = ("first" if first else "second"), (1 if first else 2) == p.interval
         rec = ThresholdRecord(
@@ -296,17 +275,9 @@ class ThresholdRunner:
         return rec
 
     def _passes(self, ear: str) -> tuple[set[float], set[float]]:
-        """This session's start-up levels in the ear: those passed (heard; in
-        forced 2IFC, right twice in a row there, since a guess is right half
-        the time) and those failed."""
+        """This session's start-up levels in the ear: those passed (heard) and those failed."""
         same = [t for t in self.live_trials() if t.ear == ear and t.kind == "startup"]
-        passed, failed = set(), set()
-        for k, t in enumerate(same):
-            if not t.positive:
-                failed.add(t.level_dbfs)
-            elif self.task != "2ifc" or (k and same[k - 1].positive and same[k - 1].level_dbfs == t.level_dbfs):
-                passed.add(t.level_dbfs)
-        return passed, failed
+        return {t.level_dbfs for t in same if t.positive}, {t.level_dbfs for t in same if not t.positive}
 
     def _startup_step(self, p: ThresholdPlan, positive: bool) -> None:
         """Down a step after each pass, until the first miss once something has
@@ -321,8 +292,6 @@ class ThresholdRunner:
                 return
             nxt = p.level_db + step
             self.startup[p.ear] = nxt if nxt <= self.level_dbfs else None
-            return
-        if p.level_db not in passed:  # forced 2IFC: once more at this level
             return
         nxt = p.level_db - step
         # Below a level already missed: the threshold is bracketed.
@@ -374,12 +343,10 @@ class ThresholdRunner:
 
     def progress(self) -> dict:
         live = self.live_trials()
-        blanks = [t for t in live if t.kind == "blank"]
         probes = [t for t in live if t.kind == "probe"]
         return {
             "session_trials": len(live),
             "session_trials_ear": {e: sum(t.ear == e for t in live) for e in EARS},
-            "false_alarms": sum(t.positive for t in blanks), "blanks": len(blanks),
             "probe_hits": sum(t.positive for t in probes), "probes": len(probes),
             "neither": sum(t.response == "neither" for t in live),
             "wrong": sum(t.response in ("first", "second") and not t.positive for t in live),
