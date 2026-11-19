@@ -63,6 +63,7 @@ class ThresholdSettings:
     session_minutes: float = 8.0
     max_trials: int | None = None
     debug: bool = False  # the trial screen can show each burst's frequency, level and the estimate
+    tincan: object = None  # tincan_live.TinCanWatch: TinCan's gain is read at every burst
 
     def __post_init__(self):
         if self.task not in THRESHOLD_TASKS:
@@ -78,6 +79,7 @@ class ThresholdPlan:
     level_db: float
     kind: str
     interval: int = 1  # 2ifc: which interval holds the burst
+    eq_gain: float = 0.0  # known EQ gain at the burst (TinCan's), set when it's rendered
 
 
 @dataclass
@@ -144,6 +146,9 @@ class ThresholdRunner:
             measured=list(self.measured))
         self.discarded = False
         self._lock = threading.Lock()
+        from flatiron.tincan_live import SessionEq
+
+        self.tincan = SessionEq(settings.tincan, self.key)
         self._last: tuple[PreparedThreshold, dict] | None = None
         self._last_freq: float | None = None
         self.fit = self._fit()
@@ -204,11 +209,13 @@ class ThresholdRunner:
             # psychometric function is; a little above it for forced 2IFC,
             # whose midpoint is 75% correct.
             x = mean[i] + self.fit.sigma * (rng.normal() + (0.5 if self.task == "2ifc" else 0.0))
+        x -= self.tincan.gain(f, ear)  # the estimate is of what reaches the headphones, EQ included
         x = float(np.clip(x, MIN_LEVEL_DB, MAX_LEVEL_DB))
         return ThresholdPlan(ear, f, x, "blank" if blank else "probe" if probe else "signal", interval)
 
     def render(self, plan: ThresholdPlan, retake: bool = False) -> PreparedThreshold:
         d = self.settings.stimulus.duration
+        plan.eq_gain = self.tincan.gain(plan.freq, plan.ear)
         burst = make_stimulus(plan.freq, self.settings.stimulus, seed=self.seed, fs=self.fs)
         burst = np.zeros_like(burst) if plan.kind == "blank" else burst * db_to_amp(plan.level_db)
         if self.task == "yesno":
@@ -225,6 +232,9 @@ class ThresholdRunner:
 
     def prepare(self) -> PreparedThreshold:
         return self.render(self.next_plan())
+
+    def eq_message(self) -> str | None:
+        return self.tincan.message()
 
     # -- answers -----------------------------------------------------------
 
@@ -245,7 +255,9 @@ class ThresholdRunner:
             ear=p.ear, freq=p.freq, level_dbfs=p.level_db, kind=p.kind, response=response, positive=positive,
             interval=p.interval, rt_ms=float(rt_ms), rt_last_ms=rt_ms if rt_last_ms is None else float(rt_last_ms),
             replays=replays, fast=rt_ms < FAST_MS, t=round(t, 3), retake=trial.retake,
-            peeked=peeked)
+            peeked=peeked, eq_gain=p.eq_gain)
+        if (ctx := self.tincan.context()) is not None:
+            self.session.eq_context.update(ctx)
         state = dict(self.startup)
         self.session.trials.append(rec)
         self._save()

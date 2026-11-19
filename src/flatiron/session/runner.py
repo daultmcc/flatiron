@@ -35,6 +35,8 @@ class RunSettings:
     active_eq: ApoEq | None = None
     eq_note: str = "none"
     eq_text: str | None = None
+    # TinCan, read at every burst when it's in the audio path (tincan_live.TinCanWatch).
+    tincan: object = None
     # Verify sessions: Flatiron applies this correction to every burst and
     # records each burst's level change as a known offset.
     preview: PreviewEQ | None = None
@@ -79,6 +81,8 @@ class PreparedTrial:
     # the limiter and any preview EQ. For the debug readout.
     freqs: tuple[float, float] = (0.0, 0.0)
     levels: tuple[float, float] = (0.0, 0.0)
+    tincan_gain_a: float = 0.0  # TinCan's gain at each burst when it was rendered (dB)
+    tincan_gain_b: float = 0.0
 
 
 class TrialRunner:
@@ -124,6 +128,9 @@ class TrialRunner:
         self.discarded = False
         self._lock = threading.Lock()
         self._last_answered: PreparedTrial | None = None
+        from flatiron.tincan_live import SessionEq
+
+        self.tincan = SessionEq(settings.tincan, stimulus_key(settings.stimulus))
         start = settings.level_dbfs
         if start is None:
             start = profile.last_level()
@@ -236,7 +243,11 @@ class TrialRunner:
             played.reverse()
         return PreparedTrial(plan, buf, 0.0, d, d + s.gap_s, 2 * d + s.gap_s, lim.gain_db,
                              self.level_dbfs, retake, pa, pb,
-                             (played[0][0], played[1][0]), (played[0][1], played[1][1]))
+                             (played[0][0], played[1][0]), (played[0][1], played[1][1]),
+                             self.tincan.gain(plan.f_a, ear_a), self.tincan.gain(plan.f_b, ear_b))
+
+    def eq_message(self) -> str | None:
+        return self.tincan.message()
 
     def eq_gains(self, plan: TrialPlan) -> tuple[float, float]:
         eq = self.settings.active_eq
@@ -252,7 +263,9 @@ class TrialRunner:
         quick answer after a replay isn't flagged as fast."""
         p = trial.plan
         ga, gb = self.eq_gains(p)
-        ga, gb = ga + trial.preview_gain_a, gb + trial.preview_gain_b
+        ga, gb = ga + trial.preview_gain_a + trial.tincan_gain_a, gb + trial.preview_gain_b + trial.tincan_gain_b
+        if (ctx := self.tincan.context(self.settings.eq_note)) is not None:
+            self.session.eq_context.update(ctx)
         rec = TrialRecord(
             ear=p.ear, f_a=p.f_a, f_b=p.f_b, delta_a=p.delta_a, delta_b=p.delta_b,
             a_first=p.a_first, rove_db=p.rove_db, catch=p.catch,

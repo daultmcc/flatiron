@@ -597,6 +597,9 @@ class TrialScreen(Screen):
             if answer is not None:
                 self.runner.answer(**answer)
             nxt = self.runner.prepare()
+            eq_message = getattr(self.runner, "eq_message", None)  # TinCan changed (DESIGN.md, "Measurement context")
+            if eq_message is not None and (note := eq_message()):
+                self.app.call_from_thread(self.app.notify, note, severity="warning", timeout=10)
             self.app.call_from_thread(self.ready, nxt)
 
         self.run_worker(work, thread=True, exclusive=True, group="trial")
@@ -718,6 +721,39 @@ class TrialScreen(Screen):
         self.app.push_screen(ConfirmScreen(
             f"Discard this session? Its {n} answers will be deleted and nothing from it "
             "will be used. Earlier sessions are kept."), done)
+
+
+class TinCanNoticeScreen(MessageScreen):
+    """Before a session, when TinCan is applying an EQ (DESIGN.md, "Measurement context").
+    Rechecked every second, so bypassing it in TinCan shows here straight away."""
+
+    BINDINGS = [Binding("enter", "start", "Start"), Binding("escape", "cancel", "Quit")]
+
+    def __init__(self, watch):
+        super().__init__()
+        self.watch = watch
+
+    def on_mount(self):
+        self.refresh_state()
+        self.set_interval(1.0, self.refresh_state)
+
+    def refresh_state(self):
+        from flatiron.tincan_live import notice
+
+        eq = self.watch.current()
+        if eq is None:
+            self.say("TinCan", "TinCan is off now (pass-through, or nothing active).", "Enter: start   Esc: quit")
+            return
+        self.say("TinCan is on",
+                 notice(eq) + "\n\nFlatiron records its gain at every burst, so the session still counts. "
+                 "To run without it, put TinCan in pass-through now; it's checked again at every burst.",
+                 "Enter: start   Esc: quit")
+
+    def action_start(self):
+        self.dismiss(True)
+
+    def action_cancel(self):
+        self.dismiss(None)
 
 
 class ThresholdIntroScreen(MessageScreen):
@@ -1008,6 +1044,7 @@ class FlatironApp(App):
         self.clock = clock
         self.runner: TrialRunner | None = None
         self.sessions_run = 0
+        self.tincan_seen = None  # the TinCan EQ last shown in a notice (not shown again for the next session)
 
     def on_mount(self):
         self.start_session()
@@ -1018,6 +1055,23 @@ class FlatironApp(App):
         from flatiron.session.store import qualified
 
         self.sub_title = f"{qualified(self.runner.profile)} · session {self.runner.session.id}"
+        tc = getattr(self.runner, "tincan", None)
+        if tc is not None and tc.at_start is not None and tc.at_start != self.tincan_seen:
+            self.tincan_seen = tc.at_start
+
+            def after(ok):
+                if ok is None:
+                    self.runner.finish()  # nothing recorded: deleted
+                    self.exit()
+                    return
+                tc.at_start = tc.watch.start()  # whatever it is now; changes from here are announced
+                self.begin_session(last, last_ear)
+
+            self.push_screen(TinCanNoticeScreen(tc.watch), after)
+            return
+        self.begin_session(last, last_ear)
+
+    def begin_session(self, last: str = "", last_ear: str | None = None):
         if getattr(self.runner, "threshold", False):
             self.push_screen(ThresholdIntroScreen(self.runner.task), self.after_intro)
             return

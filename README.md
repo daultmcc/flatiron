@@ -122,6 +122,10 @@ the specified profile. The currently supported formats are `apo` (for Equalizer 
 `pipewire` (a configuration file for a filter chain that can be dropped into `pipewire.conf.d`),
 and `tincan` (for [TinCan](https://github.com/daultmcc/tincan)).
 
+If TinCan is running when you start a session, Flatiron reads the EQ it's applying, tells you
+before the session starts, and accounts for it at every burst, so a forgotten preset doesn't
+skew the results. (Putting TinCan in pass-through for measuring is still the cleaner option.)
+
 ### Validation
 
 There are a few commands that let you verify the accuracy of a current fitted response.

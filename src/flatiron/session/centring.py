@@ -53,6 +53,7 @@ class CentringSettings:
     level_dbfs: float | None = None  # None: the profile's last
     match: bool = True
     debug: bool = False
+    tincan: object = None  # tincan_live.TinCanWatch: TinCan's gain is read at every burst
 
     def __post_init__(self):
         if not 0 < self.session_minutes <= MAX_SESSION_MIN:
@@ -68,6 +69,8 @@ class CentringPlan:
     rove_db: float
     match_db: float
     level_db: float = 0.0  # before the split: listening level + rove + matching, set when rendered
+    eq_gain_l: float = 0.0  # known EQ gain (TinCan's) in each ear, set when rendered
+    eq_gain_r: float = 0.0
 
 
 @dataclass
@@ -127,6 +130,9 @@ class CentringRunner:
             seed=self.seed, measured=list(self.measured), match=settings.match)
         self.discarded = False
         self._lock = threading.Lock()
+        from flatiron.tincan_live import SessionEq
+
+        self.tincan = SessionEq(settings.tincan, self.key)
         self._last: PreparedCentring | None = None
         self.current_estimate = self.estimate()
         self._save()
@@ -172,13 +178,16 @@ class CentringRunner:
         rng = self.rng
         f = float(2 ** rng.uniform(np.log2(self.f_lo), np.log2(self.f_hi)))
         jitter = float(np.clip(rng.normal() * JITTER_SD, -MAX_JITTER, MAX_JITTER))
-        d = float(np.clip(-(self.current_estimate + self.shape(f)) + jitter, -MAX_ILD_DB, MAX_ILD_DB))
+        # Aimed at the difference that reaches the ears, the EQ's included.
+        eq = self.tincan.gain(f, "L") - self.tincan.gain(f, "R")
+        d = float(np.clip(-(self.current_estimate + self.shape(f)) + jitter - eq, -MAX_ILD_DB, MAX_ILD_DB))
         rove = float(rng.uniform(-ROVE_DB, ROVE_DB))
         return CentringPlan(f, d, rove, self.match_gain(f))
 
     def render(self, plan: CentringPlan, retake: bool = False) -> PreparedCentring:
         x = make_stimulus(plan.freq, self.settings.stimulus, seed=self.seed, fs=self.fs)
         plan.level_db = self.level_dbfs + plan.rove_db + plan.match_db
+        plan.eq_gain_l, plan.eq_gain_r = self.tincan.gain(plan.freq, "L"), self.tincan.gain(plan.freq, "R")
         left = x * db_to_amp(plan.level_db + plan.ild_db / 2)
         right = x * db_to_amp(plan.level_db - plan.ild_db / 2)
         lim = limit(np.stack([left, right], axis=1))
@@ -190,6 +199,9 @@ class CentringRunner:
     def prepare(self) -> PreparedCentring:
         return self.render(self.next_plan())
 
+    def eq_message(self) -> str | None:
+        return self.tincan.message()
+
     # -- answers ---------------------------------------------------------------
 
     def answer(self, trial: PreparedCentring, left: bool, rt_ms: float, replays: int = 0, t: float = 0.0,
@@ -198,7 +210,10 @@ class CentringRunner:
         rec = CentringRecord(freq=p.freq, ild_db=p.ild_db, level_dbfs=p.level_db, rove_db=p.rove_db,
                              response="left" if left else "right", rt_ms=float(rt_ms),
                              rt_last_ms=rt_ms if rt_last_ms is None else float(rt_last_ms), replays=replays,
-                             fast=rt_ms < FAST_MS, t=round(t, 3), retake=trial.retake, peeked=peeked)
+                             fast=rt_ms < FAST_MS, t=round(t, 3), retake=trial.retake, peeked=peeked,
+                             eq_gain_l=p.eq_gain_l, eq_gain_r=p.eq_gain_r)
+        if (ctx := self.tincan.context()) is not None:
+            self.session.eq_context.update(ctx)
         self.session.trials.append(rec)
         self._save()
         self.current_estimate = self.estimate()

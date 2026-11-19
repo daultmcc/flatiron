@@ -234,10 +234,33 @@ def _launch(args, sweep: bool, profile=None, **extra):
         print(e)
         return 1
     device = _device_info(args)
-    app = FlatironApp(lambda: TrialRunner(profile, settings(), device=device), _player(args), sweep=sweep,
+    tincan = _tincan(args, device)
+    if tincan is False:
+        return 1
+    settings_now = lambda: replace(settings(), tincan=tincan)
+    app = FlatironApp(lambda: TrialRunner(profile, settings_now(), device=device), _player(args), sweep=sweep,
                       sweep_timing=timing, sweep_eq=sweep_eq)
     app.run()
     return 0
+
+
+def _tincan(args, device: dict):
+    """A watch on TinCan (DESIGN.md, "Measurement context"), or None in a dry run.
+    Prints, and returns False, if --active-eq is given while TinCan is on: it
+    would most likely count the same EQ twice."""
+    if args.dry_run:
+        return None
+    from flatiron.tincan_live import TinCanWatch, notice
+
+    watch = TinCanWatch(device)
+    eq = watch.start()
+    if eq is not None and getattr(args, "active_eq", None):
+        print(notice(eq) + " Flatiron reads TinCan's EQ itself, so --active-eq would count it twice: "
+              "put TinCan in pass-through, or leave out --active-eq.")
+        return False
+    if watch.error:
+        print(f"! {watch.error}")
+    return watch
 
 
 def _device_info(args) -> dict:
@@ -273,6 +296,7 @@ def cmd_threshold(args):
         print(e)
         return 1
     device = _device_info(args)
+    settings.tincan = _tincan(args, device)
     FlatironApp(lambda: ThresholdRunner(prof, settings, device=device), _player(args)).run()
     return 0
 
@@ -295,6 +319,7 @@ def cmd_centre(args):
         print(e)
         return 1
     device = _device_info(args)
+    settings.tincan = _tincan(args, device)
     FlatironApp(lambda: CentringRunner(prof, settings, device=device), _player(args)).run()
     return 0
 
@@ -795,7 +820,7 @@ def cmd_sessions(args):
         else:
             fa = f"false alarms {fa:>4}"
         print(f"{s.id}  {s.task:12s}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  {fa}  "
-              f"probes {hits:>4}{vol}{'' if s.ended else '  (not closed)'}")
+              f"probes {hits:>4}{vol}{'' if s.ended else '  (not closed)'}{_eq_label(s)}")
     if centring:
         print("\nCentring sessions (collected only):")
     for s in centring:
@@ -803,7 +828,13 @@ def cmd_sessions(args):
         mins = s.trials[-1].t / 60 if s.trials else 0
         left = f"{np.mean([t.left for t in live]):.0%}" if live else "-"
         print(f"{s.id}  {len(live):4d} trials  {mins:4.1f} min  level {s.level_dbfs:+.0f}  heard left {left:>4}"
-              f"{'' if s.ended else '  (not closed)'}")
+              f"{'' if s.ended else '  (not closed)'}{_eq_label(s)}")
+
+
+def _eq_label(s) -> str:
+    """A threshold or centring session's known EQ, for the listing ("" if none)."""
+    note = (s.eq_context or {}).get("note")
+    return f"  EQ: {note}" if note and note != "none" else ""
 
 
 # Fit settings `config` can change: flags, CorrectionSettings field, argparse
