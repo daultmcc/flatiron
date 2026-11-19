@@ -478,7 +478,8 @@ class Extra:
     """Probit observations beyond the within-ear trials, linear in the joint
     parameters (DESIGN.md, "Using cross-ear trials"): each block's
     (L_L, bias_L, L_R, bias_R) in order, then n extra parameters with a
-    Gaussian prior. Row t: P(y_t) = λ/2 + (1 − λ) Φ((X_t · θ + off_t) / σ_t)."""
+    Gaussian prior. Row t: P(y_t) = lo_t + (1 − lo_t − hi_t) Φ((X_t · θ + off_t) / σ_t),
+    lo and hi λ/2 unless given per row (a threshold trial's: its guess rate and λ)."""
     X: np.ndarray
     off: np.ndarray
     y: np.ndarray
@@ -486,6 +487,8 @@ class Extra:
     lapse: float
     prior_mean: np.ndarray  # of the extra parameters
     prior_sd: np.ndarray
+    floor: np.ndarray | None = None  # per row: P at −∞ (default λ/2)
+    ceil: np.ndarray | None = None  # per row: 1 − P at +∞ (default λ/2)
 
     @property
     def n(self) -> int:
@@ -493,9 +496,11 @@ class Extra:
 
     def terms(self, theta):
         """Probabilities, d(nll)/dη·(1/σ) folded in as d(nll)/d(Xθ), and Fisher weights."""
+        lo = self.lapse / 2 if self.floor is None else self.floor
+        hi = self.lapse / 2 if self.ceil is None else self.ceil
         z = (self.X @ theta + self.off) / self.sigma
-        p = self.lapse / 2 + (1 - self.lapse) * ndtr(z)
-        dp = (1 - self.lapse) * np.exp(-0.5 * z * z) / SQRT_2PI / self.sigma
+        p = np.clip(lo + (1 - lo - hi) * ndtr(z), 1e-12, 1 - 1e-12)
+        dp = (1 - lo - hi) * np.exp(-0.5 * z * z) / SQRT_2PI / self.sigma
         return p, -(self.y / p - (1 - self.y) / (1 - p)) * dp, dp * dp / (p * (1 - p))
 
     def nll(self, theta) -> float:

@@ -190,8 +190,8 @@ def cached_balanced(profile: Profile, trials: dict[str, Trials], fits: dict[str,
     like those, keyed on all of it."""
     extra_key = ""
     if interaural is not None:
-        rows, extra, bias = interaural
-        extra_key = f"{rows.key()}|{bias.key if bias else 'none'}"
+        rows, extra, bias, thr = interaural
+        extra_key = f"{rows.key()}|{bias.key if bias else 'none'}|{thr.key() if thr else 'none'}"
     key = balanced_key(ear_keys, balance, extra_key)
     prefix = "balanced" if interaural is None else "joint"
     paths = {e: profile.dir / "cache" / f"{prefix}-{key}-{e}.npz" for e in fits}
@@ -209,15 +209,18 @@ def cached_balanced(profile: Profile, trials: dict[str, Trials], fits: dict[str,
     else:
         from flatiron.model.hierarchical import fit_joint
 
-        rows, extra, bias = interaural
+        rows, extra, bias, thr = interaural
         res = fit_joint([(trials, fits, balance, profile_priors(profile))], extra)
         out = res.fits[0]
         info = {"c_db": float(res.extra[0]), "c_sd": float(np.sqrt(res.extra_cov[0, 0])),
                 "ref_hz": list(rows.ref), "cross_trials": rows.n_cross if bias else 0,
-                "centring_trials": rows.n_centring, "threshold": rows.threshold,
+                "centring_trials": rows.n_centring, "threshold": None if thr else rows.threshold,
                 "b_db": bias.b if bias else None, "b_sd": bias.b_sd if bias else None,
                 "b_profiles": len(bias.profiles) if bias else 0,
-                "sigma_x": bias.sigma_x if bias else None, "sigma_c": bias.sigma_c if bias else None}
+                "sigma_x": bias.sigma_x if bias else None, "sigma_c": bias.sigma_c if bias else None,
+                "threshold_fit": None if thr is None else {
+                    "trials": thr.n, "sessions": thr.n_sessions, "gap_key": thr.gap_key,
+                    "k_db": float(res.extra[1]), "k_sd": float(np.sqrt(res.extra_cov[1, 1]))}}
         info_path.parent.mkdir(parents=True, exist_ok=True)
         info_path.write_text(json.dumps(info))
         for f in out.values():
@@ -234,6 +237,13 @@ class ProfileFit:
     sessions: list[Session]
     session_ids: dict[str, list[str]]  # per ear: the session behind each group of the fit
     pooled: list[str] = field(default_factory=list)  # labels of other profiles whose trials are included
+    # With the threshold fit on: the listener's loudness-threshold gap (None
+    # when no profile has enough threshold trials: the references aren't anchored).
+    gap: object = None
+
+    def anchor_missing(self) -> bool:
+        """The threshold fit is on, but there's no gap to anchor the reference with."""
+        return self.correction.settings.threshold_fit and self.gap is None
 
     def summary(self) -> dict:
         """JSON-able: what export, audition and verify work from."""
@@ -343,13 +353,15 @@ def select_sessions(profile: Profile, selection: list[str] | None) -> list[Sessi
 
 
 def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
-                    on_fit: Callable[[], None] | None = None) -> tuple[dict[str, ProbitFit], dict[str, str], list[Session]]:
+                    on_fit: Callable[[], None] | None = None,
+                    thresholds: bool | None = None) -> tuple[dict[str, ProbitFit], dict[str, str], list[Session]]:
     """Per ear, the profile's cached perceptual fit and what it's keyed on. It
     depends only on the trials (its sessions and pooling) and the listener's
     noise, not on the settings. With the balance prior on (the profile's
     `balance` setting), the two ears' curves are fitted together, each with
     the seating spread of its own fit. A consensus or veto member uses its
-    own setting."""
+    own setting. thresholds: use the threshold sessions (None: as the
+    `threshold_fit` setting says; False: the loudness-only fit)."""
     sessions = select_sessions(profile, session_ids)
     trials, grids = profile.history(sessions)
     for e in EARS:
@@ -367,15 +379,25 @@ def perceptual_fits(profile: Profile, session_ids: list[str] | None = None,
         keys[e] = fit_key(trials[e], grid, noise[e], priors)
     balance = balance_prior(profile)
     interaural = None
-    if profile.kind != "speaker" and profile_settings(profile).cross_ear_fit:
-        from flatiron.fit.interaural import listener_bias, profile_extra, profile_rows
+    st = profile_settings(profile)
+    use_thr = st.threshold_fit if thresholds is None else thresholds
+    if profile.kind != "speaker" and (st.cross_ear_fit or use_thr):
+        from flatiron.fit.interaural import empty_rows, listener_bias, profile_extra, profile_rows, threshold_rows
 
-        rows = profile_rows(profile, sessions, {e: fits[e].grid for e in EARS})
-        if not rows.empty():
+        fgrids = {e: fits[e].grid for e in EARS}
+        rows = profile_rows(profile, sessions, fgrids) if st.cross_ear_fit else empty_rows(profile, fgrids)
+        thr = None
+        if use_thr:
+            from flatiron.fit.gap import listener_gap
+
+            gap = listener_gap(profile.dir.parent.parent, on_fit)
+            if gap is not None:
+                thr = threshold_rows(profile, fgrids, gap, fits)
+        if not rows.empty() or thr is not None:
             bias = listener_bias(profile.dir.parent.parent, on_fit) if rows.n_cross else None
-            extra = profile_extra(rows, fits, bias)
+            extra = profile_extra(rows, fits, bias, thr)
             if extra is not None:
-                interaural = (rows, extra, bias)
+                interaural = (rows, extra, bias, thr)
     if balance is not None or interaural is not None:
         fits, keys = cached_balanced(profile, trials, fits, keys, balance, interaural)
     for e in EARS:
@@ -459,7 +481,8 @@ def veto_members(profile: Profile, st: CorrectionSettings) -> list[Profile]:
 
 
 def ear_consensus(profile: Profile, st: CorrectionSettings, own_fits: dict[str, ProbitFit],
-                  own_keys: dict[str, str], on_fit: Callable[[], None] | None = None) -> dict[str, EarConsensus]:
+                  own_keys: dict[str, str], on_fit: Callable[[], None] | None = None,
+                  anchor=None) -> dict[str, EarConsensus]:
     """Per ear, the consensus of the listed profiles as this profile's
     reference. The split consensus is cached, one entry per set of members
     whichever profile asks first, and a new session in any member changes its
@@ -500,7 +523,7 @@ def ear_consensus(profile: Profile, st: CorrectionSettings, own_fits: dict[str, 
     (profile.dir / "cache").mkdir(parents=True, exist_ok=True)
     (profile.dir / "cache" / "consensus.json").write_text(json.dumps(used))
     return consensus_references(splits, st, "+".join(used[e] for e in EARS), own,
-                                None if own is None else {e: own_fits[e].grid for e in EARS})
+                                None if own is None else {e: own_fits[e].grid for e in EARS}, anchor)
 
 
 def ear_voters(profile: Profile, st: CorrectionSettings,
@@ -520,11 +543,18 @@ def fit_profile(profile: Profile, settings: CorrectionSettings = CorrectionSetti
     fits, keys, sessions = perceptual_fits(profile, session_ids, on_fit)
     if profile.kind == "speaker":  # positions are meant to differ: no seating step
         settings = replace(settings, consistency=False)
-    consensus = ear_consensus(profile, settings, fits, keys, on_fit) if settings.consensus else None
+    gap, anchor = None, None
+    if settings.threshold_fit and profile.kind != "speaker":
+        from flatiron.fit.gap import listener_gap
+        from flatiron.fit.reference import Anchor
+
+        gap = listener_gap(profile.dir.parent.parent, on_fit)
+        anchor = Anchor.of(gap, profile.slug) if gap is not None else None
+    consensus = ear_consensus(profile, settings, fits, keys, on_fit, anchor) if settings.consensus else None
     voters = ear_voters(profile, settings, on_fit) if settings.veto else None
-    corr = correct(fits, settings, fixed, consensus, voters)
+    corr = correct(fits, settings, fixed, consensus, voters, anchor)
     return ProfileFit(corr, fits, sessions, {e: f.groups for e, f in fits.items()},
-                      [p.read()["label"] for p in pooled_profiles(profile)])
+                      [p.read()["label"] for p in pooled_profiles(profile)], gap)
 
 
 def current_fit(profile: Profile, on_fit: Callable[[], None] | None = None) -> ProfileFit:

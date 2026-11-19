@@ -155,6 +155,14 @@ def profile_rows(profile: Profile, sessions: list[Session], grids: dict) -> Prof
                        _THRESHOLD_MEMO[tk], (lo, hi))
 
 
+def empty_rows(profile: Profile, grids: dict) -> ProfileRows:
+    """No cross-ear, centring or threshold observations (the cross-ear fit off)."""
+    width = grids["L"].size + grids["R"].size + 2
+    z = np.zeros(0)
+    return ProfileRows(np.zeros((0, width)), z, z, z, np.zeros((0, width)), z, z, None,
+                       cross_range(profile.measured))
+
+
 @dataclass
 class ListenerBias:
     b: float
@@ -281,16 +289,131 @@ def listener_bias(root: Path, on_fit: Callable[[], None] | None = None) -> Liste
     return out
 
 
-def profile_extra(rows: ProfileRows, fits: dict[str, ProbitFit], bias: ListenerBias | None) -> Extra | None:
+@dataclass
+class ThresholdRows:
+    """A profile's threshold trials as rows of its two-ear fit (DESIGN.md,
+    "Threshold-anchored reference"). Ear e's threshold is
+        T_e(f) = k + c_s − (L̃_e(f) − g(f) − δ(f)) + m_e(f) ∓ c_p/2
+    (− in the left ear: a louder left channel is heard sooner), with g and δ
+    the listener's gap, held fixed; k the profile's threshold level; c_s each
+    later session's offset; m_e the threshold's ripple, in a whitened basis
+    (prior N(0, 1) per coefficient). The burst's interval is picked with
+    chance γ_s + (1 − γ_s − λ) Φ((x − T̄_e(f)) / σ), γ, λ and σ from the
+    profile's own threshold fit."""
+    X: np.ndarray  # n x block width: L̃_e's band rows
+    half: np.ndarray  # c_p's coefficient: +½ in the left ear, −½ in the right
+    session: np.ndarray
+    M: np.ndarray  # n x q: −m's band rows, whitened
+    off: np.ndarray  # x − (g + δ), band averaged
+    y: np.ndarray
+    floor: np.ndarray  # γ of the trial's session
+    lapse: float
+    sigma: float
+    k0: float  # starting values, from the threshold fit
+    c0: np.ndarray
+    n_sessions: int
+    gap_key: str
+
+    @property
+    def n(self) -> int:
+        return int(self.y.size)
+
+    @property
+    def n_params(self) -> int:
+        return 1 + (self.n_sessions - 1) + self.M.shape[1]
+
+    def key(self) -> str:
+        h = hashlib.sha256((VERSION + self.gap_key).encode())
+        for a in (self.X, self.half, self.session, self.M, self.off, self.y, self.floor,
+                  np.asarray([self.lapse, self.sigma])):
+            h.update(np.ascontiguousarray(a, float).tobytes())
+        return h.hexdigest()[:20]
+
+
+RIPPLE_KEEP = 1e-4  # whitened basis: eigenvectors of the ripple's correlation above this share of the largest
+
+
+def threshold_rows(profile: Profile, grids: dict, gap, fits: dict[str, ProbitFit]) -> ThresholdRows | None:
+    """The profile's threshold trials, with the listener's gap `gap`
+    (fit/gap.py), or None if it has none."""
+    from flatiron.fit.gap import RIPPLE_ELL_OCT, threshold_fit
+    from flatiron.model.threshold import ThresholdData
+
+    tf = threshold_fit(profile)
+    if tf is None:
+        return None
+    ss = profile.threshold_sessions()
+    data = ThresholdData.build([(s.stimulus_key(), s.trials) for s in ss])
+    lo, hi = cross_range(profile.measured)
+    ref = log_grid(lo, hi)
+    tg = tf.grid
+    x = np.log2(tg)
+    K = np.exp(-0.5 * ((x[:, None] - x[None, :]) / RIPPLE_ELL_OCT) ** 2)
+    val, vec = np.linalg.eigh(K)
+    keep = val > RIPPLE_KEEP * val.max()
+    W = gap.ripple_sd * vec[:, keep] * np.sqrt(val[keep])  # m = W z, z ~ N(0, I)
+    q = W.shape[1]
+    curve = gap.curve_for(profile.slug, tg)
+    n = data.freq.size
+    X, M = [], np.zeros((n, 2 * q))
+    off = np.empty(n)
+    for t in range(n):
+        e = EARS[data.ear[t]]
+        row = band_matrix(tg, [data.freq[t]], [data.stimulus[t]])[0]
+        X.append(_ear_rows(grids, ref, e, [data.freq[t]], [data.stimulus[t]])[0])
+        M[t, data.ear[t] * q:(data.ear[t] + 1) * q] = -(row @ W)
+        off[t] = data.level[t] - row @ curve
+    half = np.where(data.ear == 0, 0.5, -0.5)
+    # k's starting value: over the reference range L̃ averages 0, so k is the
+    # threshold fit's first-session level there less the gap's.
+    w = interp_matrix(tg, ref).mean(axis=0)
+    k0 = float(np.mean([w @ tf.T[i] for i in range(2)]) - w @ curve)
+    return ThresholdRows(np.array(X), half, data.session, M, off, data.positive.astype(float),
+                         tf.gamma[data.session], tf.lapse, tf.sigma, float(k0), np.asarray(tf.c[1:], float),
+                         data.n_sessions, gap.key)
+
+
+K_SD_DB = 1e3  # the threshold level: no real pull
+OFFSET_SD_DB = 40.0  # a later threshold session's offset, as in the threshold model
+
+
+def profile_extra(rows: ProfileRows, fits: dict[str, ProbitFit], bias: ListenerBias | None,
+                  thr: ThresholdRows | None = None) -> Extra | None:
     """The profile's own fit: b held at the listener's, c_p a parameter.
     Without a listener bias, cross-ear trials can't be used (centring and
-    thresholds still can)."""
+    thresholds still can). With threshold rows (`thr`), the threshold trials
+    are rows of the fit, and their observation of c_p isn't folded into its
+    prior as well; their parameters (k, the later sessions' offsets, the
+    ripple) follow c_p."""
     if bias is None:
         rows = ProfileRows(rows.cross_X[:0], rows.cross_off[:0], rows.cross_y[:0], rows.cross_sign[:0],
                            rows.cent_X, rows.cent_off, rows.cent_y, rows.threshold, rows.ref)
-    if rows.empty():
+    if thr is not None:
+        rows = ProfileRows(rows.cross_X, rows.cross_off, rows.cross_y, rows.cross_sign, rows.cent_X,
+                           rows.cent_off, rows.cent_y, None, rows.ref)
+    elif rows.empty():
         return None
     w = fits["L"].grid.size + fits["R"].grid.size + 2
-    return _rows_extra([rows], [w], 0.0 if bias is None else bias.b,
+    base = _rows_extra([rows], [w], 0.0 if bias is None else bias.b,
                        SIGMA_START_DB if bias is None else bias.sigma_x,
                        SIGMA_START_DB if bias is None or np.isnan(bias.sigma_c) else bias.sigma_c)
+    if thr is None:
+        return base
+    nb, nt = base.X.shape[0], thr.n
+    N = w + 1 + thr.n_params
+    X = np.zeros((nb + nt, N))
+    X[:nb, :w + 1] = base.X
+    X[nb:, :w] = thr.X
+    X[nb:, w] = thr.half
+    X[nb:, w + 1] = -1.0  # k
+    later = thr.session > 0
+    X[nb + np.flatnonzero(later), w + 1 + thr.session[later]] = -1.0  # c_s, s ≥ 1
+    X[nb:, w + 1 + thr.n_sessions:] = thr.M
+    lam = base.lapse / 2
+    return Extra(X, np.concatenate([base.off, thr.off]), np.concatenate([base.y, thr.y]),
+                 np.concatenate([base.sigma, np.full(nt, thr.sigma)]), base.lapse,
+                 np.concatenate([base.prior_mean, [thr.k0], thr.c0, np.zeros(thr.M.shape[1])]),
+                 np.concatenate([base.prior_sd, [K_SD_DB], np.full(thr.n_sessions - 1, OFFSET_SD_DB),
+                                 np.ones(thr.M.shape[1])]),
+                 floor=np.concatenate([np.full(nb, lam), thr.floor]),
+                 ceil=np.concatenate([np.full(nb, lam), np.full(nt, thr.lapse)]))

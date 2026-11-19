@@ -477,15 +477,33 @@ class EarConsensus:
 
 
 def ear_reference(sc: SplitConsensus, share: EarShare, key: str = "", own_grid: np.ndarray | None = None,
-                  own: int | None = None, all_shares: Shares | None = None) -> EarConsensus:
+                  own: int | None = None, all_shares: Shares | None = None,
+                  broad: tuple[np.ndarray, np.ndarray] | None = None) -> EarConsensus:
     """E = broad + k · narrow for one profile, with its covariance, and that
     profile's weights if it's a member (own: its index among the headphones,
-    own_grid: its grid)."""
+    own_grid: its grid). broad: (curve, covariance) on the consensus grid in
+    place of the members' broad median (the threshold-anchored diffuse
+    field's broad part; DESIGN.md, "Threshold-anchored reference")."""
     k = share.k
-    cov = sc.broad.cov + k[:, None] * sc.narrow.cov * k[None, :] + k[:, None] * sc.cross + sc.cross.T * k[None, :]
+    if broad is None:
+        b_m, b_cov, cross = sc.broad.m, sc.broad.cov, sc.cross
+    else:
+        (b_m, b_cov), cross = broad, np.zeros_like(sc.cross)
+    cov = b_cov + k[:, None] * sc.narrow.cov * k[None, :] + k[:, None] * cross + cross.T * k[None, :]
     G = None
     if own is not None:
         S = local_linear_smoother(own_grid, SPLIT_OCT, np.gradient(np.log2(own_grid)))
-        G = S.T @ sc.broad.G[own] + ((np.eye(S.shape[0]) - S).T @ sc.narrow.G[own]) * k[None, :]
-    return EarConsensus(sc.members, key, sc.grid, sc.broad.m + k * sc.narrow.m, 0.5 * (cov + cov.T),
-                        sc.narrow.tau_hp, G, sc.broad.m, sc.narrow.m, share, all_shares)
+        G = ((np.eye(S.shape[0]) - S).T @ sc.narrow.G[own]) * k[None, :]
+        if broad is None:
+            G = G + S.T @ sc.broad.G[own]
+    return EarConsensus(sc.members, key, sc.grid, b_m + k * sc.narrow.m, 0.5 * (cov + cov.T),
+                        sc.narrow.tau_hp, G, b_m, sc.narrow.m, share, all_shares)
+
+
+def anchored_broad(grid: np.ndarray, anchor) -> tuple[np.ndarray, np.ndarray]:
+    """The threshold-anchored diffuse field's broad part on the grid (split as
+    the members are), and its covariance from the gap's."""
+    from flatiron.fit.reference import anchored
+
+    S = local_linear_smoother(grid, SPLIT_OCT, np.gradient(np.log2(grid)))
+    return S @ anchored("diffuse", grid, anchor), S @ anchor.cov_on(grid) @ S.T

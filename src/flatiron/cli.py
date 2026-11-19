@@ -891,6 +891,14 @@ FIT_OPTIONS = [
           help="use cross-ear trials, centring and threshold sessions in fitting the two ears together "
                "(default on): they shape the left-right difference, with your own cross-ear bias "
                "estimated across your profiles")),
+    (("--threshold-fit",), "threshold_fit",
+     dict(action=argparse.BooleanOptionalAction,
+          help="use threshold sessions in the fit, through your loudness-threshold gap (fitted across your "
+               "profiles), and anchor the diffuse and iso226 references at threshold (default off)")),
+    (("--consensus-broad",), "consensus_broad",
+     dict(choices=("median", "diffuse"),
+          help="a consensus reference's broad shape: the members' median (default), or the "
+               "threshold-anchored diffuse field (needs --threshold-fit)")),
     (("--phon",), "phon", dict(type=float, help="listening level assumed by the reference")),
     (("-k", "--k-narrow"), "k", dict(type=float, help="significance for narrow features (SDs)")),
     (("--k-broad",), "k_broad", dict(type=float, help="significance for broad features (SDs)")),
@@ -1170,6 +1178,26 @@ def _show_listener(x):
         print(f"  {mark} {name:20} {KHZ[1](v)}" + (f"   (default {KHZ[1](dflt)})" if mark == "*" else ""))
 
 
+ANCHORED = ("diffuse", "iso226")  # the references the threshold fit anchors (fit/reference.py)
+NO_GAP = ("No profile has 150 threshold trials yet, so there's no estimate of your loudness-threshold gap: "
+          "{what} (measure --threshold).")
+
+
+def _anchor_notes(prof, st) -> list[str]:
+    """What --threshold-fit does with these settings, when it can't do all of it."""
+    from flatiron.fit.gap import listener_gap
+
+    out = []
+    if st.consensus:
+        if st.consensus_broad == "diffuse" and listener_gap(prof.dir.parent.parent) is None:
+            out.append("Warning: " + NO_GAP.format(what="the consensus keeps its median broad shape"))
+    elif st.reference not in ANCHORED:
+        out.append(f"Note: the {st.reference!r} reference isn't anchored at threshold (only diffuse and iso226 are).")
+    elif listener_gap(prof.dir.parent.parent) is None:
+        out.append("Warning: " + NO_GAP.format(what=f"the {st.reference} reference isn't anchored at threshold"))
+    return out
+
+
 def cmd_config(args):
     """Profile settings, or, given only listener settings, the listener's."""
     reset = None
@@ -1338,6 +1366,11 @@ def _config_profile(args, reset):
     if args.veto_import_db is not None and new.veto_mode != "feature":
         print("--veto-import only applies with --veto-mode feature (nothing changed).")
         return 1
+    if new.consensus_broad == "diffuse" and not new.threshold_fit:
+        print("--consensus-broad diffuse needs --threshold-fit"
+              + (": set --consensus-broad median first" if args.threshold_fit is False else "")
+              + " (nothing changed).")
+        return 1
     given = [f for f in CONSENSUS_FIELDS if getattr(args, f) is not None]
     if given and not new.consensus:
         print("--consensus-prior, --coupling, --speaker-window, --speaker-colouration and --gain-sd only apply with a "
@@ -1384,6 +1417,9 @@ def _config_profile(args, reset):
             print("Warning: a single headphone's curve, not a consensus.")
         elif len(heads) == 2:
             print("Warning: with two headphones the consensus is their weighted mean, not a median.")
+    if new.threshold_fit and (changes.keys() & {"threshold_fit", "reference", "consensus_broad"}):
+        for w in _anchor_notes(prof, new):
+            print(w)
     if new.consensus and new.veto and (not old.consensus or not old.veto):
         from flatiron.report.html import VETO_WITH_CONSENSUS
 
@@ -1413,6 +1449,8 @@ def _config_profile(args, reset):
                   "   (unused without a speaker in the consensus)" if f in SPEAKER_FIELDS
                   and not _consensus_speakers(st, prof.dir.parent.parent) else
                   "   (unused without --veto)" if f in ("veto_mode", "veto_import_db", "veto_softness") and not st.veto
+                  else "   (unused with --threshold-fit)" if f == "phon" and st.threshold_fit and st.reference in ANCHORED
+                  else "   (unused without a consensus reference)" if f == "consensus_broad" and not st.consensus
                   else "")
         print(f"  {mark} {_option_name(flags):20} {_show(st, f)}{dflt}{unused}")
     own = prof.measured_override

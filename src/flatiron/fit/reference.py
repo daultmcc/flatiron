@@ -13,6 +13,7 @@ it's made per profile in fit/run.py and doesn't come through here.
 Every reference is returned with its mean removed over the frequencies asked for.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -46,8 +47,54 @@ def interp_log(f_src, db_src, freqs) -> np.ndarray:
     return np.interp(np.log2(freqs), np.log2(f_src), db_src)
 
 
-def reference(name: str, freqs, phon: float = 60.0) -> np.ndarray:
+ANCHORED = ("diffuse", "iso226")  # the references that can be anchored at threshold
+
+
+@dataclass(frozen=True)
+class Anchor:
+    """A profile's loudness-threshold gap (fit/gap.py): g + δ, with g's
+    covariance. With it the built-in references are anchored at threshold
+    (DESIGN.md, "Threshold-anchored reference"): diffuse is g plus the
+    diffuse-field threshold (ISO 226's, plus ISO 389-7's diffuse-field
+    difference), iso226 g plus ISO 226's threshold, each as a sensitivity
+    (negated)."""
+    knots_hz: tuple
+    g: tuple
+    cov: tuple
+    delta: tuple = (0.0, 0.0)
+
+    @classmethod
+    def of(cls, gap, slug: str) -> "Anchor":
+        d = gap.profiles.get(slug, {}).get("delta", [0.0, 0.0])
+        return cls(tuple(gap.knots_hz), tuple(gap.g), tuple(tuple(r) for r in gap.cov), tuple(d))
+
+    def curve(self, freqs) -> np.ndarray:
+        from flatiron.fit.gap import hats, low_hats
+
+        return hats(freqs, self.knots_hz) @ np.asarray(self.g) + low_hats(freqs) @ np.asarray(self.delta)
+
+    def cov_on(self, freqs) -> np.ndarray:
+        """Cov of g on the grid (δ's own error is left out, as small next to it)."""
+        from flatiron.fit.gap import hats
+
+        B = hats(freqs, self.knots_hz)
+        return B @ np.asarray(self.cov) @ B.T
+
+
+def anchored(name: str, freqs, anchor: Anchor) -> np.ndarray:
     f = np.asarray(freqs, float)
+    sens = -iso226.threshold(f)
+    if name == "diffuse":
+        sens = sens + iso389_7.diffuse_minus_free(f)
+    e = anchor.curve(f) + sens
+    return e - e.mean()
+
+
+def reference(name: str, freqs, phon: float = 60.0, anchor: Anchor | None = None) -> np.ndarray:
+    """anchor: with diffuse or iso226, anchor it at threshold (see Anchor)."""
+    f = np.asarray(freqs, float)
+    if anchor is not None and name in ANCHORED:
+        return anchored(name, f, anchor)
     if name.startswith(CONSENSUS_PREFIX):
         raise ValueError("a consensus reference is only available in a profile's own fit, not here")
     if name == "none":

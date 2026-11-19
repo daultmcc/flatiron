@@ -13,12 +13,12 @@ import numpy as np
 from flatiron.audio.biquad import PeakingFilter
 from flatiron.fit.baseline import fit_baseline, fit_shared_baseline, split
 from flatiron.fit.decompose import fit_joint_baseline, fit_shared_joint_baseline
-from flatiron.fit.consensus import (EarConsensus, Source, SplitConsensus, consensus_of, ear_reference,
-                                    shares)
+from flatiron.fit.consensus import (EarConsensus, Source, SplitConsensus, anchored_broad, consensus_of,
+                                    ear_reference, shares)
 from flatiron.fit.features import BROAD, NARROW, Feature, GroupCurve, find_features, seating_step
 from flatiron.fit.filters import FilterBounds, FilterFit, fit_filters, preamp_db, response
 from flatiron.fit.features import weighted_median
-from flatiron.fit.reference import CONSENSUS_PREFIX, reference
+from flatiron.fit.reference import ANCHORED, CONSENSUS_PREFIX, Anchor, reference
 from flatiron.fit.veto import (LOBE_HI_DB, LOBE_LO_DB, MIN_LOBE_DB, OWN_LABEL, OWN_WINS, Candidate, correction,
                                correction_rule, judge, judge_soft, smoothstep, soft_correction)
 from flatiron.model.grid import (MEASURE_HI, MEASURE_LO, interp_matrix, local_linear_smoother, log_grid,
@@ -135,6 +135,14 @@ class CorrectionSettings:
     # Use cross-ear trials, centring and threshold sessions in the two-ear fit
     # (DESIGN.md, "Using cross-ear trials"). Changes the perceptual fit too.
     cross_ear_fit: bool = True
+    # Threshold sessions in the two-ear fit, through the listener's
+    # loudness-threshold gap, and the built-in references anchored at
+    # threshold (DESIGN.md, "Threshold-anchored reference"). Changes the
+    # perceptual fit too.
+    threshold_fit: bool = False
+    # A consensus reference's broad shape: the members' median, or (with
+    # threshold_fit) the threshold-anchored diffuse field.
+    consensus_broad: str = "median"
 
     def __post_init__(self):
         object.__setattr__(self, "veto", tuple(self.veto))
@@ -381,13 +389,28 @@ class EarInput:
         return np.sqrt(np.clip(np.diag(self.cov_D), 1e-12, None))
 
 
+def reference_on(g: np.ndarray, settings: CorrectionSettings, consensus: EarConsensus | None = None,
+                 anchor: Anchor | None = None) -> np.ndarray:
+    """E on the grid: the consensus, or the named reference (anchored at
+    threshold if `anchor` is given and it's a built-in one)."""
+    return consensus.on(g) if consensus is not None else reference(settings.reference, g, settings.phon, anchor)
+
+
+def _fixed_cov(cov_L: np.ndarray, g: np.ndarray, settings: CorrectionSettings, anchor: Anchor | None) -> np.ndarray:
+    """Cov(L − E) for a fixed reference: an anchored one carries g's error."""
+    if anchor is None or settings.reference not in ANCHORED:
+        return cov_L
+    return cov_L + anchor.cov_on(g)
+
+
 def ear_input(fit: ProbitFit, settings: CorrectionSettings, consensus: EarConsensus | None = None,
-              fixed: list[PeakingFilter] | None = None, own: bool = True) -> EarInput:
+              fixed: list[PeakingFilter] | None = None, own: bool = True, anchor: Anchor | None = None) -> EarInput:
     """D and its covariance for an ear (pipeline step 1). own: False for a voter,
     whose covariance with a consensus it's in is treated as the reference's."""
     g = fit.grid
-    E = consensus.on(g) if consensus is not None else reference(settings.reference, g, settings.phon)
-    cov = fit.cov if consensus is None else (consensus.difference_cov if own else consensus.other_cov)(fit.cov, g)
+    E = reference_on(g, settings, consensus, anchor)
+    cov = (_fixed_cov(fit.cov, g, settings, anchor) if consensus is None else
+           (consensus.difference_cov if own else consensus.other_cov)(fit.cov, g))
     return EarInput(fit, fit.L + response(list(fixed or []), g) - E, cov)
 
 
@@ -438,17 +461,19 @@ def shared_bases(inputs: dict[str, EarInput], settings: CorrectionSettings) -> d
 
 def ear_bases(fits: dict[str, ProbitFit], settings: CorrectionSettings,
               consensus: dict[str, EarConsensus] | None = None,
-              fixed: dict[str, list[PeakingFilter]] | None = None, own: bool = True) -> dict[str, _Base] | None:
+              fixed: dict[str, list[PeakingFilter]] | None = None, own: bool = True,
+              anchor: Anchor | None = None) -> dict[str, _Base] | None:
     """The shared baselines of a profile's ears, or None if they aren't shared
     (the setting is off, the method has no such baseline, or there's one ear)."""
     if not settings.shared_baseline or settings.method != "features" or len(fits) < 2:
         return None
-    return shared_bases({e: ear_input(f, settings, (consensus or {}).get(e), (fixed or {}).get(e), own)
+    return shared_bases({e: ear_input(f, settings, (consensus or {}).get(e), (fixed or {}).get(e), own, anchor)
                          for e, f in fits.items()}, settings)
 
 
 def voter_bases(voters: dict[str, list[tuple[str, ProbitFit]]] | None, settings: CorrectionSettings,
-                consensus: dict[str, EarConsensus] | None = None) -> dict[str, dict[str, _Base]]:
+                consensus: dict[str, EarConsensus] | None = None,
+                anchor: Anchor | None = None) -> dict[str, dict[str, _Base]]:
     """Per ear, each voter's shared baseline (by label), for those with every ear."""
     if not voters:
         return {}
@@ -458,7 +483,7 @@ def voter_bases(voters: dict[str, list[tuple[str, ProbitFit]]] | None, settings:
         fits = {e: dict(voters[e]).get(label) for e in ears}
         if any(f is None for f in fits.values()):
             continue
-        bases = ear_bases(fits, settings, consensus, own=False)
+        bases = ear_bases(fits, settings, consensus, own=False, anchor=anchor)
         if bases is not None:
             for e in ears:
                 out[e][label] = bases[e]
@@ -560,7 +585,8 @@ def apply_veto(feats: list[Feature], voters: dict[str, list[Candidate]], setting
 def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = CorrectionSettings(),
                 fixed: list[PeakingFilter] | None = None, consensus: EarConsensus | None = None,
                 voters: list[tuple[str, ProbitFit]] | None = None, own_votes: bool = True,
-                base: _Base | None = None, voter_base: dict[str, _Base] | None = None) -> EarCorrection:
+                base: _Base | None = None, voter_base: dict[str, _Base] | None = None,
+                anchor: Anchor | None = None) -> EarCorrection:
     """fixed: filters already in use (an incremental refit). The pipeline then
     runs on the corrected curve, L + fixed, and only adds filters for what's
     still significant, within the bands left over.
@@ -579,8 +605,8 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     if settings.veto and voters is None:
         raise ValueError("this profile's veto votes haven't been supplied")
 
-    E = consensus.on(g) if consensus is not None else reference(settings.reference, g, settings.phon)
-    cov_D = fit.cov if consensus is None else consensus.difference_cov(fit.cov, g)
+    E = reference_on(g, settings, consensus, anchor)
+    cov_D = _fixed_cov(fit.cov, g, settings, anchor) if consensus is None else consensus.difference_cov(fit.cov, g)
     sd_D = np.sqrt(np.clip(np.diag(cov_D), 1e-12, None))
     H_fixed = response(fixed, g)
     D = fit.L + H_fixed - E
@@ -604,7 +630,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
         # out leaves nothing to correct.
         sources = [Source(OWN_LABEL, g, R - M @ H_fixed, cov_R)]
         for label, v in voters:
-            xv = ear_input(v, settings, consensus, own=False)
+            xv = ear_input(v, settings, consensus, own=False, anchor=anchor)
             bv = (voter_base or {}).get(label) or _baseline(v.grid, xv.D, xv.sd, settings)
             sources.append(Source(label, v.grid, xv.D - bv.values, bv.cov(xv.cov_D)))
         sm = consensus_of(sources)
@@ -686,14 +712,19 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
 
 
 def consensus_references(splits: dict[str, SplitConsensus], settings: CorrectionSettings, key: str = "",
-                         own: int | None = None, own_grids: dict[str, np.ndarray] | None = None) -> dict[str, EarConsensus]:
+                         own: int | None = None, own_grids: dict[str, np.ndarray] | None = None,
+                         anchor: Anchor | None = None) -> dict[str, EarConsensus]:
     """The consensus reference per ear for one profile, from the cached split
     consensus and this profile's settings (own: its index among the headphones
-    if it's one of them, with its grids)."""
+    if it's one of them, with its grids). With consensus_broad "diffuse" and an
+    anchor, the broad part is the threshold-anchored diffuse field's; without
+    an anchor it stays the median (the caller warns)."""
     sh = shares(splits, prior_scale=settings.consensus_prior, coupling_db=settings.consensus_coupling_db,
                 window_oct=settings.speaker_window_oct, colour_db=settings.speaker_colour_db,
                 gain_sd=settings.consensus_gain_sd, f_lo=settings.f_lo, f_hi=settings.f_hi)
-    return {e: ear_reference(sc, sh.ears[e], key, None if own is None else own_grids[e], own, sh)
+    use = settings.consensus_broad == "diffuse" and anchor is not None
+    return {e: ear_reference(sc, sh.ears[e], key, None if own is None else own_grids[e], own, sh,
+                             anchored_broad(sc.grid, anchor) if use else None)
             for e, sc in splits.items()}
 
 
@@ -770,11 +801,14 @@ class Correction:
 def correct(fits: dict[str, ProbitFit], settings: CorrectionSettings = CorrectionSettings(),
             fixed: dict[str, list[PeakingFilter]] | None = None,
             consensus: dict[str, EarConsensus] | None = None,
-            voters: dict[str, list[tuple[str, ProbitFit]]] | None = None) -> Correction:
-    bases = ear_bases(fits, settings, consensus, fixed) or {}
-    vb = voter_bases(voters, settings, consensus)
+            voters: dict[str, list[tuple[str, ProbitFit]]] | None = None,
+            anchor: Anchor | None = None) -> Correction:
+    """anchor: the profile's loudness-threshold gap, with the threshold fit on
+    (the built-in references are then anchored at threshold)."""
+    bases = ear_bases(fits, settings, consensus, fixed, anchor=anchor) or {}
+    vb = voter_bases(voters, settings, consensus, anchor)
     ears = {e: correct_ear(e, fits[e], settings, (fixed or {}).get(e), (consensus or {}).get(e), (voters or {}).get(e),
-                           base=bases.get(e), voter_base=vb.get(e))
+                           base=bases.get(e), voter_base=vb.get(e), anchor=anchor)
             for e in fits}
     pre = min(preamp_db(c.filters) for c in ears.values())
     return Correction(settings, ears, pre)

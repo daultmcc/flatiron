@@ -76,3 +76,60 @@ def test_from_sessions(tmp_path, monkeypatch):
 
     info = current_fit(prof).fits["L"].interaural
     assert info is not None and info["threshold"] is not None
+    # With the threshold fit: the trials are rows of the fit, and diffuse is anchored.
+    from dataclasses import replace
+
+    from flatiron.fit.consensus import anchored_broad
+    from flatiron.fit.reference import Anchor, reference
+    from flatiron.fit.run import profile_settings, set_profile_settings
+
+    plain = current_fit(prof)
+    set_profile_settings(prof, replace(profile_settings(prof), threshold_fit=True))
+    pf = current_fit(prof)
+    info = pf.fits["L"].interaural
+    assert info["threshold_fit"]["trials"] == 320 and info["threshold"] is None  # not folded in as well
+    assert pf.gap is not None and not pf.anchor_missing()
+    ec = pf.correction.ears["L"]
+    assert ec.E == pytest.approx(reference("diffuse", ec.grid, 60, Anchor.of(pf.gap, "hp")))
+    assert np.abs(ec.E - plain.correction.ears["L"].E).max() > 3
+    # A consensus with the anchored diffuse field's broad shape.
+    set_profile_settings(prof, replace(profile_settings(prof), reference="consensus:hp", consensus_broad="diffuse"))
+    pf = current_fit(prof)
+    x = pf.correction.ears["L"].consensus
+    assert x.broad == pytest.approx(anchored_broad(x.grid, Anchor.of(pf.gap, "hp"))[0])
+
+
+def test_anchored_references_follow_the_gap():
+    from flatiron import iso226, iso389_7
+    from flatiron.fit.reference import Anchor, reference
+
+    a = Anchor(KNOTS_HZ, tuple(centre(G_TRUE)), tuple(tuple(r) for r in 0.01 * np.eye(5)))
+    f = log_grid(1000, 13000)
+    want = hats(f, KNOTS_HZ) @ G_TRUE - iso226.threshold(f) + iso389_7.diffuse_minus_free(f)
+    assert reference("diffuse", f, 60, a) == pytest.approx(centre(want), abs=1e-9)
+    assert reference("iso226", f, 60, a) == pytest.approx(centre(hats(f, KNOTS_HZ) @ G_TRUE - iso226.threshold(f)),
+                                                          abs=1e-9)
+    assert reference("none", f, 60, a) == pytest.approx(np.zeros(f.size))  # not anchored
+    assert reference("diffuse", f, 60) == pytest.approx(reference("diffuse", f, 60, None))
+
+
+def test_config_rules_for_the_threshold_fit(tmp_path, monkeypatch, capsys):
+    from flatiron.cli import main
+    from flatiron.fit.run import profile_settings
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    prof = Profile.open("hp", root=current_listener().root)
+    assert main(["config", "hp", "--consensus-broad", "diffuse"]) == 1
+    assert "needs --threshold-fit" in capsys.readouterr().out
+    assert main(["config", "hp", "--threshold-fit"]) in (0, None)
+    assert "there's no estimate of your loudness-threshold gap" in capsys.readouterr().out  # no threshold sessions
+    assert main(["config", "hp", "--consensus-broad", "diffuse"]) in (0, None)
+    assert main(["config", "hp", "--no-threshold-fit"]) == 1
+    assert "set --consensus-broad median first" in capsys.readouterr().out
+    assert profile_settings(prof).threshold_fit and profile_settings(prof).consensus_broad == "diffuse"
+    assert main(["config", "hp", "--consensus-broad", "median", "--no-threshold-fit"]) in (0, None)
+    assert not profile_settings(prof).threshold_fit
+    main(["config", "hp", "--threshold-fit"])
+    capsys.readouterr()
+    main(["config", "hp"])
+    assert "(unused with --threshold-fit)" in capsys.readouterr().out  # phon
