@@ -88,6 +88,12 @@ def test_from_sessions(tmp_path, monkeypatch):
     pf = current_fit(prof)
     info = pf.fits["L"].interaural
     assert info["threshold_fit"]["trials"] == 320 and info["threshold"] is None  # not folded in as well
+    from flatiron.report.html import interaural_note, reference_description, write_report
+
+    assert "320 threshold" in interaural_note(pf)
+    assert "plus your loudness-threshold gap" in reference_description(pf.correction.settings, pf)
+    page = write_report(prof, pf, tmp_path / "r.html").read_text()
+    assert "<h2>Thresholds</h2>" in page and "Loudness-threshold gap (yours, from 1 profile)" in page
     assert pf.gap is not None and not pf.anchor_missing()
     ec = pf.correction.ears["L"]
     assert ec.E == pytest.approx(reference("diffuse", ec.grid, 60, Anchor.of(pf.gap, "hp")))

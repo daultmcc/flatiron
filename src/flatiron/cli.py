@@ -1481,7 +1481,11 @@ def _print_fit(prof, pf):
     pooled = f" (pooled with {', '.join(pf.pooled)})" if pf.pooled else ""
     n = len(pf.sessions)
     print(f"{listener_prefix(prof)}{n} session{'' if n == 1 else 's'}{pooled} · preamp {corr.preamp_db:+.1f} dB")
-    for note in [reference_description(corr.settings, pf)] + reference_notes(pf, kept=True) + top_notes(pf, False):
+    from flatiron.report.thresholds import threshold_view
+
+    view = threshold_view(prof, pf)
+    for note in ([reference_description(corr.settings, pf)] + reference_notes(pf, kept=True) + top_notes(pf, False)
+                 + (view.notes() if view is not None else [])):
         print(note)
     for e, c in corr.ears.items():
         f = pf.fits[e]

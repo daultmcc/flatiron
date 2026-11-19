@@ -10,7 +10,8 @@ import numpy as np
 
 from flatiron.fit.features import BROAD, NARROW
 from flatiron.fit.run import ProfileFit
-from flatiron.report.plots import EAR_NAMES, correction_figure, ear_figure, reference_figure
+from flatiron.report.thresholds import threshold_view
+from flatiron.report.plots import EAR_NAMES, correction_figure, ear_figure, reference_figure, threshold_figure
 from flatiron.session.store import Profile
 
 CSS = """
@@ -128,13 +129,22 @@ KEPT_AT_HZ = (2000.0, 4000.0, 7000.0, 11000.0)
 VETO_WITH_CONSENSUS = "Warning: the veto is on with a consensus reference, so it mostly just makes the correction smaller."
 
 
+ANCHORED_TEXT = {"diffuse": "diffuse field at threshold (ISO 226 + ISO 389-7), plus your loudness-threshold gap",
+                 "iso226": "free field at threshold (ISO 226), plus your loudness-threshold gap"}
+
+
 def reference_description(st, pf: ProfileFit | None = None) -> str:
+    anchored = pf is not None and st.threshold_fit and pf.gap is not None
     if st.consensus and pf is not None:
         c = next(iter(pf.correction.ears.values())).consensus
         sp = c.shares.speakers if c.shares is not None else []
-        return f"Reference: consensus of {', '.join(c.members)}" + (f", with {', '.join(sp)}" if sp else "")
+        broad = ("; broad shape from the diffuse field at threshold, plus your loudness-threshold gap"
+                 if anchored and st.consensus_broad == "diffuse" else "")
+        return f"Reference: consensus of {', '.join(c.members)}" + (f", with {', '.join(sp)}" if sp else "") + broad
     if st.consensus:
         return f"Reference: consensus of {', '.join(st.consensus)}"
+    if anchored and st.reference in ANCHORED_TEXT:
+        return "Reference: " + ANCHORED_TEXT[st.reference]
     return "Reference: " + {"diffuse": f"diffuse field (ISO 226 + ISO 389-7) at {st.phon:g} phon",
                             "iso226": f"free field (ISO 226) at {st.phon:g} phon",
                             "none": "none"}.get(st.reference, st.reference)
@@ -227,7 +237,9 @@ def interaural_note(pf: ProfileFit) -> str | None:
     if not info:
         return None
     lo, hi = info["ref_hz"]
-    src = [f"{n} {what}" for n, what in ((info["cross_trials"], "cross-ear"), (info["centring_trials"], "centring"))
+    thr = info.get("threshold_fit")
+    src = [f"{n} {what}" for n, what in ((info["cross_trials"], "cross-ear"), (info["centring_trials"], "centring"),
+                                         (thr["trials"] if thr else 0, "threshold"))
            if n] + (["thresholds"] if info["threshold"] else [])
     out = (f"Channel balance (left − right, {lo / 1000:g}–{hi / 1000:g} kHz): {info['c_db']:+.1f} ± "
            f"{info['c_sd']:.1f} dB, from {', '.join(src)}.")
@@ -237,9 +249,19 @@ def interaural_note(pf: ProfileFit) -> str | None:
     return out
 
 
+NO_GAP_NOTE = ("Warning: threshold fit on, but no profile has 150 threshold trials yet, so there's no estimate of "
+               "your loudness-threshold gap: {what}.")
+
+
 def top_notes(pf: ProfileFit, speaker: bool) -> list[str]:
     st = pf.correction.settings
     out = ["Speaker profile: evidence about your ears, so no correction."] if speaker else []
+    if not speaker and pf.anchor_missing():
+        if st.consensus:
+            if st.consensus_broad == "diffuse":
+                out.append(NO_GAP_NOTE.format(what="the consensus keeps its median broad shape"))
+        elif st.reference in ANCHORED_TEXT:
+            out.append(NO_GAP_NOTE.format(what=f"the {st.reference} reference isn't anchored at threshold"))
     note = interaural_note(pf)
     if note:
         out.append(note)
@@ -280,6 +302,14 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
                    f"{EAR_NAMES[e]} ear: measured level and residual")
         + '<p class="meta">' + "<br>".join(html.escape(v) for v in fitted_values(pf.fits[e], speaker)) + "</p>"
         for e, c in ears]))
+
+    view = None if speaker else threshold_view(profile, pf)
+    if view is not None:
+        out.append("<h2>Thresholds</h2>")
+        out += [f'<p class="meta">{html.escape(n)}</p>' for n in view.notes()]
+        out.append(_columns([ear_head(e) + _picture(threshold_figure(view, e, "light"), threshold_figure(view, e, "dark"),
+                                                    f"{EAR_NAMES[e]} ear: loudness and threshold")
+                             for e, _ in ears]))
 
     out.append("<h2>Features</h2>")
     cols = []
