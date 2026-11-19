@@ -931,9 +931,9 @@ FIT_OPTIONS = [
                "match (experimental): correct the whole curve toward the reference, tonality included")),
     (("--baseline",), "baseline",
      dict(choices=("robust", "joint"),
-          help="robust (default): the robustly weighted spline; joint (experimental): the posterior mean of the "
-               "tonality under a model of tonality plus features, which moves smoothly with the data instead of "
-               "tipping between two readings (needs --method features)")),
+          help="joint (default): the posterior mean of the tonality under a model of tonality plus features, which "
+               "moves smoothly with the data instead of tipping between two readings; robust: the robustly weighted "
+               "spline (with --method features)")),
     (("--shared-baseline",), "shared_baseline",
      dict(action=argparse.BooleanOptionalAction,
           help="one baseline for both ears, each with its own level (default): their broad shape is taken to be the "
@@ -1708,7 +1708,10 @@ def cmd_export(args):
     if several_listeners():  # two people's presets for the same headphones mustn't collide
         who = listener_of(prof)
         label, slug = f"{who.label} {label}", f"{who.slug}-{slug}"
-    preset_name = f"{label} Flatiron {plan.fit_hash}{' merged' if plan.merged else ''}"
+    from datetime import datetime
+
+    # The export time, not the fit hash: a list of presets reads in order, and a re-export is told apart.
+    preset_name = f"{label} Flatiron {datetime.now():%Y-%m-%d %H:%M}{' merged' if plan.merged else ''}"
     if args.output:
         out = Path(args.output)
     elif args.target == "tincan":
@@ -1777,8 +1780,9 @@ def cmd_export(args):
     preamp = "" if args.target == "tincan" else f", preamp {plan.preamp_db:+.2f} dB"
     print(f"{'Merged' if plan.merged else 'Correction-only'} export, bands {bands}{preamp}")
     if args.target == "tincan":
-        print(f"TinCan preset \"{preset_name}\"" + (": add it from the main window's preset list."
-                                                     if not args.output else ": import it in Manage presets."))
+        print(f"TinCan preset \"{preset_name}\"" + (": saved to TinCan's presets (a running TinCan picks it up "
+                                                     "straight away)." if not args.output
+                                                     else ": import it in Manage presets."))
     elif not plan.merged:
         print("Stack it after any EQ you already use (or in its own instance).")
     if args.target == "pipewire":
@@ -1973,8 +1977,8 @@ def main(argv=None):
     s = sub.add_parser("audition", help="listen with the current correction on and off")
     profile_arg(s)
     device_arg(s)
-    s.add_argument("--source", action="append", metavar="pink|sweep|FILE.wav",
-                   help="what to play (repeatable; default: pink noise and the slow sweep)")
+    s.add_argument("--source", action="append", metavar="pink|sweep|FILE",
+                   help="what to play: pink, sweep, or a WAV, FLAC or MP3 file (repeatable; default: pink noise and the slow sweep)")
     s.set_defaults(func=cmd_audition)
 
     s = sub.add_parser("listeners", help="list listeners, add, rename or delete one")

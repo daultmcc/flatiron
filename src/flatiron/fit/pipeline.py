@@ -58,10 +58,11 @@ class CorrectionSettings:
     reference: str = "diffuse"  # diffuse | iso226 | none | path to a CSV | consensus:SLUG,SLUG
     phon: float = 60.0
     baseline_penalty: float = 0.1  # baseline stiffness (tuned in the simulator; 1e-3 absorbed clustered features)
-    # robust: the Tukey-weighted spline (pipeline step 2). joint: the posterior
-    # mean of the tonality under an explicit model of D (fit/decompose.py),
-    # which can't tip between two readings the way the robust fit can.
-    baseline: str = "robust"
+    # joint: the posterior mean of the tonality under an explicit model of D
+    # (fit/decompose.py), which can't tip between two readings the way the
+    # robust fit can. robust: the Tukey-weighted spline (pipeline step 2).
+    # Only the features method has such a baseline; the others ignore it.
+    baseline: str = "joint"
     # One baseline for both ears (DESIGN.md, "Shared baseline"): their broad
     # shape is taken to be the same, each with its own level. False: each ear
     # its own, which also takes up broad differences between the ears. Only
@@ -182,8 +183,6 @@ class CorrectionSettings:
             raise ValueError("f_lo must be below f_hi")
         if self.baseline not in BASELINES:
             raise ValueError(f"baseline must be one of {', '.join(BASELINES)}")
-        if self.baseline != "robust" and self.method != "features":
-            raise ValueError("--baseline joint needs --method features (the other methods have no such baseline)")
         if self.method not in METHODS:
             raise ValueError(f"method must be one of {', '.join(METHODS)}")
         if not 1 / 8 - 1e-9 <= self.smooth_oct <= 1 + 1e-9:

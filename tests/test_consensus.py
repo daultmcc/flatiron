@@ -795,16 +795,17 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert main(["config", "One", "--veto-mode", "feature", "--veto-import", "3"]) == 0
     assert profile_settings(one).veto_import_db == 3.0
     assert main(["config", "One", "--reset", "veto-import"]) == 0
-    # The joint baseline, with a consensus reference and both vetoes (each voter's baseline is its own).
-    assert main(["config", "One", "--baseline", "joint"]) == 0
+    # The joint baseline (the default), with a consensus reference and both vetoes (each voter's baseline is its own).
+    assert current_fit(one).correction.ears["L"].baseline_sd is not None
+    assert main(["config", "One", "--baseline", "robust"]) == 0
     capsys.readouterr()
     assert main(["report", "One", "-H"]) == 0
-    assert "Baseline: joint" in capsys.readouterr().out
-    assert current_fit(one).correction.ears["L"].baseline_sd is not None
+    assert "Baseline: robust" in capsys.readouterr().out
+    assert current_fit(one).correction.ears["L"].baseline_sd is None
+    assert main(["config", "One", "--reset", "baseline"]) == 0
     assert main(["config", "One", "--veto-mode", "pointwise"]) == 0
     current_fit(one)
-    assert main(["config", "One", "--method", "smooth"]) == 1  # the joint baseline needs features
-    assert main(["config", "One", "--reset", "baseline,veto-mode"]) == 0
+    assert main(["config", "One", "--reset", "veto-mode"]) == 0
     assert main(["config", "One", "--veto", "One"]) == 1  # no one else to vote
     assert main(["config", "One", "--veto", "Nope"]) == 1
     assert main(["config", "One", "--veto", "none"]) == 0 and profile_settings(one).veto == ()

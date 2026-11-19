@@ -250,7 +250,9 @@ def test_tincan_export_cli(tmp_path, monkeypatch, capsys):
     presets.mkdir(parents=True)
     assert main(["export", "-t", "tincan"]) == 0
     (out,) = presets.glob("hd-600-flatiron-*.toml")
-    assert 'name = "HD 600 Flatiron ' in out.read_text()
+    import re
+
+    assert re.search(r'name = "HD 600 Flatiron \d{4}-\d\d-\d\d \d\d:\d\d"', out.read_text())  # stamped, not hashed
     assert "preamp" not in capsys.readouterr().out
     assert main(["export", "-t", "tincan", "--preamp", "0"]) == 1
     assert main(["export", "-t", "tincan", "-o", "mine.toml"]) == 0 and (tmp_path / "mine.toml").exists()

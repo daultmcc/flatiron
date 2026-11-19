@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 from scipy import signal
-from scipy.io import wavfile
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -51,14 +50,18 @@ def sweep(fs: int = FS) -> np.ndarray:
     return np.column_stack([x, x])
 
 
-def read_wav(path: Path, fs: int = FS) -> np.ndarray:
-    rate, x = wavfile.read(path)
-    if np.issubdtype(x.dtype, np.integer):
-        x = x / float(np.iinfo(x.dtype).max)
-    x = np.asarray(x, float)
-    if x.ndim == 1:
-        x = np.column_stack([x, x])
-    x = x[:, :2]
+FILE_TYPES = (".wav", ".flac", ".mp3")
+
+
+def read_audio(path: Path, fs: int = FS) -> np.ndarray:
+    """A WAV, FLAC or MP3 file as stereo float at fs (mono is doubled, extra channels dropped)."""
+    import soundfile
+
+    try:
+        x, rate = soundfile.read(path, dtype="float64", always_2d=True)
+    except (soundfile.LibsndfileError, RuntimeError) as e:
+        raise ValueError(f"{path.name}: can't decode it ({e})") from None
+    x = np.column_stack([x[:, 0], x[:, 0]]) if x.shape[1] == 1 else x[:, :2]
     if rate != fs:
         g = np.gcd(int(rate), fs)
         x = signal.resample_poly(x, fs // g, int(rate) // g, axis=0)
@@ -73,9 +76,9 @@ def load_source(spec: str) -> tuple[str, np.ndarray]:
     p = Path(spec).expanduser()
     if not p.exists():
         raise FileNotFoundError(f"no such file: {spec}")
-    if p.suffix.lower() != ".wav":
-        raise ValueError(f"{spec}: only WAV files can be played (or 'pink', 'sweep')")
-    return p.name, read_wav(p)
+    if p.suffix.lower() not in FILE_TYPES:
+        raise ValueError(f"{spec}: only WAV, FLAC and MP3 files can be played (or 'pink', 'sweep')")
+    return p.name, read_audio(p)
 
 
 def versions(src: np.ndarray, eq: PreviewEQ) -> tuple[np.ndarray, np.ndarray]:

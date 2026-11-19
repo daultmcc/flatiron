@@ -132,7 +132,9 @@ of options are associated to listeners instead. `flatiron config -h` prints a fu
 the specified profile. The currently supported formats are `apo` (for Equalizer APO and AutoEQ),
 `easyeffects` (for EasyEffects and Equaliser), `lsp` (for the LSP Parametric Equalizer plugin),
 `pipewire` (a configuration file for a filter chain that can be dropped into `pipewire.conf.d`),
-and `tincan` (for [TinCan](https://github.com/daultmcc/tincan)).
+and `tincan` (for [TinCan](https://github.com/daultmcc/tincan)). For `tincan`, `-o` can be left
+out, in which case the preset goes straight into TinCan's preset folder, and a running TinCan picks
+it up automatically. The preset is named after the profile and the date and time of the export.
 
 If TinCan is running when you start a session, Flatiron reads the EQ it's applying, tells you
 before the session starts, and accounts for it at every burst, so a forgotten preset doesn't
@@ -146,7 +148,7 @@ or both ears, with any stimulus type) to look for resonances. This can be useful
 right for manual EQ, but if you provide a profile you can also toggle the corrections on and
 off to see the effect they have. `flatiron verify` runs trials similar to `measure` but with the
 correction applied, and `flatiron audition` lets you toggle the corrections while playing a
-provided audio clip.
+provided audio clip (WAV, FLAC or MP3).
 
 ### Speakers
 

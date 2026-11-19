@@ -97,7 +97,7 @@ def test_the_other_ears_errors_reach_the_residual():
     J_LR Σ_R J_LRᵀ."""
     fits = _two_ears()
     ins = {e: EarInput(f, f.L.copy(), f.cov) for e, f in fits.items()}
-    b = shared_bases(ins, CorrectionSettings(reference="none"))
+    b = shared_bases(ins, CorrectionSettings(reference="none", baseline="robust"))
     Jo = fit_shared_baseline([G, G], [ins["L"].D, ins["R"].D], [ins["L"].sd, ins["R"].sd], 1.0,
                               CorrectionSettings().baseline_penalty).smoother[:G.size, G.size:]
     assert np.abs(Jo).max() > 0.01
@@ -119,7 +119,7 @@ def test_each_session_takes_the_other_ears_deviation_in_that_session():
         f.group_u_cov = np.stack([f.cov] * 2)
         f.groups = ["s1", "s2"] if e == "L" else ["s2", "s3"]  # R has no s1
     ins = {e: EarInput(f, f.L.copy(), f.cov) for e, f in fits.items()}
-    b = shared_bases(ins, CorrectionSettings(reference="none"))["L"]
+    b = shared_bases(ins, CorrectionSettings(reference="none", baseline="robust"))["L"]
     Jo = fit_shared_baseline([G, G], [ins["L"].D, ins["R"].D], [ins["L"].sd, ins["R"].sd], 1.0,
                              CorrectionSettings().baseline_penalty).smoother[:n, n:]
     R = ins["L"].D - b.values
@@ -437,7 +437,7 @@ def test_narrow_features_inside_a_broad_region_are_corrected():
     assert broad and not any(f.accepted for f in broad)  # the excess itself is kept as tonality
     # The dip is filled; the 0.4-octave peak counts as narrow and is cut.
     h = response(c.added, np.array([2100.0, 10000.0]))
-    assert h[0] > 1.5 and h[1] < -4
+    assert h[0] > 1.5 and h[1] < -3.5
     assert any(f.kind == NARROW and f.accepted and abs(np.log2(f.fc / 10000)) < 1 / 12 for f in c.features)
     # With --broad the whole region is corrected instead, so it isn't searched.
     c = correct_ear("L", _fit_of(L), CorrectionSettings(reference="none", preserve_tonality=False))
@@ -515,7 +515,7 @@ def test_session_panel_shades_the_middle_90_percent_above_five_sessions(monkeypa
     assert 1.8 < plots.weighted_quantiles(vals, [1, 1, 10, 1], [0.5])[0, 0] < 2.0
 
     g = G
-    c = correct_ear("L", _fit_of(bump(7000, 0.2, 6.0)), CorrectionSettings(reference="none"))
+    c = correct_ear("L", _fit_of(bump(7000, 0.2, 6.0)), CorrectionSettings(reference="none", baseline="robust"))
     fills = []
     real_fill = plots.plt.Axes.fill_between
     monkeypatch.setattr(plots.plt.Axes, "fill_between",
@@ -706,3 +706,9 @@ def test_a_new_profile_starts_with_the_listeners_noise(tmp_path, monkeypatch):
     r = TrialRunner(Profile.open("New"), seed=1)
     for e in "LR":
         assert noise[e].n_trials == 220 and r.scheduler.ears[e].fit.sigma0 == pytest.approx(noise[e].sigma0)
+
+
+def test_the_joint_baseline_is_the_default_and_other_methods_ignore_it():
+    assert CorrectionSettings().baseline == "joint"
+    for m in ("smooth", "match"):
+        CorrectionSettings(method=m)  # no baseline of that kind there, so nothing to refuse

@@ -266,8 +266,8 @@ def top_notes(pf: ProfileFit, speaker: bool) -> list[str]:
     if note:
         out.append(note)
     out += method_notes(pf)
-    if st.method == "features" and st.baseline == "joint":
-        out.append("Baseline: joint (experimental).")
+    if st.method == "features" and st.baseline == "robust":
+        out.append("Baseline: robust.")
     if st.method == "features" and not st.shared_baseline:
         out.append("Baseline: one per ear.")
     if st.method == "smooth":

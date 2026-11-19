@@ -21,8 +21,11 @@ def test_versions_are_level_matched_and_loop_cleanly():
 def test_load_source_errors(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_source(str(tmp_path / "nope.wav"))
-    (tmp_path / "x.flac").write_bytes(b"")
-    with pytest.raises(ValueError):
+    (tmp_path / "x.ogg").write_bytes(b"")
+    with pytest.raises(ValueError, match="only WAV, FLAC and MP3"):
+        load_source(str(tmp_path / "x.ogg"))
+    (tmp_path / "x.flac").write_bytes(b"not audio")
+    with pytest.raises(ValueError, match="can't decode"):
         load_source(str(tmp_path / "x.flac"))
 
 
@@ -32,6 +35,19 @@ def test_wav_source_is_resampled_to_stereo_48k(tmp_path):
     wavfile.write(tmp_path / "m.wav", 44100, (np.sin(np.arange(44100) / 10) * 20000).astype(np.int16))
     name, x = load_source(str(tmp_path / "m.wav"))
     assert name == "m.wav" and x.shape == (48000, 2) and np.abs(x).max() <= 1.0
+
+
+@pytest.mark.parametrize("ext", ["flac", "mp3"])
+def test_compressed_sources(tmp_path, ext):
+    import soundfile
+
+    tone = 0.5 * np.sin(2 * np.pi * 1000 * np.arange(48000) / 48000)
+    soundfile.write(tmp_path / f"m.{ext}", np.column_stack([tone, -tone]), 48000)
+    name, x = load_source(str(tmp_path / f"m.{ext}"))
+    assert name == f"m.{ext}" and x.shape[1] == 2 and abs(x.shape[0] - 48000) < 3000
+    mid = x[10000:40000]
+    assert np.sqrt(np.mean(mid**2, axis=0)) == pytest.approx([0.5 / np.sqrt(2)] * 2, rel=0.05)
+    assert np.corrcoef(mid[:, 0], mid[:, 1])[0, 1] < -0.99  # the channels kept apart
 
 
 async def test_toggle_blind_and_reveal():

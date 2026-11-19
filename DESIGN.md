@@ -20,7 +20,8 @@ This document describes how Flatiron works as built, the evidence behind its des
 | One baseline for both ears | Built | "Shared baseline" |
 | Profile comparison | Built | "Comparing profiles" |
 | Consensus reference, veto | Built | "Consensus reference"; "Veto against other profiles" |
-| Smooth and match methods, joint baseline | Built, experimental | "Experimental methods" |
+| Joint baseline | Built, default | "The joint baseline" |
+| Smooth and match methods | Built, experimental | "Experimental methods" |
 | Speaker sessions and the position model | Built | "Speaker profiles" |
 | Speakers deciding what the consensus keeps | Built | "Consensus reference" |
 | Speaker evidence in a joint model | Superseded | "Speaker profiles" |
@@ -467,7 +468,7 @@ The steps run per ear. Code comments cite them by number.
     - `none`.
     - A CSV of perceived-level shape (`freq_hz,db` rows).
     - A consensus of other profiles' raw curves (see "Consensus reference").
-2. **Baseline.** A penalised cubic B-spline in $\log_2 f$ with knots every $2W$. The curvature penalty sets its stiffness; it scales as $W^4$ (0.1 relative to the data weight at $W = 1$ octave), since a smoothing spline's length scale goes as the penalty's fourth root. It is fitted by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. The final smoother is linear in the data, so the residual's covariance follows exactly. `--baseline joint` (experimental) replaces it with the posterior mean of the tonality, which can't tip (see "The joint baseline"). By default the two ears share one baseline, each with its own level (see "Shared baseline").
+2. **Baseline.** A penalised cubic B-spline in $\log_2 f$ with knots every $2W$. The curvature penalty sets its stiffness; it scales as $W^4$ (0.1 relative to the data weight at $W = 1$ octave), since a smoothing spline's length scale goes as the penalty's fourth root. By default (`--baseline joint`) it's the posterior mean of the tonality under a model in which each point is tonality plus either noise or a feature, which moves smoothly with the data instead of tipping between two readings (see "The joint baseline"). `--baseline robust` fits it instead by iteratively reweighted least squares: Huber weights to convergence, then Tukey bisquare, so features don't drag it. That smoother is linear in the data, so the residual's covariance follows exactly, but near the edge between two readings of a broad region it can tip (see "Known limitations"). By default the two ears share one baseline, each with its own level (see "Shared baseline").
 3. **Residual.** $R = D - b$, with its full covariance $\Sigma_R$.
 4. **Features.** $R$ is split into lobes between sign changes, and a lobe is split again at any valley no deeper than half the smaller peak on either side. Then:
     - A lobe narrower than 1/2 octave at half height is *narrow*. It's kept if at least two adjacent points exceed $k$ SD ($k = 2$).
@@ -508,6 +509,36 @@ The steps run per ear. Code comments cite them by number.
 
 **What it decides.** The shared shape follows the ear with the smaller error bars where they differ. On Sundara that's the right ear in the treble (SD 0.6 to 0.9 dB against 1.7 to 1.9), so both ears now take about 3 dB at 11 to 12 kHz as tonality: the left ear's cut there shrinks, and the right ear's excess is still kept. Whether that region is tonality or a feature is a separate question from whether the ears agree.
 
+## The joint baseline
+
+**In brief.** The robust baseline makes a hard choice for a broad region far off the reference: follow it as tonality, or reject it as a feature. Near the edge between the two, small changes in the data or the error bars can tip it from one to the other (see "Known limitations"). The joint baseline (the default; `config --baseline robust` for the other) replaces the choice with an average: the posterior mean of the tonality under a model in which each point is tonality plus either noise or a feature. The baseline then moves continuously with the data and the error bars. Everything downstream is unchanged, except that the baseline is nonlinear in $D$.
+
+**Model.** On the fit's grid (both ears' points stacked, with the baseline shared; see "Shared baseline"), $D_i = b(x_i) + e_i$, with $b = Bc$ the robust baseline's spline (knots every $2W$). Each point is tonality plus the fit's error, or that plus a feature:
+
+$$
+e_i \sim (1 - \pi)\,\mathcal N\!\left(0,\; \mathrm{SD}_i^2 + \sigma_\text{floor}^2\right) + \pi\,\mathcal N\!\left(0,\; \mathrm{SD}_i^2 + \sigma_\text{floor}^2 + \sigma_\text{spread}^2\right)
+$$
+
+with $\pi = 0.4$, $\sigma_\text{spread} = 8$ dB and $\sigma_\text{floor} = 0.5$ dB.
+
+- The curvature prior on $c$ is the robust baseline's stiffness (0.1 relative to the data weight, scaling as $W^4$), but taken at a fixed SD of 1.1 dB (the real profiles' median) rather than at the fit's own, so it's fixed in dB. Level and slope are free.
+- As in the robust fit, each point is weighted by the width it stands for, in initial grid steps, and only the SDs (not the correlations) of $\Sigma_D$ are used.
+- The floor is the tonality's own ripple. Without it, whether a block is shape or feature turns on its misfit in SDs, which moves fast with the error bars' scale.
+
+**Inference.** The tonality has only a handful of coefficients (5 at $W = 1$, 9 at $W = 1/3$), so the posterior mean is integrated directly, by importance sampling over fixed draws (4,000 per proposal, seed fixed):
+
+- Five rounds of proposals (multivariate t, 4 degrees of freedom). The first is centred on the Huber fit and as wide as the posterior with the likelihood raised to the power 0.01; each later one is matched to the moments of the posterior at a higher power (0.03 up to 1), 1.5 times wider.
+- Where a block sits far off the reference, the posterior has several narrow modes far apart (one per reading) that no single proposal covers. So the modes are also found by Newton's method from 16 starts (the Huber fit, the robust fit, and the best draws, chosen farthest-first), and each mode within 20 nats of the best (by Laplace evidence) gets a proposal of its own, its Laplace covariance 1.3 times wider.
+- Every draw is weighted against the mixture of all the proposals (multiple importance sampling).
+- Nothing is resampled, so the estimate is a smooth function of the data, except where a mode is found or not: that changes only the proposal, and moves the estimate only by its Monte Carlo error.
+- It takes about 0.3 s per ear, so it isn't cached.
+
+**Residual covariance.** The baseline's Jacobian is exact for a posterior mean: $J = \operatorname{Cov}\!\big(b,\ \partial \log p(D \mid c)/\partial D \;\big|\; D\big)$, from the same weighted draws. The residual is $R = D - \hat b$, with covariance $(I - J)\,\Sigma_D\,(I - J)^{\mathsf T}$, and each session's curve is $R + (I - J)\,u_g$. Unlike the robust fit's, which holds its final weights fixed, this includes how the reading itself moves with the data: where the baseline is sensitive (a block near the edge between readings), the residual's SD grows, and features there need to be larger to count.
+
+**Report.** The baseline is drawn with its posterior SD. A corrected feature where that SD exceeds 1 dB is flagged in both reports: part of it may be tonality, or the other way round.
+
+The validation results, and the designs tried first, are under "Joint baseline" in "Findings".
+
 ## Settings
 
 Every setting but the channel balance, the cross-ear and threshold fits and the measured range is downstream of the cached perceptual fit, so changing it needs no new trials. The measured range decides where new trials go, and changes nothing until then except the default correction range. The balance changes the joint fit of the two ears, which is quick and cached separately. Settings are stored per profile (`flatiron config`) as only the values that differ from the defaults, so improved defaults reach existing profiles.
@@ -539,14 +570,14 @@ The listener has settings of their own, with names no profile setting shares: `-
 | Seating step | on | `--seating` / `--no-seating` |
 | Sessions and pooled profiles | all of this profile's | `--sessions ID,PROFILE,…` |
 | Method | `features` | `--method features`, `smooth` or `match`; `--smooth-width` |
-| Baseline | `robust` | `--baseline robust` or `joint` |
+| Baseline | `joint` | `--baseline joint` or `robust` (only the features method has one) |
 | One baseline for both ears | on | `--shared-baseline` / `--no-shared-baseline` |
 
 `config` with no options lists every setting, starred where changed. `--reset NAME,NAME` returns the named settings to their defaults; it also takes `sessions`, `checkpoint`, and `all` (every setting, the measured range included, and the session selection, but not the checkpoint, which has to be named). `--reset` can't be combined with any other change, which catches a reset and a change meant for different profiles or settings; `--veto none` can.
 
 Some combinations are refused:
 
-- `--veto` and `--baseline joint` need `--method features`.
+- `--veto` needs `--method features`.
 - `--method smooth` needs `--broad-strength` 0.
 - `--consensus-broad diffuse` needs `--threshold-fit` (and `--no-threshold-fit` is refused while it's set).
 - `--smooth-width`, `--veto-mode`, `--veto-import`, `--consensus-prior` and `--coupling` need the setting they modify; `--speaker-window`, `--speaker-colouration` and `--gain-sd` need a speaker in the consensus.
@@ -732,7 +763,7 @@ A checkpoint's filters are part of $R$ but not of the median, so a peak they alr
 
 # Experimental methods
 
-These are settings, off by default, that change how the pipeline treats the residual or the baseline. They stay experimental until they've earned a switch.
+These are settings, off by default, that change how the pipeline treats the residual. They stay experimental until they've earned a switch.
 
 ## The smooth and match methods
 
@@ -745,42 +776,12 @@ These are settings, off by default, that change how the pipeline treats the resi
 
 `config --method match` has no baseline at all. The whole of $D = \hat L - E$ within the correction range, with only its level free (a precision-weighted median), is the target, tonality included, with the cut cap and the broad boost cap and no tonality compensation. There's no feature test. It's meant for trying a consensus reference; with ISO 226 it would correct the difference between the headphone and the contour, broad shape and all. It doesn't combine with `--veto`.
 
-## The joint baseline
-
-**In brief.** The robust baseline makes a hard choice for a broad region far off the reference: follow it as tonality, or reject it as a feature. Near the edge between the two, small changes in the data or the error bars can tip it from one to the other (see "Known limitations"). `config --baseline joint` replaces the choice with an average: the posterior mean of the tonality under a model in which each point is tonality plus either noise or a feature. The baseline then moves continuously with the data and the error bars. Everything downstream is unchanged, except that the baseline is nonlinear in $D$. `robust` stays the default until this has earned the switch.
-
-**Model.** On the fit's grid (both ears' points stacked, with the baseline shared; see "Shared baseline"), $D_i = b(x_i) + e_i$, with $b = Bc$ the robust baseline's spline (knots every $2W$). Each point is tonality plus the fit's error, or that plus a feature:
-
-$$
-e_i \sim (1 - \pi)\,\mathcal N\!\left(0,\; \mathrm{SD}_i^2 + \sigma_\text{floor}^2\right) + \pi\,\mathcal N\!\left(0,\; \mathrm{SD}_i^2 + \sigma_\text{floor}^2 + \sigma_\text{spread}^2\right)
-$$
-
-with $\pi = 0.4$, $\sigma_\text{spread} = 8$ dB and $\sigma_\text{floor} = 0.5$ dB.
-
-- The curvature prior on $c$ is the robust baseline's stiffness (0.1 relative to the data weight, scaling as $W^4$), but taken at a fixed SD of 1.1 dB (the real profiles' median) rather than at the fit's own, so it's fixed in dB. Level and slope are free.
-- As in the robust fit, each point is weighted by the width it stands for, in initial grid steps, and only the SDs (not the correlations) of $\Sigma_D$ are used.
-- The floor is the tonality's own ripple. Without it, whether a block is shape or feature turns on its misfit in SDs, which moves fast with the error bars' scale.
-
-**Inference.** The tonality has only a handful of coefficients (5 at $W = 1$, 9 at $W = 1/3$), so the posterior mean is integrated directly, by importance sampling over fixed draws (4,000 per proposal, seed fixed):
-
-- Five rounds of proposals (multivariate t, 4 degrees of freedom). The first is centred on the Huber fit and as wide as the posterior with the likelihood raised to the power 0.01; each later one is matched to the moments of the posterior at a higher power (0.03 up to 1), 1.5 times wider.
-- Where a block sits far off the reference, the posterior has several narrow modes far apart (one per reading) that no single proposal covers. So the modes are also found by Newton's method from 16 starts (the Huber fit, the robust fit, and the best draws, chosen farthest-first), and each mode within 20 nats of the best (by Laplace evidence) gets a proposal of its own, its Laplace covariance 1.3 times wider.
-- Every draw is weighted against the mixture of all the proposals (multiple importance sampling).
-- Nothing is resampled, so the estimate is a smooth function of the data, except where a mode is found or not: that changes only the proposal, and moves the estimate only by its Monte Carlo error.
-- It takes about 0.3 s per ear, so it isn't cached.
-
-**Residual covariance.** The baseline's Jacobian is exact for a posterior mean: $J = \operatorname{Cov}\!\big(b,\ \partial \log p(D \mid c)/\partial D \;\big|\; D\big)$, from the same weighted draws. The residual is $R = D - \hat b$, with covariance $(I - J)\,\Sigma_D\,(I - J)^{\mathsf T}$, and each session's curve is $R + (I - J)\,u_g$. Unlike the robust fit's, which holds its final weights fixed, this includes how the reading itself moves with the data: where the baseline is sensitive (a block near the edge between readings), the residual's SD grows, and features there need to be larger to count.
-
-**Report.** The baseline is drawn with its posterior SD. A corrected feature where that SD exceeds 1 dB is flagged in both reports: part of it may be tonality, or the other way round.
-
-The validation results, and the designs tried first, are under "Joint baseline" in "Findings".
-
 # Listening tools
 
 ## Audition and verify
 
 - **Preview EQ.** Flatiron's own software copy of a correction, built from the same export plan as the exporters, so what's auditioned or verified is what an export does.
-- **Audition** (`audition`): pink noise, the slow sweep, or the user's WAV files, with Space flipping the correction on and off at the same playback position. The preamp applies to both states, so they're level-matched. A blind mode hides which is which until revealed.
+- **Audition** (`audition`): pink noise, the slow sweep, or the user's WAV, FLAC or MP3 files (decoded with libsndfile, through `soundfile`), with Space flipping the correction on and off at the same playback position. The preamp applies to both states, so they're level-matched. A blind mode hides which is which until revealed.
 - **Verify** (`verify`): a short session (150 answers by default) with the preview EQ applied to every burst. Each burst's level change from the EQ is recorded as a known offset, so verify trials pool with ordinary ones and stay valid if the settings change later. Afterwards Flatiron refits with the applied filters fixed and reports any feature still significant.
 
 ## Tone generator
@@ -810,7 +811,7 @@ By default files are written to the current directory, named `<profile>-<fit has
 - **LSP.** Written over a template exported from LSP 1.2.35, changing only band, gain and mode lines. Bands use filter mode 6, "APO (DR)", which matches the RBJ filters within 0.01 dB (the default RLC (BT) mode differs by up to 1.7 dB on narrow bells). The preamp is the input gain; LSP doesn't auto-balance.
 - **EasyEffects.** Written over an EasyEffects 7 split-channel preset, with bands in "APO (DR)" mode and the preamp as input gain. EasyEffects runs LSP's equalizer, so the same LADSPA check applies. Equaliser (macOS) imports this format; how it maps Q and mode on import hasn't been verified.
 - **PipeWire.** A filter-chain module with `param_eq` filters inline, `bq_peaking` (and shelves) in RBJ form. The preamp is a `bq_highshelf` at frequency 0, which is a broadband gain. It's installed by copying it to `~/.config/pipewire/pipewire.conf.d/` and restarting PipeWire (`systemctl --user restart pipewire`), which adds a "Flatiron <profile>" sink. The check plays a log sweep through a private copy (virtual sink and source, nothing on real devices) and compares the recording with the prediction. It pins `pw-play` and `pw-record` with `node.dont-move`, because a running TinCan moves new streams onto its own sink.
-- **TinCan.** TinCan's preset format 1: `format`, `name`, and `[[filter]]` tables with `type`, `channel` (L, R or LR), `frequency`, `gain`, `q` and `enabled`. TinCan's bells are RBJ peaking filters. Presets carry no preamp, since TinCan sets one for everything loaded, so `--preamp` is refused. A filter identical in both channels (a merged preference shelf, for example) is written once, as LR. The preset is named "<profile> Flatiron <fit hash>", saved under TinCan's file-name rule into `$XDG_DATA_HOME/tincan/presets/`, or written to `-o FILE` for TinCan's import. Values outside TinCan's ranges are refused rather than clamped.
+- **TinCan.** TinCan's preset format 1: `format`, `name`, and `[[filter]]` tables with `type`, `channel` (L, R or LR), `frequency`, `gain`, `q` and `enabled`. TinCan's bells are RBJ peaking filters. Presets carry no preamp, since TinCan sets one for everything loaded, so `--preamp` is refused. A filter identical in both channels (a merged preference shelf, for example) is written once, as LR. The preset is named "<profile> Flatiron <date> <time>" (the export's, to the minute), and saved under TinCan's file-name rule into `$XDG_DATA_HOME/tincan/presets/`, which a running TinCan watches, so it appears straight away; or written to `-o FILE` for TinCan's import. Values outside TinCan's ranges are refused rather than clamped.
 
 # Architecture
 
@@ -850,7 +851,7 @@ Commands that work on one profile take it as an optional first argument, `PROFIL
 | `devices` | Lists outputs with host API, channels and native rate, marks the default, and flags Bluetooth, mono and rates other than 48 kHz | — |
 | `measure` | Runs sessions (see "Session flow"): loudness trials by default, `--threshold` for threshold sessions (see "Threshold sessions"), `--centre` for centring sessions (see "Centring sessions"); speaker blocks for a speaker profile (see "Speaker sessions") | All: `PROFILE`, `--new`, `-d`, `-n`, `-m`/`--minutes` (at most 15; default 12, threshold 8, centring 5), `--stimulus noise:N`, `warble:N` or `tone` (a 1/N-octave band; a warble swings over 1/N octave; default `noise:12`, centring `noise:1`), `--debug` (see "Trial"). Loudness and centring: `--no-match` (see "Loudness matching"). Loudness only: `--cross-ear PCT` (default 10; see "Cross-ear trials"), `--active-eq APO_TXT`, `--eq-note`, `--max-match-boost DB`, `-s`/`--sweep`, `--sweep-seconds`; for a speaker profile, `--block N`. An option for another kind of session is refused. |
 | `verify` | A short session through the correction | `PROFILE`, `-d`, `-n`, `-m`, `--stimulus`, `--active-eq`, `--eq-note`, `--no-match`, `--max-match-boost`, and `--trials` (answers, both ears; default 150) |
-| `audition` | The correction on and off | `PROFILE`, `-d`, `-n`, `--source pink`, `sweep` or `FILE.wav` (repeatable; default pink and sweep) |
+| `audition` | The correction on and off | `PROFILE`, `-d`, `-n`, `--source pink`, `sweep` or `FILE` (WAV, FLAC or MP3) (repeatable; default pink and sweep) |
 | `tone` | The tone generator | `PROFILE`, `-d`, `-n`, `-f`/`--freq` (default 1000), `-e`/`--ear L`, `R` or `both` |
 | `listeners` | Lists listeners (profiles, trials per ear, each ear's noise and the trials behind it), or changes them | `new NAME`; `rename OLD NEW` (the folder and the name used in `LISTENER/PROFILE`); `delete NAME` (all their profiles; asks first, `-y`/`--yes` doesn't) |
 | `profiles` | Lists profiles (sessions, trials per ear, last date and level, sessions not closed), grouped by listener when there are several, or changes them | `new NAME --kind headphone`, `iem` or `speaker` (with `--channel L` or `R`); `set NAME --kind … --label …`, which affects no trials; `rename NAME NEW` (label and folder); `move NAME --to LISTENER`; `delete NAME` (asks first; `-y`/`--yes` doesn't) |
@@ -1265,12 +1266,12 @@ Two other ways to stop the robust baseline tipping were tried and rejected:
 # Known limitations
 
 - **The MAP isn't unique.** The lapse term makes the posterior non-concave, so two nearby solutions can exist. On one simulated data set, moving $\sigma_0$ from 1.12 to 1.15 dB moved the curve by up to 1 dB, with nothing else changed. Which solution a fit lands on can depend on small changes to the noise parameters, which is one way a feature near the threshold can flip. Over 45 seeds this averages out (0.66 dB shape error, 1.12 worst).
-- **The baseline can tip.** The robust baseline's Tukey weights depend on residual/SD. When a block wider than $W$ sits far off the reference, the baseline either rises to meet it or rejects it as a feature, and the choice can turn on the error bars' scale. Two solutions coexist near the edge.
+- **The robust baseline can tip.** Its Tukey weights depend on residual/SD. When a block wider than $W$ sits far off the reference, the baseline either rises to meet it or rejects it as a feature, and the choice can turn on the error bars' scale. Two solutions coexist near the edge.
     - On `sundaratone` L against ISO 226, 6 to 13 kHz sits 8 to 15 dB above 4 kHz. Scaling the SDs by 0.875 instead of 0.9 moved the baseline at 13 kHz from 3.5 to 7.6 dB, and the target by up to 6 dB, merging the 7 and 11 kHz peaks. `sundara` L is as close to the edge (3.5 dB per 2.5% of SD) and `hd560` R is moderately sensitive (1 dB); `ft1` isn't.
     - Any change that shrinks the error bars can tip it, the channel-balance prior included, and so can a new session.
     - Against the consensus reference the block is mostly in the reference, and the baseline is stable (0.4 dB at most per 2.5%).
     - The simulated listeners hardly ever tip (0.5% of them by over 1 dB per 2.5% of SD): they follow ISO 226 closely. The multi-headphone simulator's "contour" scenario has the real condition.
-    - `--baseline joint` (experimental) reduces the largest step to 0.25 dB on the real ears. Two other fixes were rejected (see "Robust baseline alternatives" under "Findings").
+    - The joint baseline, now the default, reduces the largest step to 0.25 dB on the real ears. Two other fixes were rejected (see "Robust baseline alternatives" under "Findings").
     - A shared baseline doesn't stop it tipping, but both ears now tip together. On `sundaratone` against ISO 226 the shared robust baseline still steps by up to 1.2 dB per 2.5% of SD, in both ears (1.9 and 0.6 dB apart).
 - **The shared baseline takes the ears' errors as independent.** The balance prior correlates the two ears' curves, but the fits don't keep that covariance, so the other ear's share of a residual's error bars is approximate.
 - **Broad corrections are only as good as the reference.** With `--broad-strength` above 0, individual ears can sit several dB off ISO 226 in the ear-gain region, which is why tonality is kept by default.
