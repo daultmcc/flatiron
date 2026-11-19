@@ -1092,10 +1092,14 @@ class FlatironApp(App):
             self.runner.finish()  # nothing recorded: deleted
             self.exit()
             return
+        if getattr(self.runner, "threshold", False):  # a consistent start for the descending run
+            self.push_screen(self.level_screen(), self.after_level)
+            return
         self.push_screen(ChannelCheckScreen(self.runner), lambda _: self.start_trials())
 
     def after_level(self, level, switch: bool = True, last: str = ""):
         if level is None:
+            self.runner.finish()  # nothing recorded: deleted
             self.exit()
             return
         self.runner.set_level(level)

@@ -13,7 +13,7 @@ from flatiron.model.threshold import ThresholdData, fit_thresholds, prior_shape
 from flatiron.session.store import Profile
 from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
 from flatiron.sim.listener import ThresholdListener
-from flatiron.ui.app import ChannelCheckScreen, FlatironApp, NeitherScreen, SessionEndScreen, \
+from flatiron.ui.app import ChannelCheckScreen, FlatironApp, LevelScreen, NeitherScreen, SessionEndScreen, \
     ThresholdIntroScreen, TwoIntervalScreen, YesNoScreen
 
 GRID = log_grid()
@@ -223,6 +223,9 @@ async def test_threshold_session_ui(tmp_path, task, screen, keys):
         assert isinstance(app.screen, ThresholdIntroScreen)
         await pilot.press("enter")
         await pilot.pause()
+        assert isinstance(app.screen, LevelScreen)
+        await pilot.press("down", "down", "enter")  # 2 dB down
+        await pilot.pause()
         for _ in range(2):
             scr = app.screen
             assert isinstance(scr, ChannelCheckScreen)
@@ -241,6 +244,7 @@ async def test_threshold_session_ui(tmp_path, task, screen, keys):
     first = {"yesno": ["heard", "nothing", "heard"], "2ifc": ["first", "second", "second"],
              "2ifc-neither": ["first", "neither", "second"]}[task]
     assert [t.response for t in s.trials] == first and s.ended
+    assert s.comfort_dbfs == runners[0].level_dbfs  # what the level screen set
     assert prof.sessions() == []
 
 
@@ -251,7 +255,7 @@ async def test_threshold_debug_readout_only_with_the_flag(tmp_path, task):
     for debug in (False, True):
         app, runners, prof = make_app(tmp_path, task, debug)
         async with app.run_test() as pilot:
-            await pilot.press("enter")
+            await pilot.press("enter", "enter")  # introduction, level
             await pilot.pause()
             for _ in range(2):
                 scr = app.screen
@@ -323,3 +327,14 @@ def test_a_known_eq_gain_adds_to_the_level():
             NS(ear="R", freq=2000.0, level_dbfs=-80.0, positive=False, kind="signal", undone=False)]
     data = ThresholdData.build([("yesno", "noise:0.083333", recs)])
     assert list(data.level) == [-76.5, -80.0]
+
+
+def test_the_level_sets_where_the_descending_run_starts(tmp_path):
+    r = ThresholdRunner(Profile.open("x", root=tmp_path), ThresholdSettings(), seed=0, volume=False)
+    r.set_level(-40.0)
+    assert r.session.comfort_dbfs == -40.0
+    assert r.startup == {"L": -40.0 - r.cfg.startup_below_comfort_db, "R": -40.0 - r.cfg.startup_below_comfort_db}
+    assert r.match_gain("L", 4000.0) == 0.0  # no fitted curve yet: no matching
+    r.answer(r.prepare(), True, 500)
+    r.set_level(-20.0)  # ignored once trials have started
+    assert r.session.comfort_dbfs == -40.0

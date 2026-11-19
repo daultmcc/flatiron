@@ -187,6 +187,6 @@ async def test_notice_before_the_session_then_toast_on_a_change(tmp_path, tc):
     app = FlatironApp(lambda: ThresholdRunner(prof, ThresholdSettings(tincan=w), seed=0), NullPlayer())
     async with app.run_test() as pilot:
         assert isinstance(app.screen, ThresholdIntroScreen)
-        await pilot.press("enter")
+        await pilot.press("enter", "enter")  # introduction, level
         await pilot.pause()
         assert isinstance(app.screen, ChannelCheckScreen)

@@ -152,15 +152,42 @@ class ThresholdRunner:
         self._last: tuple[PreparedThreshold, dict] | None = None
         self._last_freq: float | None = None
         self.fit = self._fit()
-        # The descending run: each ear's next level, or None once it's done.
-        start = self.level_dbfs - config.startup_below_comfort_db
+        self._curves = None
+        self.startup: dict[str, float | None] = {}
+        self._start_run()
+        self._save()
+
+    def _start_run(self) -> None:
+        """The descending run: each ear's next level, or None once it's done."""
+        cfg = self.cfg
+        start = self.level_dbfs - cfg.startup_below_comfort_db
         if self.earlier:
             # The last session's offset is the best guess at this one's.
             known = {e: float(self.fit.level(e, self.startup_freq, self.index - 1, self.key)[0][0])
                      for e in EARS}
-            start = min(start, max(known.values()) + config.startup_above_known_db)
-        self.startup: dict[str, float | None] = {e: start for e in EARS}
+            start = min(start, max(known.values()) + cfg.startup_above_known_db)
+        self.startup = {e: start for e in EARS}
+
+    # -- the listening level -------------------------------------------------
+
+    def set_level(self, level_dbfs: float) -> None:
+        """The listening level from the level screen, before any trials: the
+        descending run starts below it."""
+        if self.live_trials():
+            return
+        self.level_dbfs = self.session.comfort_dbfs = float(level_dbfs)
+        self._start_run()
         self._save()
+
+    def match_gain(self, ear: str, f: float) -> float:
+        """For the level screen: loudness matching with the ear's fitted curve,
+        as in trial sessions (0 without one)."""
+        from flatiron.session.centring import MATCH_BOOST_DB, MATCH_CUT_DB, ear_curves
+
+        if self._curves is None:
+            self._curves = ear_curves(self.profile, self.key, *self.measured)
+        c = self._curves.get(ear)
+        return 0.0 if c is None else float(np.clip(-c(f)[0], -MATCH_CUT_DB, MATCH_BOOST_DB))
 
     # -- the model ---------------------------------------------------------
 
