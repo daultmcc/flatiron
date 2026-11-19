@@ -96,7 +96,15 @@ leaves all of this out of the fit.
 
 `flatiron measure <PROFILE> --threshold` runs a session of a third kind: very quiet sounds at the
 edge of hearing, where you say which of two intervals had the sound, or that you heard neither.
-For now these only help with the channel balance.
+On their own these help with the channel balance. With `flatiron config <PROFILE> --threshold-fit`
+they also anchor the standard references (`diffuse` and `iso226`) at your threshold of hearing:
+many people's loudness judgements in the treble don't follow the standard equal-loudness contours,
+which can make corrections against those references cut far too much treble. Flatiron estimates
+how your loudness and threshold differ from all your profiles with threshold data (150 trials or so
+in one profile is enough to start), so a profile without its own threshold sessions benefits too.
+For a consensus reference, `--consensus-broad diffuse` takes the broad shape from the anchored
+diffuse field instead of the average of your headphones. `flatiron report` shows your loudness and
+threshold curves side by side.
 
 300-400 trials is enough for a very basic measurement and 1000 should give reasonably accurate
 results. That may sound like a lot, but even 1000 trials should take less than an hour. If you find
