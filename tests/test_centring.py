@@ -144,3 +144,18 @@ def test_cli_lists_and_deletes_centring_sessions(tmp_path, monkeypatch, capsys):
     sid = prof.centring_sessions()[0].id
     assert main(["sessions", "hp", "--delete", sid, "-y"]) == 0
     assert prof.centring_sessions() == []
+
+
+def test_centring_and_threshold_screens_bind_only_their_own_keys():
+    """TrialScreen's ↑/↓ ("A louder") and L (level) mustn't leak into screens
+    with other answers: Textual takes inherit_bindings as a class keyword."""
+    from flatiron.ui.app import CentringScreen, NeitherScreen, TwoIntervalScreen, YesNoScreen
+
+    def keys(cls):
+        return {k: [b.description for b in bs] for k, bs in cls._merge_bindings().key_to_bindings.items()}
+
+    c = keys(CentringScreen)
+    assert "up" not in c and "down" not in c and "l" in c and c["l"] == ["Left"]
+    for cls in (YesNoScreen, TwoIntervalScreen, NeitherScreen):
+        k = keys(cls)
+        assert "l" not in k and "louder" not in " ".join(sum(k.values(), []))

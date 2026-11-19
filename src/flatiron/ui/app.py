@@ -786,11 +786,9 @@ class ThresholdIntroScreen(MessageScreen):
         self.dismiss(None)
 
 
-class ThresholdScreen(TrialScreen):
+class ThresholdScreen(TrialScreen, inherit_bindings=False):
     """Detection trials (DESIGN.md, "Threshold sessions"): one marked interval
     (yes/no) or two (2IFC). The left-hand key is "heard" or "the first"."""
-
-    inherit_bindings = False
 
     def answer_kwargs(self, first: bool) -> dict:
         return {"first": first, "peeked": self.show_debug}
@@ -891,13 +889,12 @@ class CentringIntroScreen(MessageScreen):
         self.dismiss(None)
 
 
-class CentringScreen(TrialScreen):
+class CentringScreen(TrialScreen, inherit_bindings=False):
     """Centring trials: one burst in both ears; ← left of centre, → right.
     Left and right keys are the point here, unlike loudness trials."""
 
     PANELS = ("listen", "listen")
     QUESTION = "Left or right of centre?"
-    inherit_bindings = False
     BINDINGS = [
         Binding("left,l,1", "answer(True)", "Left"),
         Binding("right,r,2", "answer(False)", "Right"),
