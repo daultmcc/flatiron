@@ -49,7 +49,7 @@ class ThresholdView:
         k = np.asarray(g.g)
         sd = np.sqrt(np.diag(np.asarray(g.cov)))
         out += [f"Loudness-threshold gap, 4 to 13 kHz: {k[4] - k[2]:+.1f} ± {np.hypot(sd[4], sd[2]):.1f} dB "
-                f"(yours, from {len(g.profiles)} profile{'' if len(g.profiles) == 1 else 's'})",
+                f"(the listener's, from {len(g.profiles)} profile{'' if len(g.profiles) == 1 else 's'})",
                 f"Gap ripple: {g.ripple_sd:.1f} dB"]
         d = g.profiles.get(self.slug)
         if d is not None:

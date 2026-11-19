@@ -249,23 +249,25 @@ def reference_figure(c: EarCorrection, theme: str = "light") -> bytes:
     return buf.getvalue()
 
 
+def _png_of(fig, t) -> bytes:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, facecolor=t["surface"], bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def threshold_figure(view, ear: str, theme: str = "light") -> bytes:
-    """Thresholds (report/thresholds.py): the loudness-only curve (as
+    """Thresholds (report/thresholds.py), one ear: the loudness-only curve (as
     measured, gap included), the threshold curve as a sensitivity, and with
     the threshold fit on the joint curve less the gap, the measured response
-    at threshold (each with its mean over the range removed, ±1 SD); below,
-    the listener's loudness-threshold gap, with this profile's own low end."""
+    at threshold (each with its mean over the range removed, ±1 SD)."""
     t = THEMES[theme]
     g = view.grid
-    n = 1 if view.gap is None else 2
-    fig, axes = plt.subplots(n, 1, figsize=(8.2, 2.7 * n + 0.4), sharex=True, facecolor=t["surface"],
-                             gridspec_kw={"hspace": 0.38}, squeeze=False)
-    axes = axes[:, 0]
-    ax = axes[0]
+    fig, ax = plt.subplots(figsize=(8.2, 3.1), facecolor=t["surface"])
     _style(ax, t, g[0], g[-1])
     lines = [(view.loudness[ear], "loudness ±1 SD", t["s2"], 1.6), (view.threshold[ear], "threshold ±1 SD", t["s3"], 1.6)]
     if view.joint is not None:
-        lines.append((view.joint[ear], "joint, gap out ±1 SD", t["s1"], 2.2))
+        lines.append((view.joint[ear], "joint ±1 SD", t["s1"], 2.2))
     for c, _, col, lw in lines:
         ax.fill_between(g, c.values - c.sd, c.values + c.sd, color=col, alpha=0.15, linewidth=0)
         ax.plot(g, c.values, color=col, linewidth=lw)
@@ -275,25 +277,30 @@ def threshold_figure(view, ear: str, theme: str = "light") -> bytes:
         _label_end(ax, g[-1], y, text, col, t, dy=(k - (len(ends) - 1) / 2) * span * 0.12)
     ax.set_title("Loudness and threshold (sensitivity), flat reference", color=t["ink"], fontsize=10, loc="left")
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)
-    if view.gap is not None:
-        ax = axes[1]
-        _style(ax, t, g[0], g[-1])
-        gp = view.gap
-        m, sd = gp.curve(g), gp.curve_sd(g)
-        shift = m.mean()
-        ax.fill_between(g, m - shift - sd, m - shift + sd, color=t["s1"], alpha=0.18, linewidth=0)
-        ax.plot(g, m - shift, color=t["s1"], linewidth=2)
-        ends = [(m[-1] - shift, "yours ±1 SD", t["s1"])]
-        if view.slug in gp.profiles:
-            own = gp.curve_for(view.slug, g) - shift
-            ax.plot(g, own, color=t["s2"], linewidth=1.4, linestyle="--")
-            ends.append((own[-1], "this profile", t["s2"]))
-        for k, (y, text, col) in enumerate(sorted(ends)):
-            _label_end(ax, g[-1], y, text, col, t, dy=(k - (len(ends) - 1) / 2) * 1.5)
-        ax.set_title("Loudness-threshold gap", color=t["ink"], fontsize=10, loc="left")
-        ax.set_ylabel("dB", color=t["muted"], fontsize=8)
-    axes[-1].set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, facecolor=t["surface"], bbox_inches="tight")
-    plt.close(fig)
-    return buf.getvalue()
+    ax.set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
+    return _png_of(fig, t)
+
+
+def gap_figure(view, theme: str = "light") -> bytes:
+    """The listener's loudness-threshold gap (±1 SD), with this profile's own
+    low end: one for both ears, as it's the same in each."""
+    t = THEMES[theme]
+    g = view.grid
+    fig, ax = plt.subplots(figsize=(8.2, 3.1), facecolor=t["surface"])
+    _style(ax, t, g[0], g[-1])
+    gp = view.gap
+    m, sd = gp.curve(g), gp.curve_sd(g)
+    shift = m.mean()
+    ax.fill_between(g, m - shift - sd, m - shift + sd, color=t["s1"], alpha=0.18, linewidth=0)
+    ax.plot(g, m - shift, color=t["s1"], linewidth=2)
+    ends = [(m[-1] - shift, "listener ±1 SD", t["s1"])]
+    if view.slug in gp.profiles:
+        own = gp.curve_for(view.slug, g) - shift
+        ax.plot(g, own, color=t["s2"], linewidth=1.4, linestyle="--")
+        ends.append((own[-1], "profile", t["s2"]))
+    for k, (y, text, col) in enumerate(sorted(ends)):
+        _label_end(ax, g[-1], y, text, col, t, dy=(k - (len(ends) - 1) / 2) * 1.5)
+    ax.set_title("Loudness-threshold gap", color=t["ink"], fontsize=10, loc="left")
+    ax.set_ylabel("dB", color=t["muted"], fontsize=8)
+    ax.set_xlabel("frequency (Hz)", color=t["muted"], fontsize=8)
+    return _png_of(fig, t)

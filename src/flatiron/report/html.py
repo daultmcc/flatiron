@@ -11,7 +11,8 @@ import numpy as np
 from flatiron.fit.features import BROAD, NARROW
 from flatiron.fit.run import ProfileFit
 from flatiron.report.thresholds import threshold_view
-from flatiron.report.plots import EAR_NAMES, correction_figure, ear_figure, reference_figure, threshold_figure
+from flatiron.report.plots import (EAR_NAMES, correction_figure, ear_figure, gap_figure, reference_figure,
+                                   threshold_figure)
 from flatiron.session.store import Profile
 
 CSS = """
@@ -41,6 +42,7 @@ th { color: var(--muted); font-weight: 600; }
 td.num { font-variant-numeric: tabular-nums; text-align: right; padding-right: 1.4rem; }
 .note { background: var(--warn-bg); border-radius: 6px; padding: .6rem .9rem; margin: .5rem 0; font-size: .9rem; }
 .muted { color: var(--muted); }
+.single { max-width: 61rem; margin: 1.5rem auto 0; }
 """
 
 
@@ -211,7 +213,8 @@ def ambiguous_features(c) -> list:
 
 
 def _spread(name: str, f, how: str) -> str:
-    return (f"{name}: {f.tau_lo:.1f} @ 5k, {f.tau_mid:.1f} @ 8k, {f.tau_hi:.1f} @ 12k dB" + (f" ({how})" if how else ""))
+    return (f"{name}: {f.tau_lo:.1f} dB @ 5 kHz, {f.tau_mid:.1f} dB @ 8 kHz, {f.tau_hi:.1f} dB @ 12 kHz"
+            + (f" ({how})" if how else ""))
 
 
 def fitted_values(f, speaker: bool) -> list[str]:
@@ -266,14 +269,13 @@ def _n(n: int, what: str) -> str:
 def count_lines(profile: Profile, pf: ProfileFit, speaker: bool) -> list[str]:
     """Sessions and trials of each kind, one line each (kinds with none left out)."""
     per_ear = lambda counts: " · ".join(f"{EAR_NAMES[e]} {_n(counts[e], 'trial')}" for e in pf.fits)
+    cross = 0 if speaker else sum(len(s.cross_trials()) for s in pf.sessions)
     out = [f"{'Speaker' if speaker else 'Loudness'}: {_n(len(pf.sessions), 'block' if speaker else 'session')}"
            + (f" (pooled with {', '.join(pf.pooled)})" if pf.pooled else "") + " · "
-           + per_ear({e: f.n_trials for e, f in pf.fits.items()})]
+           + per_ear({e: f.n_trials for e, f in pf.fits.items()})
+           + (f" · Cross-ear {_n(cross, 'trial')}" if cross else "")]
     if speaker:
         return out
-    cross = [len(s.cross_trials()) for s in pf.sessions]
-    if sum(cross):
-        out.append(f"Cross-ear: {_n(sum(1 for n in cross if n), 'session')} · {_n(sum(cross), 'trial')}")
     thr = profile.threshold_sessions()
     if thr:
         out.append(f"Threshold: {_n(len(thr), 'session')} · "
@@ -345,7 +347,11 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
         out.append(_columns([ear_head(e) + _picture(threshold_figure(view, e, "light"), threshold_figure(view, e, "dark"),
                                                     f"{EAR_NAMES[e]} ear: loudness and threshold")
                              for e, _ in ears]))
-        out.append('<p class="meta">' + "<br>".join(html.escape(v) for v in view.values()) + "</p>")
+        # The gap and the fitted values are the listener's or the profile's, the same for both ears.
+        single = (_picture(gap_figure(view, "light"), gap_figure(view, "dark"), "The loudness-threshold gap")
+                  if view.gap is not None else "")
+        out.append(f'<div class="single">{single}<p class="meta">'
+                   + "<br>".join(html.escape(v) for v in view.values()) + "</p></div>")
 
     out.append("<h2>Features</h2>")
     cols = []

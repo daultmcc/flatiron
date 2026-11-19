@@ -93,7 +93,7 @@ def test_from_sessions(tmp_path, monkeypatch):
     assert "320 threshold" in interaural_note(pf)
     assert "plus your loudness-threshold gap" in reference_description(pf.correction.settings, pf)
     page = write_report(prof, pf, tmp_path / "r.html").read_text()
-    assert "<h2>Thresholds</h2>" in page and "(yours, from 1 profile)" in page and "Psychometric spread" in page
+    assert "<h2>Thresholds</h2>" in page and "listener&#x27;s, from 1 profile)" in page and page.count("alt=\"The loudness-threshold gap\"") == 1 and "Psychometric spread" in page
     # The header: the balance after the preamp, then each kind of session on its own line; no balance box.
     import re
 
