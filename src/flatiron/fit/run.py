@@ -526,12 +526,13 @@ def ear_consensus(profile: Profile, st: CorrectionSettings, own_fits: dict[str, 
                                 None if own is None else {e: own_fits[e].grid for e in EARS}, anchor)
 
 
-def pinned_fits(profile: Profile, fits: dict[str, ProbitFit]) -> dict[str, ProbitFit]:
+def pinned_fits(profile: Profile, fits: dict[str, ProbitFit], force: bool = False) -> dict[str, ProbitFit]:
     """With the threshold fit on (and a gap to use), the measured response at
     threshold: each ear's curve less the listener's loudness-threshold gap
     (g + δ), with g's covariance added; otherwise the fits as they are
-    (DESIGN.md, "Threshold-anchored reference")."""
-    if profile.kind == "speaker" or not profile_settings(profile).threshold_fit:
+    (DESIGN.md, "Threshold-anchored reference"). force: whatever the profile's
+    setting and kind (`compare --threshold-fit`; a speaker takes g alone)."""
+    if not force and (profile.kind == "speaker" or not profile_settings(profile).threshold_fit):
         return fits
     from flatiron.fit.gap import listener_gap
     from flatiron.fit.reference import Anchor

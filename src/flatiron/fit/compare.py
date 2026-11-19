@@ -1,10 +1,13 @@
 """Comparing profiles (DESIGN.md, "Comparing profiles"): their raw curves and their
 narrow parts against each other, and where they differ most. No reference is
-used and no consensus is formed: what a consensus reference keeps depends on a
-profile's settings, so `report` shows it instead.
+subtracted and no consensus is formed: what a consensus reference keeps depends
+on a profile's settings, so `report` shows it instead. References can be drawn
+beside the curves (`compare -r`), aligned with them.
 """
 
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -40,6 +43,9 @@ class EarComparison:
     broad_spread: np.ndarray  # highest minus lowest aligned broad part, counted profiles only
     broad_spread_db: float = BROAD_SPREAD_DB
     fallback: bool = False  # fewer than two were of a counted kind, so all of them count
+    # References drawn beside the curves: label -> values on the common grid, at
+    # the level of the counted profiles' aligned median (the curves' offsets taken off).
+    references: dict[str, np.ndarray] = field(default_factory=dict)
 
     @property
     def n_counted(self) -> int:
@@ -79,11 +85,13 @@ def align(counted: list[Source], others: list[Source], common: np.ndarray) -> di
 
 
 def compare_ear(ear: str, members: list[Member], counted_kinds=KINDS_VOTING,
-                broad_spread_db: float | None = None) -> EarComparison:
+                broad_spread_db: float | None = None,
+                references: dict[str, Callable[[np.ndarray], np.ndarray]] | None = None) -> EarComparison:
     """Every profile's curve aligned with the others, its narrow part, and where
     they differ. Profiles of kinds outside counted_kinds are aligned against the
     rest without counting toward anything, unless fewer than two would count:
-    then all of them do."""
+    then all of them do. references: label -> E(freqs), each aligned against
+    the counted profiles' median the way an uncounted profile is."""
     if len(members) < 2:
         raise ValueError("comparing needs at least two profiles")
     counted = [m for m in members if m.kind in counted_kinds]
@@ -107,9 +115,16 @@ def compare_ear(ear: str, members: list[Member], counted_kinds=KINDS_VOTING,
                       for s in sources])
     spread = np.ptp(broad, axis=0)
     _, p_narrow = heterogeneity([parts[s.label][1] for s in sources], common)
+    refs = {}
+    if references:
+        med = np.median([interp_matrix(s.grid, common) @ s.R - offsets[s.label] for s in sources], axis=0)
+        w = np.gradient(np.log2(common))
+        for label, E in references.items():
+            v = np.asarray(E(common), float)
+            refs[label] = v - weighted_median(v - med, w)
     return EarComparison(ear, common, estimate_tau_hp(aligned, common), offsets, narrow,
                          {m.label: m.label in names for m in members}, spread > broad_spread_db,
-                         p_narrow < HETEROGENEITY_P, spread, broad_spread_db, fallback)
+                         p_narrow < HETEROGENEITY_P, spread, broad_spread_db, fallback, refs)
 
 
 def spans(grid: np.ndarray, mask: np.ndarray) -> list[tuple[float, float]]:

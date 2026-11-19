@@ -731,6 +731,18 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     assert len(opened) == 1
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
     assert page.count("<picture>") == 2 and page.index("Left ear") < page.index("Right ear")
+    # References drawn beside the curves; the threshold fit needs a gap, which there isn't.
+    (tmp_path / "mine.csv").write_text("freq_hz,db\n1000,0\n10000,6\n")
+    capsys.readouterr()
+    assert main(["compare", "One", "Two", "-H", "-r", f"diffuse, iso226,{tmp_path / 'mine.csv'}"]) == 0
+    assert "Drawn beside them: diffuse field, 60 phon, free field (ISO 226), 60 phon, mine" in capsys.readouterr().out
+    page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
+    assert "Dotted: diffuse field, 60 phon, free field (ISO 226), 60 phon, mine" in page
+    for bad in ("none", "consensus:One,Two", str(tmp_path / "nope.csv")):
+        assert main(["compare", "One", "Two", "-H", "-r", bad]) == 1
+    capsys.readouterr()
+    assert main(["compare", "One", "Two", "-H", "--threshold-fit"]) == 1
+    assert "150 threshold trials" in capsys.readouterr().out
 
     csv = tmp_path / "out.csv"
     assert main(["report", "One", "--csv", str(csv)]) == 0

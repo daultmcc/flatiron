@@ -81,12 +81,19 @@ class Anchor:
         return B @ np.asarray(self.cov) @ B.T
 
 
-def anchored(name: str, freqs, anchor: Anchor) -> np.ndarray:
+def threshold_sensitivity(name: str, freqs) -> np.ndarray:
+    """diffuse or iso226 at threshold, as a sensitivity (negated), mean not removed:
+    the reference an anchored one is drawn as, once the gap is taken out."""
     f = np.asarray(freqs, float)
     sens = -iso226.threshold(f)
     if name == "diffuse":
         sens = sens + iso389_7.diffuse_minus_free(f)
-    e = anchor.curve(f) + sens
+    return sens
+
+
+def anchored(name: str, freqs, anchor: Anchor) -> np.ndarray:
+    f = np.asarray(freqs, float)
+    e = anchor.curve(f) + threshold_sensitivity(name, f)
     return e - e.mean()
 
 

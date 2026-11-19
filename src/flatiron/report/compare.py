@@ -23,15 +23,18 @@ SERIES = {"light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008
 MAX_PROFILES = len(SERIES["light"])
 
 
-def compare(members: list[Member], ears, counted_kinds, broad_spread_db: float | None = None
-            ) -> dict[str, EarComparison]:
-    return {e: compare_ear(e, members, counted_kinds, broad_spread_db) for e in ears}
+REF_STYLES = [(0, (1, 2)), (0, (5, 2, 1, 2)), (0, (6, 3)), (0, (1, 1, 1, 4))]
+
+
+def compare(members: list[Member], ears, counted_kinds, broad_spread_db: float | None = None,
+            references=None) -> dict[str, EarComparison]:
+    return {e: compare_ear(e, members, counted_kinds, broad_spread_db, references) for e in ears}
 
 
 def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
     """The raw curves, with no reference subtracted (as with -r none): the profiles are
-    compared to each other, not to a reference. Then their narrow parts, overlaid, and
-    where the broad and the narrow parts differ."""
+    compared to each other, not to a reference, which is only drawn beside them (`-r`).
+    Then their narrow parts, overlaid, and where the broad and the narrow parts differ."""
     t = THEMES[theme]
     colors = dict(zip([m.label for m in members], SERIES[theme]))
     common = c.grid
@@ -54,9 +57,13 @@ def ear_figure(c: EarComparison, members: list[Member], theme: str) -> bytes:
         col = colors[mem.label]
         ax.fill_between(common, d - sd, d + sd, color=col, alpha=0.14, linewidth=0)
         ax.plot(common, d, color=col, linewidth=1.6, linestyle="-" if c.counted[mem.label] else "--", label=mem.label)
+    for i, (label, ref) in enumerate(c.references.items()):
+        ax.plot(common, ref - shift, color=t["ink2"], linewidth=1.4, linestyle=REF_STYLES[i % len(REF_STYLES)],
+                label=label)
     ax.set_title("Measured response", color=t["ink"], fontsize=10, loc="left")
     ax.fill_between([], [], [], color=t["muted"], alpha=0.25, linewidth=0, label="±1 SD")
-    ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"], ncol=min(len(members) + 1, 5))
+    ax.legend(loc="upper right", fontsize=8, frameon=False, labelcolor=t["ink2"],
+              ncol=min(len(members) + len(c.references) + 1, 5))
 
     ax = axes[1]
     ax.set_ylabel("dB", color=t["muted"], fontsize=8)
@@ -105,6 +112,8 @@ def print_comparison(comparisons: dict[str, EarComparison], members: list[Member
                                    for m in members))
     if c.fallback:
         print("Fewer than two headphones, so every profile counts.")
+    if c.references:
+        print("Drawn beside them: " + ", ".join(c.references))
     for e, c in comparisons.items():
         print(f"\n{EAR_NAMES.get(e, e)} ear\n  {_spread(c)}\n"
               f"  Broad tonal disagreements (> {c.broad_spread_db:g} dB): {_ranges(c, c.differ_broad)}\n"
@@ -123,6 +132,9 @@ def write_comparison(path: Path, comparisons: dict[str, EarComparison], members:
                    "profiles and aren't counted in spread calculations.</p>")
     if first.fallback:
         out.append('<p class="meta">Fewer than two headphones, so every profile counts.</p>')
+    if first.references:
+        out.append(f'<p class="meta">Dotted: {html.escape(", ".join(first.references))}, aligned with the '
+                   "profiles' median; the curves aren't measured against it.</p>")
     cols = []
     for e, c in comparisons.items():
         light = _png(ear_figure(c, members, "light"))

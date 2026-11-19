@@ -106,6 +106,15 @@ def test_from_sessions(tmp_path, monkeypatch):
     n = {e: int(re.search(rf"{w} (\d+) trials", lines[1]).group(1)) for e, w in (("L", "Left"), ("R", "Right"))}
     assert lines[1].startswith("Threshold: 1 session · ") and sum(n.values()) == 320
     assert 'class="note">Channel balance' not in page
+    # compare --threshold-fit pins any profile, whatever its setting.
+    from flatiron.fit.run import perceptual_fits, pinned_fits
+
+    set_profile_settings(prof, replace(profile_settings(prof), threshold_fit=False))
+    raw = perceptual_fits(prof, None, thresholds=True)[0]
+    assert pinned_fits(prof, raw) is raw
+    forced = pinned_fits(prof, raw, force=True)
+    np.testing.assert_allclose(forced["L"].L, raw["L"].L - Anchor.of(pf.gap, "hp").curve(raw["L"].grid))
+    set_profile_settings(prof, replace(profile_settings(prof), threshold_fit=True))
     assert pf.gap is not None and not pf.anchor_missing()
     ec, a = pf.correction.ears["L"], Anchor.of(pf.gap, "hp")
     G = a.curve(ec.grid)

@@ -1545,6 +1545,38 @@ def _correction_of(f) -> float:
     return -f.peak_db * f.weight if f.correction_db is None else f.correction_db
 
 
+def _compare_references(spec: str | None, threshold: bool) -> dict | None:
+    """compare -r: label -> E(freqs) for each named reference, at threshold with
+    --threshold-fit where there's such a version; None (after saying why) if one won't do."""
+    from pathlib import Path
+
+    from flatiron.fit.reference import ANCHORED, CONSENSUS_PREFIX, read_curve_csv, reference, threshold_sensitivity
+
+    out = {}
+    names = {"diffuse": ("diffuse field, 60 phon", "diffuse-field threshold"),
+             "iso226": ("free field (ISO 226), 60 phon", "free-field threshold (ISO 226)")}
+    for name in [x.strip() for x in (spec or "").split(",") if x.strip()]:
+        if name in ANCHORED:
+            label = names[name][threshold]
+            out[label] = ((lambda n: lambda f: threshold_sensitivity(n, f))(name) if threshold
+                          else (lambda n: lambda f: reference(n, f))(name))
+        elif name == "none" or name.startswith(CONSENSUS_PREFIX.rstrip(":")):
+            print(f"-r {name}: compare draws diffuse, iso226 or a CSV file (curves are always shown "
+                  "against flat; a consensus is a profile's own, see: flatiron report).")
+            return None
+        else:
+            path = Path(name).expanduser()
+            try:
+                read_curve_csv(path)
+            except (OSError, ValueError) as e:
+                print(f"-r {name}: {e}")
+                return None
+            if threshold:
+                print(f"Note: {path.name} is drawn as given (only diffuse and iso226 have threshold versions).")
+            out[path.stem] = (lambda p: lambda f: reference(p, f))(str(path))
+    return out
+
+
 def cmd_compare(args):
     from flatiron import EARS as ALL_EARS
     from flatiron.fit.compare import Member
@@ -1593,12 +1625,28 @@ def cmd_compare(args):
     if args.broad_spread is not None and args.broad_spread < 0:
         print("--broad-spread can't be negative.")
         return 1
+    refs = _compare_references(args.reference, args.threshold_fit)
+    if refs is None:
+        return 1
+    if args.threshold_fit:
+        from flatiron.fit.gap import listener_gap
+
+        for root in {p.dir.parent.parent for p in profiles}:
+            if listener_gap(root, on_fit) is None:
+                print("--threshold-fit needs your loudness-threshold gap, and no profile has 150 threshold trials "
+                      f"yet{f' for listener {root.name}' if mixed else ''}.")
+                return 1
     try:
         from flatiron.fit.run import pinned_fits
 
-        members = [Member(name_of(p), p.kind, pinned_fits(p, perceptual_fits(p, profile_session_ids(p), on_fit)[0]))
+        # Loudness-only curves, or with --threshold-fit every profile's at threshold, whatever its own setting.
+        members = [Member(name_of(p), p.kind,
+                          pinned_fits(p, perceptual_fits(p, profile_session_ids(p), on_fit,
+                                                         thresholds=args.threshold_fit)[0], force=args.threshold_fit)
+                          if args.threshold_fit else perceptual_fits(p, profile_session_ids(p), on_fit,
+                                                                     thresholds=False)[0])
                    for p in profiles]
-        comparisons = compare(members, ears, counted, args.broad_spread)
+        comparisons = compare(members, ears, counted, args.broad_spread, refs)
     except (NotEnoughTrials, ValueError) as e:
         print(e)
         return 1
@@ -2070,6 +2118,13 @@ def main(argv=None):
                         "with fewer than two profiles of counted kinds, all of them count)")
     s.add_argument("--broad-spread", type=float, metavar="DB",
                    help="shade where the broad parts (tonality) span more than this between profiles (default 4 dB)")
+    s.add_argument("-r", "--reference", metavar="REF[,REF...]",
+                   help="draw these beside the curves (which are still shown against flat), aligned with them: "
+                        "diffuse, iso226 (each at 60 phon) or a CSV of freq_hz,db rows")
+    s.add_argument("--threshold-fit", action="store_true",
+                   help="compare the curves at threshold (threshold sessions in, your loudness-threshold gap out), "
+                        "for every profile whatever its own setting, and draw diffuse and iso226 at threshold; "
+                        "otherwise each profile's loudness-only curve")
     s.set_defaults(func=cmd_compare)
 
     s = sub.add_parser("export", help="write the current fit's correction for an EQ host")

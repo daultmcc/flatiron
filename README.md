@@ -115,8 +115,10 @@ error so it's better just to answer quickly.
 
 `flatiron report <PROFILE>` opens an HTML page showing the measured frequency response, planned
 corrections, and more. `flatiron compare <PROFILE1> <PROFILE2> ...` shows the responses for multiple
-profiles overlaid. The `--no-html/-H` flag on either command suppresses the detailed report
-and prints only the simplified summary to the command line.
+profiles overlaid. `compare -r diffuse,iso226` (or a CSV file of `freq_hz,db` rows) draws reference
+curves alongside them, and `compare --threshold-fit` compares the threshold-pinned curves instead,
+with any `diffuse` or `iso226` reference drawn at threshold. The `--no-html/-H` flag on either command
+suppresses the detailed report and prints only the simplified summary to the command line.
 
 ### Configuration
 
