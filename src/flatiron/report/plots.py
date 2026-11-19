@@ -196,19 +196,23 @@ def reference_figure(c: EarCorrection, theme: str = "light") -> bytes:
     if x is None:
         g = c.grid
         _style(ax, t, g[0], g[-1])
-        ax.plot(g, c.E, color=t["s1"], linewidth=2)
+        ax.plot(g, c.E - c.E.mean(), color=t["s1"], linewidth=2)
         ax.set_title("Reference curve", color=t["ink"], fontsize=10, loc="left")
     else:
         g = x.grid
         _style(ax, t, g[0], g[-1])
-        shift = x.m.mean()
+        # With the threshold fit, the gap is part of the measured response: not drawn in the reference.
+        G = c.anchor.curve(g) if c.anchor is not None else np.zeros(g.size)
+        m, broad = x.m - G, x.broad - G
+        shift = m.mean()
         sd = np.sqrt(np.clip(np.diag(x.cov), 0, None))
-        full = x.broad + x.narrow - shift
-        ax.plot(g, x.broad - shift, color=t["s2"], linewidth=1.6)
+        full = broad + x.narrow - shift
+        ax.plot(g, broad - shift, color=t["s2"], linewidth=1.6)
         ax.plot(g, full, color=t["s3"], linewidth=1.4, linestyle="--")
-        ax.fill_between(g, x.m - shift - sd, x.m - shift + sd, color=t["s1"], alpha=0.18, linewidth=0)
-        ax.plot(g, x.m - shift, color=t["s1"], linewidth=2.2)
-        ends = sorted([(x.m[-1] - shift, "reference ±1 SD", t["s1"]), (x.broad[-1] - shift, "broad median", t["s2"]),
+        ax.fill_between(g, m - shift - sd, m - shift + sd, color=t["s1"], alpha=0.18, linewidth=0)
+        ax.plot(g, m - shift, color=t["s1"], linewidth=2.2)
+        what = "broad median" if x.broad_source == "median" else "broad, diffuse at threshold"
+        ends = sorted([(m[-1] - shift, "reference ±1 SD", t["s1"]), (broad[-1] - shift, what, t["s2"]),
                        (full[-1], "broad + all narrow", t["s3"])])
         span = max(np.ptp(full), 4)
         for k, (y, text, col) in enumerate(ends):
@@ -246,9 +250,10 @@ def reference_figure(c: EarCorrection, theme: str = "light") -> bytes:
 
 
 def threshold_figure(view, ear: str, theme: str = "light") -> bytes:
-    """Thresholds (report/thresholds.py): the loudness-only curve, the
-    threshold curve as a sensitivity (each with its mean over the range
-    removed), and the joint curve if the threshold fit is on (±1 SD); below,
+    """Thresholds (report/thresholds.py): the loudness-only curve (as
+    measured, gap included), the threshold curve as a sensitivity, and with
+    the threshold fit on the joint curve less the gap, the measured response
+    at threshold (each with its mean over the range removed, ±1 SD); below,
     the listener's loudness-threshold gap, with this profile's own low end."""
     t = THEMES[theme]
     g = view.grid
@@ -260,7 +265,7 @@ def threshold_figure(view, ear: str, theme: str = "light") -> bytes:
     _style(ax, t, g[0], g[-1])
     lines = [(view.loudness[ear], "loudness ±1 SD", t["s2"], 1.6), (view.threshold[ear], "threshold ±1 SD", t["s3"], 1.6)]
     if view.joint is not None:
-        lines.append((view.joint[ear], "joint ±1 SD", t["s1"], 2.2))
+        lines.append((view.joint[ear], "joint, gap out ±1 SD", t["s1"], 2.2))
     for c, _, col, lw in lines:
         ax.fill_between(g, c.values - c.sd, c.values + c.sd, color=col, alpha=0.15, linewidth=0)
         ax.plot(g, c.values, color=col, linewidth=lw)

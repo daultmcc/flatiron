@@ -95,14 +95,24 @@ def test_from_sessions(tmp_path, monkeypatch):
     page = write_report(prof, pf, tmp_path / "r.html").read_text()
     assert "<h2>Thresholds</h2>" in page and "Loudness-threshold gap (yours, from 1 profile)" in page
     assert pf.gap is not None and not pf.anchor_missing()
-    ec = pf.correction.ears["L"]
-    assert ec.E == pytest.approx(reference("diffuse", ec.grid, 60, Anchor.of(pf.gap, "hp")))
-    assert np.abs(ec.E - plain.correction.ears["L"].E).max() > 3
+    ec, a = pf.correction.ears["L"], Anchor.of(pf.gap, "hp")
+    G = a.curve(ec.grid)
+    # The gap is shown as part of the measured response, not the reference: L − E is the anchored one.
+    assert ec.E + G == pytest.approx(reference("diffuse", ec.grid, 60, a))
+    assert ec.L == pytest.approx(pf.fits["L"].L - G) and ec.anchor == a
+    from flatiron.fit.run import pinned_fits
+
+    assert pinned_fits(prof, pf.fits)["L"].L == pytest.approx(pf.fits["L"].L - a.curve(pf.fits["L"].grid))
+    p0 = plain.correction.ears["L"]
+    assert np.abs((ec.L - ec.E) - (p0.L - p0.E)).max() > 3
     # A consensus with the anchored diffuse field's broad shape.
     set_profile_settings(prof, replace(profile_settings(prof), reference="consensus:hp", consensus_broad="diffuse"))
     pf = current_fit(prof)
     x = pf.correction.ears["L"].consensus
     assert x.broad == pytest.approx(anchored_broad(x.grid, Anchor.of(pf.gap, "hp"))[0])
+    from flatiron.report.plots import reference_figure
+
+    assert x.broad_source == "diffuse" and reference_figure(pf.correction.ears["L"])[:4] == b"\x89PNG"
 
 
 def test_anchored_references_follow_the_gap():

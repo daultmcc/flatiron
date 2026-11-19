@@ -223,6 +223,10 @@ class EarCorrection:
     fixed: list[PeakingFilter] = field(default_factory=list)  # filters kept from before (incremental refit)
     consensus: EarConsensus | None = None  # the reference, if it's a consensus
     baseline_sd: np.ndarray | None = None  # the joint baseline's posterior SD (None for the others)
+    # With the threshold fit: the listener's loudness-threshold gap (g + δ),
+    # taken out of both L and E here, so the curve shown is the measured
+    # response at threshold and the reference has no g in it (L − E is the same).
+    anchor: Anchor | None = None
 
     @property
     def filters(self) -> list[PeakingFilter]:
@@ -705,10 +709,15 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
                 i = j + 1
             else:
                 i += 1
-    return EarCorrection(ear, g, fit.L, fit.sd, E, base.values, R, R_sd, feats, C, freqs, target, sd, ff,
+    L_out, E_out, L_sd = fit.L, E, fit.sd
+    if anchor is not None:  # DESIGN.md, "Threshold-anchored reference": shown as a change to the measured response
+        G = anchor.curve(g)
+        L_out, E_out = fit.L - G, E - G
+        L_sd = np.sqrt(fit.sd ** 2 + np.clip(np.diag(anchor.cov_on(g)), 0, None))
+    return EarCorrection(ear, g, L_out, L_sd, E_out, base.values, R, R_sd, feats, C, freqs, target, sd, ff,
                          left, checked, session_R,
                          [] if fit.group_trials is None else [int(n) for n in fit.group_trials if n],
-                         comp, fixed, consensus, base.sd)
+                         comp, fixed, consensus, base.sd, anchor)
 
 
 def consensus_references(splits: dict[str, SplitConsensus], settings: CorrectionSettings, key: str = "",

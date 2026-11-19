@@ -1594,7 +1594,9 @@ def cmd_compare(args):
         print("--broad-spread can't be negative.")
         return 1
     try:
-        members = [Member(name_of(p), p.kind, perceptual_fits(p, profile_session_ids(p), on_fit)[0])
+        from flatiron.fit.run import pinned_fits
+
+        members = [Member(name_of(p), p.kind, pinned_fits(p, perceptual_fits(p, profile_session_ids(p), on_fit)[0]))
                    for p in profiles]
         comparisons = compare(members, ears, counted, args.broad_spread)
     except (NotEnoughTrials, ValueError) as e:

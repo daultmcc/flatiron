@@ -27,7 +27,7 @@ class ThresholdView:
     grid: np.ndarray  # 1 to 13 kHz within the measured range
     loudness: dict  # ear: Curve, the loudness-only fit
     threshold: dict  # ear: Curve, −T
-    joint: dict | None  # ear: Curve, with the threshold fit on
+    joint: dict | None  # ear: Curve, with the threshold fit on: the measured response at threshold (gap out)
     gap: object  # fit.gap.ListenerGap or None
     slug: str
     trials: int
@@ -80,7 +80,12 @@ def threshold_view(profile: Profile, pf: ProfileFit) -> ThresholdView | None:
         v = -(M @ tf.T[i])
         c = tf.cov[i * n:(i + 1) * n, i * n:(i + 1) * n]
         thr[e] = Curve(G, v - v.mean(), np.sqrt(np.clip(np.einsum("ij,jk,ik->i", M, c, M), 0, None)))
-    joint = {e: _curve(pf.fits[e], G) for e in EARS} if joint_on else None
     gap = pf.gap if pf.gap is not None else listener_gap(profile.dir.parent.parent)
+    joint = None
+    if joint_on:
+        from flatiron.fit.run import pinned_fits
+
+        pinned = pinned_fits(profile, pf.fits)
+        joint = {e: _curve(pinned[e], G) for e in EARS}
     ss = profile.threshold_sessions()
     return ThresholdView(G, loud, thr, joint, gap, profile.slug, tf.n_signal, len(ss), tf.sigma)

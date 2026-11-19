@@ -454,6 +454,7 @@ class EarConsensus:
     narrow: np.ndarray | None = None
     share: EarShare | None = None
     shares: Shares | None = None
+    broad_source: str = "median"  # or "diffuse": the threshold-anchored diffuse field's broad part
 
     def on(self, grid: np.ndarray) -> np.ndarray:
         """The reference on a grid, its mean removed like every other reference's."""
@@ -497,7 +498,8 @@ def ear_reference(sc: SplitConsensus, share: EarShare, key: str = "", own_grid: 
         if broad is None:
             G = G + S.T @ sc.broad.G[own]
     return EarConsensus(sc.members, key, sc.grid, b_m + k * sc.narrow.m, 0.5 * (cov + cov.T),
-                        sc.narrow.tau_hp, G, b_m, sc.narrow.m, share, all_shares)
+                        sc.narrow.tau_hp, G, b_m, sc.narrow.m, share, all_shares,
+                        "median" if broad is None else "diffuse")
 
 
 def anchored_broad(grid: np.ndarray, anchor) -> tuple[np.ndarray, np.ndarray]:
