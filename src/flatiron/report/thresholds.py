@@ -35,21 +35,26 @@ class ThresholdView:
     sigma: float
 
     def notes(self) -> list[str]:
-        out = [f"Thresholds: {self.trials} trials in {self.sessions} session{'' if self.sessions == 1 else 's'}, "
-               f"psychometric spread {self.sigma:.1f} dB."]
+        """For the terminal: the counts, then the fitted values."""
+        return [f"Thresholds: {self.trials} trials in {self.sessions} session{'' if self.sessions == 1 else 's'}."] \
+            + self.values()
+
+    def values(self) -> list[str]:
+        """The fitted values, one per line."""
+        out = [f"Psychometric spread: {self.sigma:.1f} dB"]
         g = self.gap
         if g is None:
-            out.append("Loudness-threshold gap: not estimated yet (150 threshold trials in a profile).")
+            out.append("Loudness-threshold gap: not estimated yet (150 threshold trials in a profile)")
             return out
         k = np.asarray(g.g)
         sd = np.sqrt(np.diag(np.asarray(g.cov)))
-        line = (f"Loudness-threshold gap (yours, from {len(g.profiles)} profile{'' if len(g.profiles) == 1 else 's'}): "
-                f"{k[4] - k[2]:+.1f} ± {np.hypot(sd[4], sd[2]):.1f} dB from 4 to 13 kHz; ripple {g.ripple_sd:.1f} dB.")
+        out += [f"Loudness-threshold gap, 4 to 13 kHz: {k[4] - k[2]:+.1f} ± {np.hypot(sd[4], sd[2]):.1f} dB "
+                f"(yours, from {len(g.profiles)} profile{'' if len(g.profiles) == 1 else 's'})",
+                f"Gap ripple: {g.ripple_sd:.1f} dB"]
         d = g.profiles.get(self.slug)
         if d is not None:
-            line += (f" This profile's own below 3 kHz: {d['delta'][0]:+.1f} ± {d['delta_sd'][0]:.1f} dB at 1 kHz, "
-                     f"{d['delta'][1]:+.1f} ± {d['delta_sd'][1]:.1f} at 2 kHz.")
-        out.append(line)
+            out.append(f"This profile's own gap below 3 kHz: {d['delta'][0]:+.1f} ± {d['delta_sd'][0]:.1f} dB at 1 kHz, "
+                       f"{d['delta'][1]:+.1f} ± {d['delta_sd'][1]:.1f} at 2 kHz")
         return out
 
 

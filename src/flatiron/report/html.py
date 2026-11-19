@@ -249,11 +249,47 @@ def interaural_note(pf: ProfileFit) -> str | None:
     return out
 
 
+def balance_text(pf: ProfileFit) -> str | None:
+    """The two-ear fit's channel balance, short: '+0.2 ± 0.2 dB left' (the louder side)."""
+    info = pf.fits["L"].interaural if pf.fits else None
+    if not info:
+        return None
+    c = info["c_db"]
+    side = "" if round(abs(c), 1) == 0 else " left" if c > 0 else " right"
+    return f"channel balance {'+' if side else ''}{abs(c):.1f} ± {info['c_sd']:.1f} dB{side}"
+
+
+def _n(n: int, what: str) -> str:
+    return f"{n} {what}{'' if n == 1 else 's'}"
+
+
+def count_lines(profile: Profile, pf: ProfileFit, speaker: bool) -> list[str]:
+    """Sessions and trials of each kind, one line each (kinds with none left out)."""
+    per_ear = lambda counts: " · ".join(f"{EAR_NAMES[e]} {_n(counts[e], 'trial')}" for e in pf.fits)
+    out = [f"{'Speaker' if speaker else 'Loudness'}: {_n(len(pf.sessions), 'block' if speaker else 'session')}"
+           + (f" (pooled with {', '.join(pf.pooled)})" if pf.pooled else "") + " · "
+           + per_ear({e: f.n_trials for e, f in pf.fits.items()})]
+    if speaker:
+        return out
+    cross = [len(s.cross_trials()) for s in pf.sessions]
+    if sum(cross):
+        out.append(f"Cross-ear: {_n(sum(1 for n in cross if n), 'session')} · {_n(sum(cross), 'trial')}")
+    thr = profile.threshold_sessions()
+    if thr:
+        out.append(f"Threshold: {_n(len(thr), 'session')} · "
+                   + per_ear({e: sum(t.ear == e for s in thr for t in s.live()) for e in pf.fits}))
+    cen = profile.centring_sessions()
+    if cen:
+        out.append(f"Centring: {_n(len(cen), 'session')} · {_n(sum(len(s.live()) for s in cen), 'trial')}")
+    return out
+
+
 NO_GAP_NOTE = ("Warning: threshold fit on, but no profile has 150 threshold trials yet, so there's no estimate of "
                "your loudness-threshold gap: {what}.")
 
 
-def top_notes(pf: ProfileFit, speaker: bool) -> list[str]:
+def top_notes(pf: ProfileFit, speaker: bool, balance: bool = True) -> list[str]:
+    """balance: include the channel-balance line (the HTML page has it in its header instead)."""
     st = pf.correction.settings
     out = ["Speaker profile: evidence about your ears, so no correction."] if speaker else []
     if not speaker and pf.anchor_missing():
@@ -262,7 +298,7 @@ def top_notes(pf: ProfileFit, speaker: bool) -> list[str]:
                 out.append(NO_GAP_NOTE.format(what="the consensus keeps its median broad shape"))
         elif st.reference in ANCHORED_TEXT:
             out.append(NO_GAP_NOTE.format(what=f"the {st.reference} reference isn't anchored at threshold"))
-    note = interaural_note(pf)
+    note = interaural_note(pf) if balance else None
     if note:
         out.append(note)
     out += method_notes(pf)
@@ -287,12 +323,12 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     ears = list(corr.ears.items())
     ear_head = lambda e: f"<h3>{EAR_NAMES[e]} ear</h3>"
 
+    balance = None if speaker else balance_text(pf)
+    top = (f"{listener_prefix(profile)}{now:%Y-%m-%d %H:%M}" + ("" if speaker else f" · preamp {corr.preamp_db:+.1f} dB")
+           + (f" · {balance}" if balance else ""))
     out = [f"<h1>Flatiron fit · {html.escape(label)}</h1>",
-           f'<p class="meta">{html.escape(listener_prefix(profile))}{now:%Y-%m-%d %H:%M} · {len(pf.sessions)} {"block" if speaker else "session"}{"" if len(pf.sessions) == 1 else "s"}'
-           + (f" (pooled with {html.escape(', '.join(pf.pooled))})" if pf.pooled else "") + " · "
-           + " · ".join(f"{EAR_NAMES[e]} {f.n_trials} trials" for e, f in pf.fits.items())
-           + ("" if speaker else f" · preamp {corr.preamp_db:+.1f} dB") + "</p>"]
-    out += [f'<p class="note">{html.escape(n)}</p>' for n in top_notes(pf, speaker)]
+           '<p class="meta">' + "<br>".join(html.escape(x) for x in [top] + count_lines(profile, pf, speaker)) + "</p>"]
+    out += [f'<p class="note">{html.escape(n)}</p>' for n in top_notes(pf, speaker, balance=False)]
 
     out.append("<h2>Measured response</h2>")
     out.append(_columns([
@@ -306,10 +342,10 @@ def write_report(profile: Profile, pf: ProfileFit, path: Path | None = None) -> 
     view = None if speaker else threshold_view(profile, pf)
     if view is not None:
         out.append("<h2>Thresholds</h2>")
-        out += [f'<p class="meta">{html.escape(n)}</p>' for n in view.notes()]
         out.append(_columns([ear_head(e) + _picture(threshold_figure(view, e, "light"), threshold_figure(view, e, "dark"),
                                                     f"{EAR_NAMES[e]} ear: loudness and threshold")
                              for e, _ in ears]))
+        out.append('<p class="meta">' + "<br>".join(html.escape(v) for v in view.values()) + "</p>")
 
     out.append("<h2>Features</h2>")
     cols = []

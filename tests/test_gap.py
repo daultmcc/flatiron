@@ -93,7 +93,19 @@ def test_from_sessions(tmp_path, monkeypatch):
     assert "320 threshold" in interaural_note(pf)
     assert "plus your loudness-threshold gap" in reference_description(pf.correction.settings, pf)
     page = write_report(prof, pf, tmp_path / "r.html").read_text()
-    assert "<h2>Thresholds</h2>" in page and "Loudness-threshold gap (yours, from 1 profile)" in page
+    assert "<h2>Thresholds</h2>" in page and "(yours, from 1 profile)" in page and "Psychometric spread" in page
+    # The header: the balance after the preamp, then each kind of session on its own line; no balance box.
+    import re
+
+    from flatiron.report.html import count_lines
+
+    top = re.search(r'<p class="meta">(.*?)</p>', page).group(1).split("<br>")
+    assert re.search(r"preamp [+-]\d+\.\d dB · channel balance \+?\d+\.\d ± \d+\.\d dB( left| right)?$", top[0])
+    lines = count_lines(prof, pf, False)
+    assert top[1:] == lines and lines[0].startswith("Loudness: 1 session · Left ")
+    n = {e: int(re.search(rf"{w} (\d+) trials", lines[1]).group(1)) for e, w in (("L", "Left"), ("R", "Right"))}
+    assert lines[1].startswith("Threshold: 1 session · ") and sum(n.values()) == 320
+    assert 'class="note">Channel balance' not in page
     assert pf.gap is not None and not pf.anchor_missing()
     ec, a = pf.correction.ears["L"], Anchor.of(pf.gap, "hp")
     G = a.curve(ec.grid)
