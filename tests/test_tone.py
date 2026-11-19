@@ -154,6 +154,7 @@ async def test_tone_app_marks_go_to_the_profile(tmp_path):
         await pilot.press("q", "minus")
         await pilot.pause()
         assert not app.synth.eq_on and app.synth.level_db == -31
+    assert prof.last_level() == -31  # the profile's level, which measure starts from too
     marks = prof.marks()
     assert [(m["ear"], m["kind"], m["session"]) for m in marks] == [("LR", "peak", None), ("LR", "dip", None)]
     assert marks[0]["stimulus"] == "point" and marks[1]["stimulus"].startswith("warble")

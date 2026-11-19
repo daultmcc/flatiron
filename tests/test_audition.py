@@ -67,3 +67,24 @@ async def test_toggle_blind_and_reveal():
         assert "Correction" in state()
         await pilot.press("n")
         assert "2 of 2" in str(app.query_one("#status").render())
+
+
+async def test_volume_is_kept_per_profile_apart_from_the_listening_level(tmp_path):
+    from flatiron.session.store import Profile
+
+    prof = Profile.open("a", root=tmp_path)
+    prof.set_level(-35.0)
+    player = NullPlayer()
+    app = AuditionApp([("pink", pink_noise(1.0))], EQ, player, "test", prof)
+    async with app.run_test() as pilot:
+        first = player.played[-1]
+        await pilot.press("minus", "minus", "minus")
+        assert np.abs(player.played[-1]).max() == pytest.approx(np.abs(first).max() * 10 ** (-3 / 20), rel=1e-5)
+        assert "volume -3 dB" in str(app.query_one("#status").render())
+    assert prof.read()["audition_gain_db"] == -3.0 and prof.last_level() == -35.0
+    app = AuditionApp([("loud", pink_noise(1.0) * 4)], EQ, NullPlayer(), "test", prof)  # about −8 dB RMS
+    assert app.volume_db == -3.0  # the next run starts there
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.press("plus")
+        assert app.volume_db == 10.0 and "clipping" in str(app.query_one("#status").render())

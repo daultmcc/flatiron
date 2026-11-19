@@ -150,7 +150,8 @@ or both ears, with any stimulus type) to look for resonances. This can be useful
 right for manual EQ, but if you provide a profile you can also toggle the corrections on and
 off to see the effect they have. `flatiron verify` runs trials similar to `measure` but with the
 correction applied, and `flatiron audition` lets you toggle the corrections while playing a
-provided audio clip (WAV, FLAC or MP3).
+provided audio clip (WAV, FLAC or MP3), with +/− adjusting its volume (remembered per profile).
+`tone` starts at, and remembers, the same per-profile listening level as `measure`.
 
 ### Speakers
 

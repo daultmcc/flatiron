@@ -20,6 +20,9 @@ from flatiron.session.sweep import SweepTiming, sweep_signal
 
 SOURCE_LEVEL_DB = -20.0  # RMS of the generated sources
 PINK_S = 10.0
+# Audition's own volume, relative to the source (not the listening level
+# measure and tone share): kept per profile as audition_gain_db.
+VOLUME_RANGE_DB = (-40.0, 10.0)
 
 CSS = """
 Screen { align: center middle; }
@@ -98,12 +101,17 @@ class AuditionApp(App):
         Binding("n", "next_source", "Next source"),
         Binding("b", "blind", "Blind A/B"),
         Binding("r", "reveal", "Reveal"),
+        Binding("plus,equals_sign", "volume(1)", "Louder"),
+        Binding("minus,underscore", "volume(-1)", "Quieter"),
         Binding("q,escape", "quit", "Quit"),
     ]
 
-    def __init__(self, sources: list[tuple[str, np.ndarray]], eq: PreviewEQ, player, label: str = ""):
+    def __init__(self, sources: list[tuple[str, np.ndarray]], eq: PreviewEQ, player, label: str = "",
+                 profile=None):
         super().__init__()
         self.sources, self.eq, self.player, self.label = sources, eq, player, label
+        self.profile = profile
+        self.volume_db = float(profile.read().get("audition_gain_db", 0.0)) if profile is not None else 0.0
         self.k = 0
         self.on = True
         self.blind = False
@@ -131,7 +139,11 @@ class AuditionApp(App):
 
     def current(self) -> np.ndarray:
         off, on = self.buffers
-        return on if self.on else off
+        return (on if self.on else off) * np.float32(db_to_amp(self.volume_db))
+
+    def clips(self) -> bool:
+        """Either version would pass 0 dBFS at this volume (the player clips it there)."""
+        return max(float(np.abs(b).max()) for b in self.buffers) * db_to_amp(self.volume_db) > 1.0
 
     def show(self):
         st = self.query_one("#state", Static)
@@ -146,10 +158,22 @@ class AuditionApp(App):
             msg = ("Same level both ways: the preamp ({:+.1f} dB) applies to both.".format(self.eq.preamp_db)
                    + (f"\nA was {'corrected' if self.a_is_on else 'uncorrected'}." if self.blind else ""))
         self.query_one("#message", Static).update(msg)
-        self.query_one("#status", Static).update(f"source {self.k + 1} of {len(self.sources)}")
+        self.query_one("#status", Static).update(
+            f"source {self.k + 1} of {len(self.sources)}  ·  volume {self.volume_db:+.0f} dB (+/−)"
+            + ("  ·  clipping: turn it down" if self.clips() else ""))
 
     def action_toggle(self):
         self.on = not self.on
+        self.player.switch(self.current(), ceiling_db=0.0)
+        self.show()
+
+    def action_volume(self, d: int):
+        new = float(np.clip(self.volume_db + d, *VOLUME_RANGE_DB))
+        if new == self.volume_db:
+            return
+        self.volume_db = new
+        if self.profile is not None:
+            self.profile.update(audition_gain_db=new)
         self.player.switch(self.current(), ceiling_db=0.0)
         self.show()
 

@@ -231,6 +231,8 @@ class ToneApp(App):
         self.note = (f"{MAX_LEVEL_DB:+.0f} dBFS is the most Flatiron plays." if d > 0 and new == self.synth.level_db
                      else "")
         self.synth.level_db = new
+        if self.profile is not None:  # the profile's listening level, shared with measure
+            self.profile.set_level(new)
         self.show()
 
     def action_eq(self):

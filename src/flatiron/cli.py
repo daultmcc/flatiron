@@ -445,7 +445,7 @@ def cmd_audition(args):
         return 1
     eq = PreviewEQ.from_fit(pf.summary())
     print(DOUBLE_EQ)
-    AuditionApp(sources, eq, _player(args), f"{prof.read()['label']} · fit {eq.fit_hash}").run()
+    AuditionApp(sources, eq, _player(args), f"{prof.read()['label']} · fit {eq.fit_hash}", prof).run()
     return 0
 
 
