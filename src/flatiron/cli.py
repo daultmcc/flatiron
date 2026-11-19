@@ -806,7 +806,7 @@ def cmd_sessions(args):
         trials, _ = prof.history(sessions)
         print(f"total: L {len(trials['L'])}, R {len(trials['R'])}")
     if thresholds:
-        print("\nThreshold sessions (collected only):")
+        print("\nThreshold sessions:")
     for s in thresholds:
         live = s.live()
         n = {e: sum(t.ear == e for t in live) for e in EARS}
@@ -822,7 +822,7 @@ def cmd_sessions(args):
         print(f"{s.id}  L {n['L']:4d}  R {n['R']:4d}  {mins:4.1f} min  {fa}  "
               f"probes {hits:>4}{vol}{'' if s.ended else '  (not closed)'}{_eq_label(s)}")
     if centring:
-        print("\nCentring sessions (collected only):")
+        print("\nCentring sessions:")
     for s in centring:
         live = s.live()
         mins = s.trials[-1].t / 60 if s.trials else 0

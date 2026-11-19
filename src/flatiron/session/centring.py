@@ -1,5 +1,5 @@
-"""Centring sessions (DESIGN.md, "Centring sessions"). Collected only: no fit
-uses them yet.
+"""Centring sessions (DESIGN.md, "Centring sessions"). Their answers give the
+profile's channel balance in the two-ear fit (fit/interaural.py).
 
 Per trial, one burst plays in both ears at once, the same waveform in each,
 with the left at +d/2 dB and the right at −d/2 around its level; the listener

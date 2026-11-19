@@ -24,7 +24,8 @@ mode by Fisher scoring, with Laplace error bars. γ and λ are Beta posterior
 means from their own trials; σ stays at its prior until there are
 MIN_TRIALS_SIGMA signal trials, then maximises the Laplace evidence.
 
-Collected only: nothing else uses these fits yet.
+These fits give the channel balance (fit/interaural.py) and the loudness-threshold
+gap (fit/gap.py), and with --threshold-fit the fit's start values.
 """
 
 from dataclasses import dataclass
