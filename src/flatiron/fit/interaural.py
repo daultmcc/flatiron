@@ -103,35 +103,17 @@ def _ear_rows(grids: dict, ref_grid: np.ndarray, ear: str, freqs, stimulus: list
 
 
 def _threshold_observation(profile: Profile, ref_grid: np.ndarray) -> tuple[float, float] | None:
-    from flatiron.model.threshold import ThresholdData, fit_thresholds
+    from flatiron.fit.gap import threshold_fit
 
-    ss = profile.threshold_sessions()
-    if not ss:
+    fit = threshold_fit(profile)
+    if fit is None or fit.n_signal < MIN_THRESHOLD_SIGNAL:
         return None
-    data = ThresholdData.build([(s.stimulus_key(), s.trials) for s in ss])
-    if int(data.signal.sum()) < MIN_THRESHOLD_SIGNAL:
-        return None
-    lo, hi = profile.measured
-    freqs = data.freq
-    grid = log_grid(min(lo, float(freqs.min())), max(hi, float(freqs.max())))
-    fit = fit_thresholds(data, grid)
-    n = grid.size
-    w = interp_matrix(grid, ref_grid).mean(axis=0)
+    n = fit.grid.size
+    w = interp_matrix(fit.grid, ref_grid).mean(axis=0)
     J = np.concatenate([-w, w])  # T_R − T_L
     mean = float(J @ fit.T.ravel())
     sd = float(np.sqrt(J @ fit.cov[:2 * n, :2 * n] @ J))
     return mean, sd * THRESHOLD_SD_SCALE
-
-
-def threshold_key(profile: Profile) -> str:
-    """What the threshold observation depends on (so it's only refitted when that changes)."""
-    h = hashlib.sha256(VERSION.encode())
-    for s in profile.threshold_sessions():
-        h.update(json.dumps([s.id, s.task, s.stimulus_key(),
-                             [(t.ear, t.freq, t.level_dbfs, t.eq_gain, t.kind, t.positive, t.undone) for t in s.trials]]
-                            ).encode())
-    h.update(json.dumps(list(profile.measured)).encode())
-    return h.hexdigest()[:20]
 
 
 _THRESHOLD_MEMO: dict = {}
@@ -162,7 +144,9 @@ def profile_rows(profile: Profile, sessions: list[Session], grids: dict) -> Prof
         for t in s.live():
             x = _ear_rows(grids, ref, "L", [t.freq], [key]) - _ear_rows(grids, ref, "R", [t.freq], [key])
             zX.append(x[0]), zoff.append(t.ild), zy.append(float(t.left))
-    tk = threshold_key(profile) + f"|{lo}|{hi}"
+    from flatiron.fit.gap import threshold_key
+
+    tk = f"{profile.dir}|{threshold_key(profile)}|{lo}|{hi}"
     if tk not in _THRESHOLD_MEMO:
         _THRESHOLD_MEMO[tk] = _threshold_observation(profile, ref)
     width = grids["L"].size + grids["R"].size + 2
