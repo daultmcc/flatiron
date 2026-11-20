@@ -3,14 +3,17 @@ reference").
 
 A headphone's response reaches both the loudness curve L and the threshold
 curve T, and the listener's hearing adds to each in its own way. Per profile
-p and ear e, over 1 to 13 kHz (within the measured range):
+p and ear e, over the listener's default measured range (within the
+profile's measured range, and where both its curves were fitted):
 
     L_pe(f) + T_pe(f) = g(f) + δ_p(f) + k_pe + m_pe(f)
 
 - g: how the listener's loudness above threshold departs from their
-  threshold, the same for every profile: piecewise linear in log f, knots at
-  1, 2, 4, 8 and 13 kHz, flat beyond. Its level is arbitrary (only its shape
-  is used).
+  threshold, the same for every profile: piecewise linear in log f, flat
+  beyond the end knots. The knots are the ends of the listener's default
+  measured range, and 1, 2, 4, 8 and 13 kHz where they're at least a quarter
+  octave inside it (gap_knots). Its level is arbitrary (only its shape is
+  used).
 - δ_p: the profile's own low-frequency departure, hats at 1 and 2 kHz that
   are zero from 3 kHz up, prior SD 2.5 dB: the profiles agreed in the treble
   and not quite below 3 kHz.
@@ -36,20 +39,35 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 
 from flatiron import EARS
-from flatiron.model.grid import interp_matrix, log_grid
-from flatiron.session.store import Profile
+from flatiron.model.grid import MEASURE_HI, MEASURE_LO, interp_matrix, log_grid
+from flatiron.session.store import Profile, measured_default
 
-KNOTS_HZ = (1000.0, 2000.0, 4000.0, 8000.0, 13000.0)
+INNER_KNOTS_HZ = (1000.0, 2000.0, 4000.0, 8000.0, 13000.0)  # kept where a quarter octave inside the range
+KNOT_CLEARANCE_OCT = 0.25
 LOW_KNOTS_HZ = (1000.0, 2000.0, 3000.0)  # δ_p: hats at the first two, zero from the last
 DELTA_SD_DB = 2.5
 G_SD_DB = 30.0  # keeps the prior proper; no real pull
 CONST_SD_DB = 1e4
 RIPPLE_ELL_OCT = 0.1
 RIPPLE_RANGE_DB = (0.05, 10.0)
-RANGE_HZ = (1000.0, 13000.0)
 MIN_THRESHOLD_TRIALS = 150  # a profile's threshold trials before it counts
 GAP_CACHE_KEEP = 200
-VERSION = "1"
+VERSION = "2"
+
+
+def gap_knots(lo: float, hi: float) -> tuple:
+    """g's knots for a listener whose default measured range is lo to hi."""
+    inner = [k for k in INNER_KNOTS_HZ
+             if np.log2(k / lo) >= KNOT_CLEARANCE_OCT and np.log2(hi / k) >= KNOT_CLEARANCE_OCT]
+    return (float(lo), *inner, float(hi))
+
+
+KNOTS_HZ = gap_knots(MEASURE_LO, MEASURE_HI)  # with the default range
+
+
+def listener_range(root: Path) -> tuple[float, float]:
+    """The listener's default measured range (root: the listener's folder)."""
+    return measured_default(root / "listener.json")
 
 
 def hats(freqs, knots) -> np.ndarray:
@@ -126,9 +144,13 @@ def threshold_fit(profile: Profile):
     return fit
 
 
-def gap_grid(profile: Profile) -> np.ndarray:
-    lo, hi = profile.measured
-    return log_grid(max(RANGE_HZ[0], lo), min(RANGE_HZ[1], hi))
+def gap_grid(profile: Profile, lo: float, hi: float, *grids) -> np.ndarray | None:
+    """Where a profile enters g: the listener's range lo to hi, within the
+    profile's measured range and every given grid (its fitted curves'); None
+    if that's under a quarter octave."""
+    a, b = profile.measured
+    a, b = max(lo, a, *(float(g[0]) for g in grids)), min(hi, b, *(float(g[-1]) for g in grids))
+    return log_grid(a, b) if b > a * 2 ** KNOT_CLEARANCE_OCT else None
 
 
 # -- the fit ----------------------------------------------------------------------
@@ -142,9 +164,10 @@ class _Member:
     trials: int
 
 
-def fit_gap(members: list[_Member]) -> ListenerGap:
+def fit_gap(members: list[_Member], knots=KNOTS_HZ) -> ListenerGap:
     """g, each member's δ and the ripple SD (see the module docstring)."""
-    nk, P = len(KNOTS_HZ), len(members)
+    knots = tuple(float(k) for k in knots)
+    nk, P = len(knots), len(members)
     keys = [(i, e) for i in range(P) for e in EARS]
     n_par = nk + 2 * P + len(keys)  # g, δ per profile, a constant per profile and ear
     prior = np.concatenate([np.full(nk, G_SD_DB ** -2), np.full(2 * P, DELTA_SD_DB ** -2),
@@ -153,7 +176,7 @@ def fit_gap(members: list[_Member]) -> ListenerGap:
     for j, (i, e) in enumerate(keys):
         m = members[i]
         X = np.zeros((m.grid.size, n_par))
-        X[:, :nk] = hats(m.grid, KNOTS_HZ)
+        X[:, :nk] = hats(m.grid, knots)
         X[:, nk + 2 * i:nk + 2 * i + 2] = low_hats(m.grid)
         X[:, nk + 2 * P + j] = 1.0
         x = np.log2(m.grid)
@@ -189,7 +212,7 @@ def fit_gap(members: list[_Member]) -> ListenerGap:
         sl = slice(nk + 2 * i, nk + 2 * i + 2)
         profiles[m.slug] = {"delta": w[sl].round(4).tolist(),
                             "delta_sd": np.sqrt(np.diag(C[sl, sl])).round(4).tolist(), "trials": m.trials}
-    return ListenerGap(list(KNOTS_HZ), g.round(4).tolist(), cg.round(6).tolist(), round(ripple, 4), profiles)
+    return ListenerGap(list(knots), g.round(4).tolist(), cg.round(6).tolist(), round(ripple, 4), profiles)
 
 
 def gap_members(root: Path, on_fit: Callable[[], None] | None = None) -> tuple[list[_Member], list]:
@@ -198,6 +221,7 @@ def gap_members(root: Path, on_fit: Callable[[], None] | None = None) -> tuple[l
     from flatiron.fit.run import NOISE_KINDS, cached_fit, fit_key, listener_noise, profile_priors
 
     members, keys, noise = [], [], None
+    lo, hi = listener_range(root)
     for p in Profile.all(root):
         if p.kind not in NOISE_KINDS:
             continue
@@ -212,13 +236,16 @@ def gap_members(root: Path, on_fit: Callable[[], None] | None = None) -> tuple[l
             continue
         noise = noise or listener_noise(root, on_fit)
         priors = profile_priors(p)
-        G = gap_grid(p)
+        fits = {e: cached_fit(p, trials[e], np.asarray(grids[e], float), noise[e], priors) for e in EARS}
+        # Only where both curves were fitted: beyond a grid, interpolation would hold its end value.
+        G = gap_grid(p, lo, hi, tf.grid, *(f.grid for f in fits.values()))
+        if G is None:
+            continue
         M = interp_matrix(tf.grid, G)
         nt = tf.grid.size
         d, V0 = {}, {}
         for i, e in enumerate(EARS):
-            grid = np.asarray(grids[e], float)
-            f = cached_fit(p, trials[e], grid, noise[e], priors)
+            f = fits[e]
             A = interp_matrix(f.grid, G)
             cT = tf.cov[i * nt:(i + 1) * nt, i * nt:(i + 1) * nt]
             d[e] = A @ f.L + M @ tf.T[i]
@@ -235,7 +262,8 @@ def listener_gap(root: Path, on_fit: Callable[[], None] | None = None) -> Listen
     members, keys = gap_members(root, on_fit)
     if not members:
         return None
-    key = hashlib.sha256(json.dumps([VERSION, KNOTS_HZ, LOW_KNOTS_HZ, DELTA_SD_DB, RIPPLE_ELL_OCT]
+    knots = gap_knots(*listener_range(root))
+    key = hashlib.sha256(json.dumps([VERSION, knots, LOW_KNOTS_HZ, DELTA_SD_DB, RIPPLE_ELL_OCT]
                                     + sorted(keys)).encode()).hexdigest()[:24]
     folder = root / "cache" / "gap"
     path = folder / f"{key}.json"
@@ -244,7 +272,7 @@ def listener_gap(root: Path, on_fit: Callable[[], None] | None = None) -> Listen
         return ListenerGap(**json.loads(path.read_text()))
     if on_fit is not None:
         on_fit()
-    out = fit_gap(members)
+    out = fit_gap(members, knots)
     out.key = key
     folder.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.stem + ".tmp")

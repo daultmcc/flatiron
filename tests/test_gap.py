@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from flatiron.fit.gap import KNOTS_HZ, _Member, fit_gap, hats, listener_gap, low_hats
+from flatiron.fit.gap import KNOTS_HZ, _Member, fit_gap, gap_grid, gap_knots, hats, listener_gap, low_hats
 from flatiron.model.grid import log_grid
 from flatiron.session.runner import RunSettings, TrialRunner
 from flatiron.session.scheduler import SchedulerConfig
@@ -11,13 +11,13 @@ from flatiron.session.store import Profile, current_listener
 from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
 from flatiron.sim.listener import SimulatedListener, ThresholdListener, design_example
 
-G_TRUE = np.array([0.0, -3.0, -5.0, 5.0, 10.0])  # at the knots: a 15 dB rise from 4 to 13 kHz
+G_TRUE = np.array([0.0, -3.0, -5.0, 5.0, 10.0])  # at the default knots: a 15 dB rise from 4 to 15 kHz
 centre = lambda v: v - v.mean()
 
 
 def test_fit_recovers_the_gap_each_profiles_low_end_and_the_ripple():
     rng = np.random.default_rng(0)
-    grid = log_grid(1000, 13000)
+    grid = log_grid(*KNOTS_HZ[::len(KNOTS_HZ) - 1])
     x = np.log2(grid)
     K = np.exp(-0.5 * ((x[:, None] - x[None, :]) / 0.1) ** 2)
     chol = np.linalg.cholesky(K + 1e-9 * np.eye(grid.size))
@@ -39,7 +39,7 @@ def test_fit_recovers_the_gap_each_profiles_low_end_and_the_ripple():
         want = np.array(delta) - np.mean(list(deltas.values()), axis=0)
         assert got == pytest.approx(want, abs=1.5)
     sd = np.sqrt(np.diag(np.asarray(gap.cov)))
-    assert np.all(sd < 1.5) and gap.curve([500.0, 20000.0]) == pytest.approx(gap.curve([1000.0, 13000.0]))
+    assert np.all(sd < 1.5) and gap.curve([500.0, 20000.0]) == pytest.approx(gap.curve([KNOTS_HZ[0], KNOTS_HZ[-1]]))
 
 
 def test_from_sessions(tmp_path, monkeypatch):
@@ -69,7 +69,7 @@ def test_from_sessions(tmp_path, monkeypatch):
     gap = listener_gap(root)
     assert gap is not None and gap.profiles["hp"]["trials"] == 320
     g = np.asarray(gap.g)
-    assert g[4] - g[2] == pytest.approx(15.0, abs=4.0)  # the treble rise
+    assert g[4] - g[2] == pytest.approx(15.0, abs=4.0)  # the treble rise, 4 to 15 kHz
     assert listener_gap(root).key == gap.key  # cached
     # The profile's own fit takes its thresholds too (as an observation of the channel balance).
     from flatiron.fit.run import current_fit
@@ -170,3 +170,20 @@ def test_config_rules_for_the_threshold_fit(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     main(["config", "hp"])
     assert "(unused with --threshold-fit)" in capsys.readouterr().out  # phon
+
+
+def test_knots_follow_the_listeners_range():
+    assert KNOTS_HZ == (850.0, 2000.0, 4000.0, 8000.0, 15000.0)  # 1 and 13 kHz are too close to the ends
+    assert gap_knots(850, 16500) == (850.0, 2000.0, 4000.0, 8000.0, 13000.0, 16500.0)
+    assert gap_knots(500, 12000) == (500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0)
+    assert gap_knots(3000, 9000) == (3000.0, 4000.0, 9000.0)  # 8 kHz is too close to 9
+
+
+def test_a_profile_enters_only_where_its_curves_were_fitted(tmp_path):
+    prof = Profile.open("hp", root=tmp_path)
+    prof.update(measured={"lo": 850.0, "hi": 16500.0})
+    G = gap_grid(prof, 850, 16500, log_grid(850, 16500), log_grid(900, 15000))
+    assert G[0] == pytest.approx(900) and G[-1] == pytest.approx(15000)
+    assert gap_grid(prof, 850, 16500, log_grid(14000, 15000)) is None  # under a quarter octave
+    G = gap_grid(prof, 2000, 8000, log_grid(850, 16500))
+    assert G[0] == pytest.approx(2000) and G[-1] == pytest.approx(8000)
