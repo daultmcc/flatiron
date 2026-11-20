@@ -11,7 +11,7 @@ from flatiron.audio.player import NullPlayer
 from flatiron.model.grid import log_grid
 from flatiron.model.threshold import ThresholdData, fit_thresholds, prior_shape
 from flatiron.session.store import Profile
-from flatiron.session.threshold import ThresholdRunner, ThresholdSettings
+from flatiron.session.threshold import ThresholdConfig, ThresholdRunner, ThresholdSettings
 from flatiron.sim.listener import ThresholdListener
 from flatiron.ui.app import ChannelCheckScreen, FlatironApp, IntroScreen, LevelScreen, SessionEndScreen, \
     ThresholdScreen
@@ -345,3 +345,43 @@ def test_other_tasks_are_refused_naming_the_file(tmp_path):
     path.write_text(json.dumps(raw))
     with pytest.raises(ValueError, match=str(path)):
         r.profile.threshold_sessions()
+
+
+def test_climbs_above_the_loudest_miss_until_something_is_heard(tmp_path):
+    r = runner(tmp_path)
+    r.startup = {"L": None, "R": None}
+    f = float(r.grid[r.inside][-1])
+    x = r._climb("R", f, -80.0)
+    assert x == -80.0  # nothing tried there yet
+    plan = NS(ear="R", freq=f, kind="signal", interval=1, eq_gain=0.0)
+    for level in (-80.0, -77.0):
+        r.answer(NS(plan=NS(**{**vars(plan), "level_db": level}), retake=False), None, 500)
+    assert r._climb("R", f, -79.0) == pytest.approx(-77.0 + r.cfg.climb_db)
+    assert r._climb("R", f * 2 ** (1 / 12), -79.0) == -79.0  # another frequency
+    assert r._climb("L", f, -79.0) == -79.0  # the other ear
+    assert r._climb("R", f, -50.0) == -50.0  # never lowers a level
+    assert r._climb("R", f, -79.0) <= r.level_dbfs
+    r.answer(NS(plan=NS(**{**vars(plan), "level_db": -71.0}), retake=False), True, 500)  # heard
+    assert r._climb("R", f, -79.0) == -79.0
+
+
+def test_the_climb_finds_a_cliff_the_extrapolation_misses(tmp_path):
+    # A wall above 13.5 / 14.5 kHz, as at the top of hearing.
+    wall = lambda f, c: 150 * np.clip(np.log2(np.asarray(f) / c), 0, None)
+    truth = {"L": lambda f: TRUTH["L"](f) + wall(f, 13500), "R": lambda f: TRUTH["R"](f) + wall(f, 14500)}
+    top = np.array([16000.0, 16500.0])
+    err = {}
+    for climb in (True, False):
+        e = []
+        for seed in range(2):
+            prof = Profile.open(f"x{climb}{seed}", root=tmp_path)
+            prof.update(measured={"lo": 6000.0, "hi": 16500.0})
+            cfg = ThresholdConfig() if climb else ThresholdConfig(climb_after_misses=10**6)
+            r = ThresholdRunner(prof, ThresholdSettings(), cfg, seed=seed, volume=False)
+            lis = ThresholdListener(truth, seed=seed)
+            for i in range(150):
+                tr = r.prepare()
+                r.answer(tr, lis.answer(tr.plan), 500, t=i)
+            e += [r.estimate(ear, top)[0] - truth[ear](top) for ear in "LR"]
+        err[climb] = float(np.mean(e))  # the extrapolation reads the top too sensitive
+    assert err[True] > -4.0 and err[True] > err[False] + 2.0

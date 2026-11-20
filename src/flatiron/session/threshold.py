@@ -50,6 +50,8 @@ class ThresholdConfig:
     startup_above_known_db: float = 15.0  # with earlier sessions: start this far above their threshold
     startup_step_db: float = 10.0
     sigma_every: int = 50  # trials between re-estimates of the psychometric spread
+    climb_after_misses: int = 2  # misses at a frequency, none heard above them, before climbing
+    climb_db: float = 6.0  # the climb: at least this far above the loudest miss
 
 
 @dataclass
@@ -223,9 +225,30 @@ class ThresholdRunner:
             # Around the threshold, so the answers also say how steep the
             # psychometric function is.
             x = mean[i] + self.fit.sigma * rng.normal()
+        x = self._climb(ear, f, x)
         x -= self.tincan.gain(f, ear)  # the estimate is of what reaches the headphones, EQ included
         x = float(np.clip(x, MIN_LEVEL_DB, MAX_LEVEL_DB))
         return ThresholdPlan(ear, f, x, "probe" if probe else "signal", interval)
+
+    def _climb(self, ear: str, f: float, x: float) -> float:
+        """Above the loudest miss where nothing has been heard yet. Near a
+        steep rise (the top of hearing) the estimate is extrapolated from
+        below, and each miss moves it only a dB or two, so the trials there
+        can stay below threshold all session. Once the ear has missed
+        climb_after_misses bursts within half a grid step of f in this
+        session, with nothing heard at or above the loudest of them, the
+        level is at least climb_db above it, and no higher than the listening
+        level. Levels are as they reach the headphones (known EQ included)."""
+        cfg = self.cfg
+        near = [t for t in self.live_trials()
+                if t.ear == ear and t.kind != "startup" and abs(np.log2(t.freq / f)) < 1 / 48]
+        missed = [t.level_dbfs + t.eq_gain for t in near if not t.positive]
+        if len(missed) < cfg.climb_after_misses:
+            return x
+        top = max(missed)
+        if any(t.positive and t.level_dbfs + t.eq_gain >= top for t in near):
+            return x
+        return max(x, min(top + cfg.climb_db, self.level_dbfs))
 
     def render(self, plan: ThresholdPlan, retake: bool = False) -> PreparedThreshold:
         d = self.settings.stimulus.duration
