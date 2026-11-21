@@ -43,6 +43,7 @@ from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.special import expit, logit, ndtr
 
 from flatiron.model.grid import interp_matrix, log_grid, second_difference
+from flatiron.model import pitch as pitch_bias
 from flatiron.model.probit import BalancePrior, Noise, Priors, ProbitFit, Trials, band_rows, noise_sd
 
 SQRT_2PI = np.sqrt(2 * np.pi)
@@ -95,7 +96,8 @@ class _Factor:
 
 
 class _Model:
-    def __init__(self, trials: Trials, grid: np.ndarray, priors: Priors, n_groups: int | None = None):
+    def __init__(self, trials: Trials, grid: np.ndarray, priors: Priors, n_groups: int | None = None,
+                 pitch: tuple = pitch_bias.ZERO):
         self.grid = grid = np.asarray(grid, float)
         self.n = n = grid.size
         self.p = priors
@@ -106,7 +108,9 @@ class _Model:
         self.nonempty = [k for k in range(self.n_groups) if self.starts[k + 1] > self.starts[k]]
         f_a, f_b, stim = trials.f_a[order], trials.f_b[order], trials.stimulus[order]
         self.A = (band_rows(grid, f_a, stim) - band_rows(grid, f_b, stim)).tocsr()
-        self.off = trials.offset[order]
+        # The listener's pitch bias, held fixed: a known shift of each trial's argument.
+        self.pitch = tuple(float(x) for x in pitch)
+        self.off = trials.offset[order] + pitch_bias.offsets(trials.f_a[order], trials.f_b[order], self.pitch)
         self.order = trials.order[order]
         self.y = trials.a_louder[order].astype(float)
         self.f_a, self.f_b = f_a, f_b
@@ -322,7 +326,9 @@ def fit_shared_noise(sets: list[tuple[Trials, np.ndarray]], priors: Priors = Pri
     own noise step. Only sets of at least MIN_TRIALS_NOISE_FIT trials count:
     in a smaller one the curve absorbs the answers and pulls sigma0 down, and
     summing several small sets doesn't undo that. With none, the prior's
-    values. Always started from the prior, so it depends only on the trials."""
+    values. Always started from the prior, so it depends only on the trials.
+    It's estimated without the pitch bias, which is fitted after it
+    (fit_pitch_bias)."""
     sets = [(t, np.asarray(g, float)) for t, g in sets if len(t) >= MIN_TRIALS_NOISE_FIT]
     n = sum(len(t) for t, _ in sets)
     if not sets:
@@ -350,6 +356,42 @@ def fit_shared_noise(sets: list[tuple[Trials, np.ndarray]], priors: Priors = Pri
     return Noise(float(np.exp(h[0])), float(np.exp(h[1])), float(expit(h[2])), float(np.exp(h[3])), n)
 
 
+
+def fit_pitch_bias(sets: list[tuple[Trials, np.ndarray, Noise]], priors: Priors = Priors()) -> tuple:
+    """The listener's pitch bias (model/pitch.py) at its knots: the maximum of
+    the summed Laplace evidence of several sets of trials (each a profile's
+    ear, on its own grid, with its own curve and groups, and that ear's
+    noise), with tau at the prior as in fit_shared_noise, plus the bias's own
+    prior. Only sets of at least MIN_TRIALS_NOISE_FIT trials count; with none,
+    no bias. Each evaluation starts its inner fits from the fit without a
+    bias, so the result depends only on the trials and the noise."""
+    sets = [(t, np.asarray(g, float), n) for t, g, n in sets if len(t) >= MIN_TRIALS_NOISE_FIT]
+    if not sets:
+        return pitch_bias.ZERO
+    models = []
+    for t, g, n in sets:
+        m = _Model(t, g, priors)
+        m.set_tau(m.mu_tau)
+        m.set_noise(_noise_h(n))
+        m.base_off = m.off.copy()
+        m.X = pitch_bias.design(m.f_a, m.f_b)
+        a_s, v_s, *_ = m.solve(np.zeros(m.n + 1), np.zeros((m.n_groups, m.r)), tol=TOL_REFIT)
+        models.append((m, a_s, v_s))
+
+    def outer(b):
+        total = 0.5 * float(b @ b) / pitch_bias.PRIOR_SD_DB**2
+        for m, a_s, v_s in models:
+            m.off = m.base_off + m.X @ b
+            total += m.neg_log_evidence(a_s, v_s)[0]
+        return total
+
+    k = len(pitch_bias.KNOTS_HZ)
+    res = optimize.minimize(outer, np.zeros(k), method="Nelder-Mead",
+                            options={"xatol": 1e-2, "fatol": 1e-3, "maxiter": 2000,
+                                     "initial_simplex": np.vstack([np.zeros(k), np.eye(k)])})
+    return tuple(round(float(x), 4) for x in res.x)
+
+
 def fit_hierarchical(trials: Trials, grid: np.ndarray, priors: Priors = Priors(),
                      init: ProbitFit | None = None, fit_hyper: bool = True, fit_tau: bool | None = None,
                      n_groups: int | None = None, all_groups: bool = True,
@@ -366,7 +408,7 @@ def fit_hierarchical(trials: Trials, grid: np.ndarray, priors: Priors = Priors()
     all_groups: also return every group's covariance (not needed trial by trial).
     """
     fit_tau = fit_hyper if fit_tau is None else fit_tau
-    m = _Model(trials, grid, priors, n_groups)
+    m = _Model(trials, grid, priors, n_groups, pitch=noise.pitch if noise is not None else pitch_bias.ZERO)
     noise_lo, noise_hi = NOISE_LO, NOISE_HI
     tau_lo, tau_hi = np.full(3, LOG_TAU_BOUNDS[0]), np.full(3, LOG_TAU_BOUNDS[1])
 
@@ -445,7 +487,7 @@ def _result(m: _Model, a, v, val, fac: _Factor, converged: bool, tau_free: bool,
         treble_noise=m.treble_noise,
         tau_lo=m.tau_lo, tau_mid=m.tau_mid, tau_hi=m.tau_hi, tau_fitted=tau_free, tau=m.tau, u=v @ m.Phi.T, v=v,
         group_trials=np.diff(m.starts), group_cov=group_cov, group_u_cov=group_u_cov,
-        focus_cov=focus_cov, focus_cross=focus_cross)
+        focus_cov=focus_cov, focus_cross=focus_cross, pitch=m.pitch)
 
 
 # -- the two ears together (DESIGN.md, "Channel balance") ----------------------
@@ -540,7 +582,7 @@ def fit_joint(blocks: list[tuple], extra: Extra | None = None, all_groups: bool 
         ms = []
         for e in ears:
             f = fits[e]
-            m = _Model(trials[e], f.grid, priors)
+            m = _Model(trials[e], f.grid, priors, pitch=f.pitch)
             m.set_noise([np.log(f.sigma0), np.log(f.d0), logit(f.lapse), np.log(f.treble_noise)])
             m.set_tau(np.log([f.tau_lo, f.tau_mid, f.tau_hi]))
             v = np.zeros((m.n_groups, m.r))

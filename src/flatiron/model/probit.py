@@ -10,6 +10,7 @@ from scipy import sparse
 
 from flatiron.audio.stimulus import POINT, spectrum_offsets_oct
 from flatiron.model.grid import interp_matrix, octaves
+from flatiron.model.pitch import ZERO as PITCH_ZERO
 
 # Listener noise rises in the treble: a ramp in log frequency between these,
 # from sigma0 below to sigma0 * treble_noise above (DESIGN.md, "Perceptual model").
@@ -93,12 +94,15 @@ class Priors:
 class Noise:
     """The listener's judgment noise in one ear (DESIGN.md, "Shared noise"):
     sigma0, d0, lapse and treble_noise as in the likelihood. n_trials: the
-    trials behind the estimate (0: the prior's values)."""
+    trials behind the estimate (0: the prior's values). pitch: the
+    listener's pitch bias at model.pitch.KNOTS_HZ (DESIGN.md, "Pitch bias"),
+    the same in both ears; it goes wherever the noise does."""
     sigma0: float
     d0: float
     lapse: float
     treble_noise: float = 1.0
     n_trials: int = 0
+    pitch: tuple = PITCH_ZERO
 
     @classmethod
     def prior(cls, priors: "Priors") -> "Noise":
@@ -106,11 +110,12 @@ class Noise:
 
     @classmethod
     def of(cls, fit: "ProbitFit") -> "Noise":
-        return cls(fit.sigma0, fit.d0, fit.lapse, fit.treble_noise)
+        return cls(fit.sigma0, fit.d0, fit.lapse, fit.treble_noise, pitch=tuple(fit.pitch))
 
     def key(self) -> str:
         """For cache keys: the values, to 6 significant figures."""
-        return "noise:" + ",".join(f"{x:.6g}" for x in (self.sigma0, self.d0, self.lapse, self.treble_noise))
+        key = "noise:" + ",".join(f"{x:.6g}" for x in (self.sigma0, self.d0, self.lapse, self.treble_noise))
+        return key + (";pitch:" + ",".join(f"{x:.6g}" for x in self.pitch) if any(self.pitch) else "")
 
 
 @dataclass(frozen=True)
@@ -156,6 +161,7 @@ class ProbitFit:
     # The two-ear fit's cross-ear, centring and threshold terms, when used
     # (fit/interaural.py): the profile's balance c_p, the listener's bias b, counts.
     interaural: dict | None = None
+    pitch: tuple = PITCH_ZERO  # the pitch bias the fit allowed for (Noise.pitch)
 
     @property
     def sd(self) -> np.ndarray:

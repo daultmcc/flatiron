@@ -18,6 +18,7 @@ from flatiron.fit.consensus import KINDS_GATING, KINDS_VOTING, MODEL_VERSION, Ea
 from flatiron.fit.pipeline import Correction, CorrectionSettings, consensus_references, correct
 from flatiron.model.grid import log_grid
 from flatiron.model.hierarchical import MIN_TRIALS_NOISE_FIT, fit_balanced, fit_hierarchical, fit_shared_noise
+from flatiron.model.pitch import ZERO as PITCH_ZERO
 from flatiron.model.probit import BalancePrior, Noise, Priors, ProbitFit, Trials
 from flatiron.session.store import Profile, Session, now_iso
 
@@ -55,7 +56,8 @@ def _load_fit(path: Path) -> ProbitFit:
                      tau_lo=float(z["tau_lo"]), tau_mid=float(z["tau_mid"]), tau_hi=float(z["tau_hi"]), tau_fitted=bool(z["tau_fitted"]),
                      tau=z["tau"], u=z["u"], v=z["v"], group_trials=z["group_trials"],
                      group_cov=z["group_cov"], group_u_cov=z["group_u_cov"],
-                     focus_cov=z["focus_cov"], focus_cross=z["focus_cross"])
+                     focus_cov=z["focus_cov"], focus_cross=z["focus_cross"],
+                     pitch=tuple(float(x) for x in z["pitch"]) if "pitch" in z else PITCH_ZERO)
 
 
 def _save_fit(path: Path, fit: ProbitFit) -> None:
@@ -66,7 +68,7 @@ def _save_fit(path: Path, fit: ProbitFit) -> None:
              bias=fit.bias_db, bias_sd=fit.bias_sd, treble_noise=fit.treble_noise, tau_lo=fit.tau_lo, tau_mid=fit.tau_mid, tau_hi=fit.tau_hi,
              tau_fitted=fit.tau_fitted, tau=fit.tau, u=fit.u, v=fit.v, group_trials=fit.group_trials,
              group_cov=fit.group_cov, group_u_cov=fit.group_u_cov,
-             focus_cov=fit.focus_cov, focus_cross=fit.focus_cross)
+             focus_cov=fit.focus_cov, focus_cross=fit.focus_cross, pitch=np.asarray(fit.pitch, float))
     tmp.replace(path)
 
 
@@ -120,9 +122,22 @@ def listener_noise(root: Path, on_fit: Callable[[], None] | None = None, fit: bo
     """Per ear, the noise shared by every profile in the data folder: fitted to
     their trials together (each profile with its own curve and seatings).
     Only profiles with MIN_TRIALS_NOISE_FIT trials in the ear count; until
-    there's one, the prior's values. Cached at the top of the data folder,
-    keyed by every member's trials. fit=False: only what's cached (an ear
-    that isn't is left out)."""
+    there's one, the prior's values. Then the listener's pitch bias, fitted
+    to both ears' trials with that noise, goes into each ear's (Noise.pitch).
+    Both are cached at the top of the data folder, keyed by every member's
+    trials. fit=False: only what's cached (an ear that isn't is left out, and
+    the pitch bias is none if it isn't)."""
+    if on_fit is not None:  # announced once, whichever fit comes first
+        pending = [on_fit]
+        on_fit = lambda: pending and pending.pop()()
+    noise, sets = _shared_noise(root, on_fit, fit)
+    if set(noise) != set(EARS):
+        return noise
+    pitch = _pitch_bias(root, noise, sets, on_fit, fit)
+    return {e: replace(n, pitch=pitch) for e, n in noise.items()}
+
+
+def _shared_noise(root: Path, on_fit, fit: bool) -> tuple[dict[str, Noise], dict[str, list]]:
     sets: dict[str, list] = {e: [] for e in EARS}
     for p in Profile.all(root):
         if p.kind not in NOISE_KINDS:
@@ -156,7 +171,39 @@ def listener_noise(root: Path, on_fit: Callable[[], None] | None = None, fit: bo
         tmp.replace(path)
         for old in sorted(folder.glob("*.json"), key=lambda q: q.stat().st_mtime)[:-NOISE_CACHE_KEEP]:
             old.unlink(missing_ok=True)
-    return out
+    return out, sets
+
+
+PITCH_VERSION = "1"
+
+
+def _pitch_bias(root: Path, noise: dict[str, Noise], sets: dict[str, list], on_fit, fit: bool) -> tuple:
+    """The listener's pitch bias (DESIGN.md, "Pitch bias"), from the same
+    trials as the noise, both ears together; cached in cache/pitch."""
+    from flatiron.model.hierarchical import fit_pitch_bias
+    from flatiron.model.pitch import KNOTS_HZ, PRIOR_SD_DB, SATURATION_OCT, ZERO
+
+    keys = {e: sorted(trials_key(t, g) for t, g in sets[e]) for e in EARS}
+    key = hashlib.sha256(json.dumps([CACHE_VERSION, PITCH_VERSION, KNOTS_HZ, SATURATION_OCT, PRIOR_SD_DB, keys,
+                                     {e: noise[e].key() for e in EARS}]).encode()).hexdigest()[:24]
+    folder = root / "cache" / "pitch"
+    path = folder / f"{key}.json"
+    if path.exists():
+        os.utime(path)
+        return tuple(json.loads(path.read_text())["pitch"])
+    if not fit:
+        return ZERO
+    members = [(t, g, noise[e]) for e in EARS for t, g in sets[e]]
+    if on_fit is not None and any(len(t) >= MIN_TRIALS_NOISE_FIT for t, _, _ in members):
+        on_fit()
+    pitch = fit_pitch_bias(members)
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.stem + ".tmp")
+    tmp.write_text(json.dumps({"pitch": list(pitch), "knots_hz": list(KNOTS_HZ)}))
+    tmp.replace(path)
+    for old in sorted(folder.glob("*.json"), key=lambda q: q.stat().st_mtime)[:-NOISE_CACHE_KEEP]:
+        old.unlink(missing_ok=True)
+    return pitch
 
 
 # The prior that the ears' curves are alike (DESIGN.md, "Channel balance") at

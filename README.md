@@ -193,7 +193,7 @@ included, we are forced to resort to other means. The idea is that, instead of m
 functions directly with a microphone and tone sweep, we can approximate them on the basis of perceived
 loudness. Flatiron plays you hundreds of pairs of tones at different frequencies and volumes and asks you
 to choose the louder one. It then performs an empirical Bayesian fit, allowing for both a degree of random
-noise in your answers and certain confounding factors like a time-order bias, to determine the underlying perceived
+noise in your answers and certain confounding factors like a time-order bias and a bias towards the higher-pitched sound, to determine the underlying perceived
 loudness as a function of frequency, which is a stand-in for the physical frequency response of the listening
 device. In principle, doing this with both a pair of headphones and a speaker will approximate the result
 of the procedure described above.

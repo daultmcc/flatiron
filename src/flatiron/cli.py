@@ -752,6 +752,10 @@ def cmd_listeners(args):
                       f"from {n.n_trials} trials")
             else:
                 print(f"    {e} noise: the prior (needs a profile with 200 trials in this ear)")
+        if noise and any(next(iter(noise.values())).pitch):
+            from flatiron.report.html import pitch_text
+
+            print(f"    {pitch_text(next(iter(noise.values())).pitch)}")
     return 0
 
 

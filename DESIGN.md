@@ -294,7 +294,7 @@ How they're used: "Threshold-anchored reference".
 A trial $t$ in session $g$ depends on that seating's curve, $L_g = L + u_g$:
 
 $$
-P(\text{A louder}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\!\left(\frac{\bar L_g(f_a) - \bar L_g(f_b) + o_t + \beta\, s_t}{\sigma_t}\right),
+P(\text{A louder}) = \frac{\lambda}{2} + (1-\lambda)\,\Phi\!\left(\frac{\bar L_g(f_a) - \bar L_g(f_b) + o_t + \beta\, s_t + p_t}{\sigma_t}\right),
 \qquad
 \sigma_t = \sigma_0 \sqrt{\frac{q(f_a)^2 + q(f_b)^2}{2}}\,\sqrt{1 + \left(\frac{d_t}{d_0}\right)^2}
 $$
@@ -302,6 +302,7 @@ $$
 - $o_t$ is every known level difference between A and B: $\Delta_a - \Delta_b$, plus the gain of any EQ in effect (an active system EQ recorded for the session, or the preview EQ of a verify session).
 - $\bar L_g$ is the curve averaged in dB over the trial's stimulus spectrum (11 points across a noise band; one point for tones), interpolated linearly in log-frequency from the grid.
 - $s_t = +1$ when A played first and $-1$ when B did, and $\beta$ is how many dB louder the first interval sounds. The user's real data showed a strong first-interval preference, about +1 dB. $\beta$ has a $\mathcal N(0, 3^2)$ dB prior and is a fixed effect, so its uncertainty is part of $L$'s error bars.
+- $p_t$ is the listener's pitch bias, held fixed ("Pitch bias").
 - $d_t$ is the pair's separation in octaves, so judgment noise grows with separation (key decision 3).
 - $q(f)$ lets listener noise rise in the treble: it's 1 below 6 kHz and $r$ above 10 kHz, log-interpolated between. Each tone brings its own variance, so a pair straddling the ramp gets a value in between. $r$ has a log-normal prior centred on 1 (log SD 0.5). On the real data it reads about 2.5 in two left ears and 1.25 to 1.4 in the other four, where it can't be told from 1 (see "Treble noise" under "Findings"). The ramp's position is fixed, not fitted: anything from 6 to 12 kHz fits about equally well, and a hard cutoff fits no differently. The ramp only removes dependence on exactly where an edge falls.
 
@@ -337,6 +338,24 @@ If refitting every profile after each session becomes slow (with many more profi
 
 - **Round the noise in the cache keys,** to about 5% in log space. One session moves the noise by 1 to 5% in $\sigma_0$ and up to about 9% in the others, and a 5 to 10% change moves a curve by 0.02 to 0.05 dB RMS, so most sessions would change nothing for the other profiles. Results still depend only on the trials. An estimate near a step's edge can flip now and then. (Keeping the noise until a new estimate drifts past a tolerance flips less, but makes results depend on the order sessions were run in, which this design avoids.)
 - **Cache each profile's evidence as a quadratic in the noise,** keyed by its trials, around the current shared value. The shared estimate then sums cached quadratics, and only a changed profile is refitted. Untested.
+
+### Pitch bias
+
+**In brief.** In the treble, this listener heard the higher of two bands as louder than it was, by more for bands further apart, up to about a quarter octave (Findings, "Treble pitch bias"). Chained over the many short steps a session's pairs take, it inflated the loudness curves' treble rise by several dB, and with it the loudness-threshold gap. It's the listener's, so like the noise it's fitted once across their profiles and held fixed in every fit.
+
+$$
+p_t = b(\bar f_t)\,\min\!\left(\frac{|\Delta_t|}{1/4},\ 1\right)\operatorname{sign}\Delta_t
+$$
+
+- $\Delta_t = \log_2(f_a / f_b)$, positive when A is the higher band, and $\bar f_t = \sqrt{f_a f_b}$, both from the bands' centres. $p_t$ is how much louder A is heard than it is.
+- $b$ is piecewise linear in $\log f$ with values $b_k$ at 2, 5 and 12 kHz, flat beyond them, each with a $\mathcal N(0, 3^2)$ dB prior. A free shape rather than one fixed curve, so another listener's bias can sit elsewhere or point the other way. Three knots rather than five: on this listener's data they fit nearly as well (+15.6 against +16.4 nats at the best) and scored higher with the knots integrated out under the prior (+9.4 against +7.9). Where the knots go barely mattered (2, 5 and 12; 2, 4 and 10; 1.5, 4 and 11 kHz were all within 0.3 nats). The saturating shape beat $\sqrt{|\Delta|}$ by about 2 nats; one growing in proportion to $|\Delta|$ can't be estimated at all, since it's the same as a tilt of $L$.
+- **The fit.** After the shared noise, and with it: the summed Laplace evidence of the same members (both ears, each with its own noise, curve and sessions, $\tau_\text{seat}$ at its prior), plus $b$'s prior, maximised over the three values (Nelder–Mead, from no bias). Each evaluation starts its inner fits from the fit without a bias, so the result depends only on the trials and the noise. It takes about 4 s on this listener's six thousand trials. The noise is fitted without the bias; refitting it with a pitch bias in place barely moved it in the 2026-11-14 test.
+- **Where it's used.** It travels with the noise (`Noise.pitch`, the same in both ears), so every fit given the listener's noise allows for it: each profile's fit, the two-ear fit, the scheduler during a session, and speaker profiles, though they don't inform it. Each fit records the bias it used (`ProbitFit.pitch`). Fits keyed by the noise are keyed by it too. A listener with no profile of 200 trials in an ear has no bias.
+- **Caching.** In `cache/pitch/`, keyed by every member's trials and the noise.
+- **Shown** in each ear's fitted values in the report and by `flatiron listeners`.
+- In simulation (four profiles of 1500 trials, a bias of −0.5, +1 and +2.5 dB), the values came back within about 0.3 to 0.7 dB each, and a listener without one read under 0.3 dB.
+
+On this listener: $b$ = −0.57, +1.12 and +2.42 dB at 2, 5 and 12 kHz. The gap $g$'s rise from 4 to 13 kHz fell from 14.9 to 8.0 dB, and the loudness curves lost 5 to 7 dB of treble against 4 kHz. Presets moved where the reference is a fixed one at 60 phon: SundaraTone (`diffuse`) lost most of its 10 to 13 kHz cuts (4 to 9 dB; the right ear's all), and the speaker moved up to 3 dB. Profiles with `--threshold-fit` barely moved (Sundara and HD560 at most 0.7 dB), since the bias lowers the loudness curve and the gap alike, and neither did consensus references (FT1 at most 0.5 dB), whose members all shift together.
 
 ### Solving, and error bars
 
@@ -836,7 +855,7 @@ A Python 3.11+ package with a keyboard-driven terminal UI, managed with `uv`. It
 ## Modules
 
 - `audio/`: biquads, stimuli, limiter, device listing, the persistent output stream and buffer mixer, the tone generator's synth, and the preview EQ.
-- `model/`: grids (with the common grid and the interpolation $A_p$), the trials and fit types, the hierarchical fit (one ear, and both under the balance prior), grid refinement, and the threshold model.
+- `model/`: grids (with the common grid and the interpolation $A_p$), the trials and fit types, the pitch bias, the hierarchical fit (one ear, and both under the balance prior), grid refinement, and the threshold model.
 - `session/`: the adaptive scheduler, the cross-ear planner, the trial runner (scheduler, stimuli and session file, without UI), threshold sessions, storage (listeners, profiles and sessions, and the one-off migration), and the sweep.
 - `fit/`: reference (and the threshold-anchored ones), the listener's loudness-threshold gap (`gap.py`), the cross-ear, centring and threshold rows of the two-ear fit (`interaural.py`), baseline (robust, and joint in `decompose.py`), features, filter fitting, the correction pipeline, the consensus, the comparison's alignment and strips, the veto, and the per-profile fit (cache, settings, pooling, consensus, checkpoint).
 - `export/`: the export plan, the five writers, the LADSPA host and the truth checks.
@@ -902,7 +921,7 @@ Several people can share one installation. Each listener is a folder of their ow
 
 ## Data on disk
 
-Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically. Each listener's folder is `listeners/<slug>/`, with a `listener.json` (label, slug, when it was made, and the default measured range if it's been changed); the paths below starting with `profiles/` or `cache/noise/` and `cache/consensus/` are inside it.
+Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) or `~/Library/Application Support/flatiron/` (macOS), as JSON written atomically. Each listener's folder is `listeners/<slug>/`, with a `listener.json` (label, slug, when it was made, and the default measured range if it's been changed); the paths below starting with `profiles/` or `cache/noise/`, `cache/pitch/` and `cache/consensus/` are inside it.
 
 - `profiles/<slug>/profile.json`: label, kind (`headphone` by default, `iem` or `speaker`, the last with its `channel`), settings (only changes from the defaults), the session selection (if not all of its own: session ids and profile slugs), profiles pooled in, the checkpoint (filters per ear, when it was made and on how many trials), the profile's own ends of the measured range (if it sets them), tone-generator marks, the listening level (`level_dbfs`: the last set on a level screen or in the tone generator, for every kind of session and the tone generator), and audition's volume (`audition_gain_db`). A consensus reference is stored in the settings as the string `consensus:slug,slug` (headphones and speakers together; each one's kind says which), with `auto` settings as null, and a veto as a list of slugs. The name `none` is reserved, since `--veto none` uses it.
 - `profiles/<slug>/sessions/<timestamp>.json`: device, sample rate, EQ context (note and APO text), stimulus, level and level changes, gap, seed, scheduler settings (loudness matching and its cap among them), the measured range, final grid per ear, channel checks, sweep marks and the correction it played through, tone marks used, the preview EQ for verify sessions, a speaker block's ear, channel and position, and every trial. A trial records the ear (`LR` or `RL` for a cross-ear trial), both frequencies, the offset for each, play order, rove, answer, reaction times, replays, the fast flag, known EQ gains, level, and the undone, retake and peeked flags. The file is saved after every answer.
@@ -910,6 +929,7 @@ Everything lives under `~/.local/share/flatiron/` (Linux, or `$XDG_DATA_HOME`) o
 - `profiles/<slug>/centring/<timestamp>.json`: centring sessions (see "Centring sessions"): device, stimulus, listening level, seed, the measured range, whether matching was on, any known EQ, channel checks and every trial.
 - `profiles/<slug>/cache/`: perceptual fits (`probit-<hash>.npz`, keyed by trials, sessions, grid, priors, the listener's noise and model version; they hold $\tau_\text{seat}$ and each session's deviation), two-ear fits (`balanced-<hash>-<ear>.npz`, or `joint-<hash>-<ear>.npz` with a `.json` of $c_p$ and its sources when cross-ear, centring or threshold data are in, and with `--threshold-fit` the threshold level $k$ and the trials), which consensus entries the profile last used, and the last HTML report.
 - `cache/noise/`: the listener's noise per ear, keyed by every member profile's trials, newest 200 kept.
+- `cache/pitch/`: the listener's pitch bias, keyed by every member profile's trials and the noise, newest 200 kept.
 - `cache/gap/`: the listener's loudness-threshold gap, with each member's low-frequency departure and the ripple, keyed by every member's fits and threshold trials, newest 200 kept (see "Threshold-anchored reference").
 - `cache/bias/`: the listener's cross-ear bias and judgment noises, with each member's $c_p$, keyed by everything they depend on, newest 200 kept (see "Using cross-ear trials").
 - `cache/consensus/`: split consensus results (see "Consensus reference"), shared by the profiles in each set. `cache/comparison.html`: the last comparison report.
@@ -1157,7 +1177,7 @@ Re-tested as a possible cause of the loudness-threshold gap's excess ("Threshold
 - **With a tilt as gauge.** A linear tilt in $\log f$ is taken up by the baseline anyway, so what matters for corrections is what's left with it removed. Over 1 to 12.5 kHz, with each curve's mean and tilt removed, the treble excess against `diffuse` at 60 phon is +2.0 dB without the bias (+0.9 to +3.3 per ear, 3.4 dB RMS), and +0.3 to +0.6 with the best-supported shapes (saturating at 1/4 octave, or $\sqrt{\lvert\Delta\rvert}$, ramp 4–8 kHz: −0.9 to +1.6 per ear, 2.8 to 2.9 dB RMS, as close as flat gets). Against free field it's +3.3 without, +1.7 to +1.9 with. The gap, against ISO 226's growth from threshold to 60 phon, keeps +1.4 to +1.6 (from +3.0; −0.2 to +3.2 per ear). What's left against `diffuse` is shape rather than slope: a dip of about 2.5 dB at 2 to 3 kHz in every variant, and about 1 dB at 12.5 kHz. The remaining tilt, +2.6 to +2.8 dB per octave against `diffuse` (from +4.1), is what the bias can't be told apart from.
 - **What would settle it.** The longest pairs are 0.8 octave apart. Trials between bands 1 to 2 octaves apart (say 2–3 kHz against 8–13 kHz), compared with the chained short ones, would pin down how the bias grows with separation, and with it how much of the gap is the method's rather than the listener's hearing. The ISO 226 contours come from comparisons with 1 kHz, not from chains of neighbours.
 
-Not built (scratch scripts, not kept).
+Built on 2026-11-21 with a free shape, three knots and the saturating separation ("Pitch bias" under "Perceptual model"). The scratch scripts weren't kept.
 
 ## Soft rejection
 

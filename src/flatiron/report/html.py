@@ -217,11 +217,19 @@ def _spread(name: str, f, how: str) -> str:
             + (f" ({how})" if how else ""))
 
 
+def pitch_text(pitch) -> str:
+    from flatiron.model.pitch import KNOTS_HZ
+
+    return ("Pitch bias (the higher sound heard louder by): "
+            + ", ".join(f"{b:+.1f} dB @ {k / 1000:g} kHz" for b, k in zip(pitch, KNOTS_HZ)))
+
+
 def fitted_values(f, speaker: bool) -> list[str]:
     """The fitted listener values for an ear, one per line."""
     return [f"Listener noise: {f.sigma0:.2f} dB (×{f.treble_noise:.2f} above 10 kHz)",
             f"Lapse rate: {f.lapse:.1%}" + ("" if f.noise_trials else " (prior)"),
             f"Time-order bias: {f.bias_db:+.2f} ± {f.bias_sd:.2f} dB",
+            *([pitch_text(f.pitch)] if any(f.pitch) else []),
             _spread("Position spread", f, "assumed") if speaker else
             _spread("Seating spread", f, "" if f.tau_fitted else "prior")]
 

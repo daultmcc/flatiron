@@ -18,6 +18,7 @@ from scipy.special import ndtr
 from flatiron import iso226, iso389_7
 from flatiron.audio.biquad import PeakingFilter, bw_oct_to_q, response_db
 from flatiron.audio.stimulus import StimulusSpec, spectrum_offsets_oct, stimulus_key
+from flatiron.model import pitch as pitch_bias
 from flatiron.model.probit import noise_sd
 
 
@@ -114,6 +115,7 @@ class SimulatedListener:
     seed: int = 0
     order_bias_db: float = 0.0  # time-order error: the first interval sounds this much louder
     channel_offset_db: float = 0.0  # cross-ear trials: the left ear hears this much louder than the right
+    pitch: tuple = (0.0, 0.0, 0.0)  # pitch bias at model.pitch.KNOTS_HZ: the higher band sounds louder
     # Stimulus the listener hears; None = an ideal point probe at the centre.
     stimulus: StimulusSpec | None = field(default_factory=StimulusSpec)
 
@@ -133,7 +135,7 @@ class SimulatedListener:
         ear_a, ear_b = (ear[0], ear[1]) if len(ear) == 2 else (ear, ear)
         balance = 0.0 if ear_a == ear_b else self.channel_offset_db * (1 if ear_a == "L" else -1)
         z = (self.heard_level(ear_a, f_a) - self.heard_level(ear_b, f_b) + np.asarray(offset) + balance
-             + self.order_bias_db * order) / sigma
+             + self.order_bias_db * order + pitch_bias.offsets(f_a, f_b, self.pitch)) / sigma
         return self.lapse / 2 + (1 - self.lapse) * ndtr(z)
 
     def respond(self, ear, f_a, f_b, offset, a_first=None) -> np.ndarray:
