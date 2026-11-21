@@ -1,11 +1,14 @@
 """Reference contours E(f): the perceived-level shape a reference-correct
 headphone would produce (DESIGN.md, pipeline step 1).
 
-    diffuse    (default) iso226 plus ISO 389-7's diffuse-minus-free-field
-               threshold difference
-    iso226     negated ISO 226 (frontal free field) equal-loudness contour
+    diffuse    (default) the negated ISO 226 equal-loudness contour plus
+               ISO 389-7's diffuse-minus-free-field threshold difference
+    free       the negated ISO 226 (frontal free field) equal-loudness contour
     none       flat
     <path>     a user CSV of perceived-level shape: "freq_hz,db" rows
+
+Anchored at threshold (see Anchor), diffuse and free are ISO 389-7's diffuse-
+and free-field thresholds instead, as sensitivities.
 
 A consensus reference ("consensus:A,B") is built from other profiles' fits, so
 it's made per profile in fit/run.py and doesn't come through here.
@@ -20,7 +23,7 @@ import numpy as np
 
 from flatiron import iso226, iso389_7
 
-BUILTIN = ("iso226", "diffuse", "none")
+BUILTIN = ("free", "diffuse", "none")
 CONSENSUS_PREFIX = "consensus:"
 
 
@@ -47,17 +50,16 @@ def interp_log(f_src, db_src, freqs) -> np.ndarray:
     return np.interp(np.log2(freqs), np.log2(f_src), db_src)
 
 
-ANCHORED = ("diffuse", "iso226")  # the references that can be anchored at threshold
+ANCHORED = ("diffuse", "free")  # the references that can be anchored at threshold
 
 
 @dataclass(frozen=True)
 class Anchor:
     """A profile's loudness-threshold gap (fit/gap.py): g + δ, with g's
     covariance. With it the built-in references are anchored at threshold
-    (DESIGN.md, "Threshold-anchored reference"): diffuse is g plus the
-    diffuse-field threshold (ISO 226's, plus ISO 389-7's diffuse-field
-    difference), iso226 g plus ISO 226's threshold, each as a sensitivity
-    (negated)."""
+    (DESIGN.md, "Threshold-anchored reference"): diffuse is g plus ISO 389-7's
+    diffuse-field threshold, free g plus its free-field threshold, each as a
+    sensitivity (negated)."""
     knots_hz: tuple
     g: tuple
     cov: tuple
@@ -82,13 +84,9 @@ class Anchor:
 
 
 def threshold_sensitivity(name: str, freqs) -> np.ndarray:
-    """diffuse or iso226 at threshold, as a sensitivity (negated), mean not removed:
-    the reference an anchored one is drawn as, once the gap is taken out."""
-    f = np.asarray(freqs, float)
-    sens = -iso226.threshold(f)
-    if name == "diffuse":
-        sens = sens + iso389_7.diffuse_minus_free(f)
-    return sens
+    """diffuse or free at threshold (ISO 389-7), as a sensitivity (negated), mean
+    not removed: the reference an anchored one is drawn as, once the gap is taken out."""
+    return -iso389_7.threshold(freqs, name)
 
 
 def anchored(name: str, freqs, anchor: Anchor) -> np.ndarray:
@@ -98,7 +96,7 @@ def anchored(name: str, freqs, anchor: Anchor) -> np.ndarray:
 
 
 def reference(name: str, freqs, phon: float = 60.0, anchor: Anchor | None = None) -> np.ndarray:
-    """anchor: with diffuse or iso226, anchor it at threshold (see Anchor)."""
+    """anchor: with diffuse or free, anchor it at threshold (see Anchor)."""
     f = np.asarray(freqs, float)
     if anchor is not None and name in ANCHORED:
         return anchored(name, f, anchor)
@@ -106,7 +104,7 @@ def reference(name: str, freqs, phon: float = 60.0, anchor: Anchor | None = None
         raise ValueError("a consensus reference is only available in a profile's own fit, not here")
     if name == "none":
         e = np.zeros(f.size)
-    elif name == "iso226":
+    elif name == "free":
         e = iso226.perceived_level(f, phon)
     elif name == "diffuse":
         # Where a diffuse field is heard better than a frontal one of the same

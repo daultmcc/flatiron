@@ -314,7 +314,7 @@ def test_a_shift_in_every_curve_shifts_the_consensus_and_nothing_else():
     corners, which the curvature penalty sees, hence the tolerance)."""
     rng = np.random.default_rng(3)
     curves = [bump(5000, 0.3, 5.0) + rng.normal(0, 0.2, G.size), bump(7000, 0.3, 4.0) + 1.0, bump(9000, 0.3, 3.0) - 2.0]
-    E = reference("iso226", G, 60.0)
+    E = reference("free", G, 60.0)
     plain = raw_consensus([src(c, 0.5, str(n)) for n, c in enumerate(curves)])
     moved = raw_consensus([src(c - E, 0.5, str(n)) for n, c in enumerate(curves)])
     a = plain.on(G)[0]
@@ -734,10 +734,10 @@ def test_compare_csv_and_consensus_cli(three_profiles, tmp_path, monkeypatch, ca
     # References drawn beside the curves; the threshold fit needs a gap, which there isn't.
     (tmp_path / "mine.csv").write_text("freq_hz,db\n1000,0\n10000,6\n")
     capsys.readouterr()
-    assert main(["compare", "One", "Two", "-H", "-r", f"diffuse, iso226,{tmp_path / 'mine.csv'}"]) == 0
-    assert "Drawn beside them: diffuse field, 60 phon, free field (ISO 226), 60 phon, mine" in capsys.readouterr().out
+    assert main(["compare", "One", "Two", "-H", "-r", f"diffuse, free,{tmp_path / 'mine.csv'}"]) == 0
+    assert "Drawn beside them: diffuse field, 60 phon, free field, 60 phon, mine" in capsys.readouterr().out
     page = (tmp_path / "flatiron" / "cache" / "comparison.html").read_text()
-    assert "Dotted: diffuse field, 60 phon, free field (ISO 226), 60 phon, mine" in page
+    assert "Dotted: diffuse field, 60 phon, free field, 60 phon, mine" in page
     for bad in ("none", "consensus:One,Two", str(tmp_path / "nope.csv")):
         assert main(["compare", "One", "Two", "-H", "-r", bad]) == 1
     capsys.readouterr()

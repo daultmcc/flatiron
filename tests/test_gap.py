@@ -137,15 +137,14 @@ def test_from_sessions(tmp_path, monkeypatch):
 
 
 def test_anchored_references_follow_the_gap():
-    from flatiron import iso226, iso389_7
+    from flatiron import iso389_7
     from flatiron.fit.reference import Anchor, reference
 
     a = Anchor(KNOTS_HZ, tuple(centre(G_TRUE)), tuple(tuple(r) for r in 0.01 * np.eye(5)))
-    f = log_grid(1000, 13000)
-    want = hats(f, KNOTS_HZ) @ G_TRUE - iso226.threshold(f) + iso389_7.diffuse_minus_free(f)
-    assert reference("diffuse", f, 60, a) == pytest.approx(centre(want), abs=1e-9)
-    assert reference("iso226", f, 60, a) == pytest.approx(centre(hats(f, KNOTS_HZ) @ G_TRUE - iso226.threshold(f)),
-                                                          abs=1e-9)
+    f = log_grid(1000, 16000)
+    for name in ("diffuse", "free"):
+        want = hats(f, KNOTS_HZ) @ G_TRUE - iso389_7.threshold(f, name)
+        assert reference(name, f, 60, a) == pytest.approx(centre(want), abs=1e-9)
     assert reference("none", f, 60, a) == pytest.approx(np.zeros(f.size))  # not anchored
     assert reference("diffuse", f, 60) == pytest.approx(reference("diffuse", f, 60, None))
 

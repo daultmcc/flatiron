@@ -131,8 +131,8 @@ KEPT_AT_HZ = (2000.0, 4000.0, 7000.0, 11000.0)
 VETO_WITH_CONSENSUS = "Warning: the veto is on with a consensus reference, so it mostly just makes the correction smaller."
 
 
-ANCHORED_TEXT = {"diffuse": "diffuse field at threshold (ISO 226 + ISO 389-7), plus your loudness-threshold gap",
-                 "iso226": "free field at threshold (ISO 226), plus your loudness-threshold gap"}
+ANCHORED_TEXT = {"diffuse": "diffuse field at threshold (ISO 389-7), plus your loudness-threshold gap",
+                 "free": "free field at threshold (ISO 389-7), plus your loudness-threshold gap"}
 
 
 def reference_description(st, pf: ProfileFit | None = None) -> str:
@@ -148,7 +148,7 @@ def reference_description(st, pf: ProfileFit | None = None) -> str:
     if anchored and st.reference in ANCHORED_TEXT:
         return "Reference: " + ANCHORED_TEXT[st.reference]
     return "Reference: " + {"diffuse": f"diffuse field (ISO 226 + ISO 389-7) at {st.phon:g} phon",
-                            "iso226": f"free field (ISO 226) at {st.phon:g} phon",
+                            "free": f"free field (ISO 226) at {st.phon:g} phon",
                             "none": "none"}.get(st.reference, st.reference)
 
 

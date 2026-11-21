@@ -851,7 +851,7 @@ SPEAKER_FIELDS = ("speaker_window_oct", "speaker_colour_db", "consensus_gain_sd"
 FIT_OPTIONS = [
     (("-w", "--width"), "max_width_oct", dict(type=float, help="max feature width W in octaves (1/3 to 2)")),
     (("-r", "--reference"), "reference",
-     dict(help="diffuse (default: ISO 226 + ISO 389-7 diffuse field), iso226 (frontal free field), none, a CSV of freq_hz,db, or consensus:A,B,C for the raw curves of those "
+     dict(help="diffuse (default: diffuse field), free (frontal free field), none, a CSV of freq_hz,db, or consensus:A,B,C for the raw curves of those "
                "profiles (this one only if listed)")),
     (("--consensus-prior",), "consensus_prior",
      dict(type=float, help="with a consensus reference: scale on the prior SD of your own narrow structure (0.5 dB "
@@ -894,7 +894,7 @@ FIT_OPTIONS = [
     (("--threshold-fit",), "threshold_fit",
      dict(action=argparse.BooleanOptionalAction,
           help="use threshold sessions in the fit, through your loudness-threshold gap (fitted across your "
-               "profiles), and anchor the diffuse and iso226 references at threshold (default off)")),
+               "profiles), and anchor the diffuse and free references at threshold (ISO 389-7; default off)")),
     (("--consensus-broad",), "consensus_broad",
      dict(choices=("median", "diffuse"),
           help="a consensus reference's broad shape: the members' median (default), or the "
@@ -1178,7 +1178,7 @@ def _show_listener(x):
         print(f"  {mark} {name:20} {KHZ[1](v)}" + (f"   (default {KHZ[1](dflt)})" if mark == "*" else ""))
 
 
-ANCHORED = ("diffuse", "iso226")  # the references the threshold fit anchors (fit/reference.py)
+ANCHORED = ("diffuse", "free")  # the references the threshold fit anchors (fit/reference.py)
 NO_GAP = ("No profile has 150 threshold trials yet, so there's no estimate of your loudness-threshold gap: "
           "{what} (measure --threshold).")
 
@@ -1192,7 +1192,7 @@ def _anchor_notes(prof, st) -> list[str]:
         if st.consensus_broad == "diffuse" and listener_gap(prof.dir.parent.parent) is None:
             out.append("Warning: " + NO_GAP.format(what="the consensus keeps its median broad shape"))
     elif st.reference not in ANCHORED:
-        out.append(f"Note: the {st.reference!r} reference isn't anchored at threshold (only diffuse and iso226 are).")
+        out.append(f"Note: the {st.reference!r} reference isn't anchored at threshold (only diffuse and free are).")
     elif listener_gap(prof.dir.parent.parent) is None:
         out.append("Warning: " + NO_GAP.format(what=f"the {st.reference} reference isn't anchored at threshold"))
     return out
@@ -1331,7 +1331,7 @@ def _config_profile(args, reset):
             print("A consensus needs at least one profile (nothing changed).")
             return 1
         changes["reference"] = CONSENSUS_PREFIX + ",".join(members)
-    elif "reference" in changes and changes["reference"] not in ("iso226", "diffuse", "none"):
+    elif "reference" in changes and changes["reference"] not in ("free", "diffuse", "none"):
         from pathlib import Path
 
         changes["reference"] = str(Path(changes["reference"]).expanduser().resolve())
@@ -1554,14 +1554,14 @@ def _compare_references(spec: str | None, threshold: bool) -> dict | None:
 
     out = {}
     names = {"diffuse": ("diffuse field, 60 phon", "diffuse-field threshold"),
-             "iso226": ("free field (ISO 226), 60 phon", "free-field threshold (ISO 226)")}
+             "free": ("free field, 60 phon", "free-field threshold")}
     for name in [x.strip() for x in (spec or "").split(",") if x.strip()]:
         if name in ANCHORED:
             label = names[name][threshold]
             out[label] = ((lambda n: lambda f: threshold_sensitivity(n, f))(name) if threshold
                           else (lambda n: lambda f: reference(n, f))(name))
         elif name == "none" or name.startswith(CONSENSUS_PREFIX.rstrip(":")):
-            print(f"-r {name}: compare draws diffuse, iso226 or a CSV file (curves are always shown "
+            print(f"-r {name}: compare draws diffuse, free or a CSV file (curves are always shown "
                   "against flat; a consensus is a profile's own, see: flatiron report).")
             return None
         else:
@@ -1572,7 +1572,7 @@ def _compare_references(spec: str | None, threshold: bool) -> dict | None:
                 print(f"-r {name}: {e}")
                 return None
             if threshold:
-                print(f"Note: {path.name} is drawn as given (only diffuse and iso226 have threshold versions).")
+                print(f"Note: {path.name} is drawn as given (only diffuse and free have threshold versions).")
             out[path.stem] = (lambda p: lambda f: reference(p, f))(str(path))
     return out
 
@@ -2120,10 +2120,10 @@ def main(argv=None):
                    help="shade where the broad parts (tonality) span more than this between profiles (default 4 dB)")
     s.add_argument("-r", "--reference", metavar="REF[,REF...]",
                    help="draw these beside the curves (which are still shown against flat), aligned with them: "
-                        "diffuse, iso226 (each at 60 phon) or a CSV of freq_hz,db rows")
+                        "diffuse, free (each at 60 phon) or a CSV of freq_hz,db rows")
     s.add_argument("--threshold-fit", action="store_true",
                    help="compare the curves at threshold (threshold sessions in, your loudness-threshold gap out), "
-                        "for every profile whatever its own setting, and draw diffuse and iso226 at threshold; "
+                        "for every profile whatever its own setting, and draw diffuse and free at threshold; "
                         "otherwise each profile's loudness-only curve")
     s.set_defaults(func=cmd_compare)
 

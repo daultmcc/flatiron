@@ -55,7 +55,7 @@ DEFAULT_CORRECTED = corrected_default((MEASURE_LO, MEASURE_HI))
 @dataclass(frozen=True)
 class CorrectionSettings:
     max_width_oct: float = 1.0  # W: anything broader is left to the user's EQ
-    reference: str = "diffuse"  # diffuse | iso226 | none | path to a CSV | consensus:SLUG,SLUG
+    reference: str = "diffuse"  # diffuse | free | none | path to a CSV | consensus:SLUG,SLUG
     phon: float = 60.0
     baseline_penalty: float = 0.1  # baseline stiffness (tuned in the simulator; 1e-3 absorbed clustered features)
     # joint: the posterior mean of the tonality under an explicit model of D

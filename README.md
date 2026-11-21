@@ -97,7 +97,7 @@ leaves all of this out of the fit.
 `flatiron measure <PROFILE> --threshold` runs a session of a third kind: very quiet sounds at the
 edge of hearing, where you say which of two intervals had the sound, or that you heard neither.
 On their own these help with the channel balance. With `flatiron config <PROFILE> --threshold-fit`
-they also anchor the standard references (`diffuse` and `iso226`) at your threshold of hearing:
+they also anchor the standard references (`diffuse` and `free`) at your threshold of hearing:
 many people's loudness judgements in the treble don't follow the standard equal-loudness contours,
 which can make corrections against those references cut far too much treble. Flatiron estimates
 how your loudness and threshold differ from all your profiles with threshold data (150 trials or so
@@ -115,9 +115,9 @@ error so it's better just to answer quickly.
 
 `flatiron report <PROFILE>` opens an HTML page showing the measured frequency response, planned
 corrections, and more. `flatiron compare <PROFILE1> <PROFILE2> ...` shows the responses for multiple
-profiles overlaid. `compare -r diffuse,iso226` (or a CSV file of `freq_hz,db` rows) draws reference
+profiles overlaid. `compare -r diffuse,free` (or a CSV file of `freq_hz,db` rows) draws reference
 curves alongside them, and `compare --threshold-fit` compares the threshold-pinned curves instead,
-with any `diffuse` or `iso226` reference drawn at threshold. The `--no-html/-H` flag on either command
+with any `diffuse` or `free` reference drawn at threshold. The `--no-html/-H` flag on either command
 suppresses the detailed report and prints only the simplified summary to the command line.
 
 ### Configuration
@@ -213,7 +213,7 @@ certain threshold for statistical significance get smoothed.
 But even with this conservative approach, a
 raw speaker response curve generally won't make for a suitable reference. Instead, Flatiron offers a few
 reference options. The default is a generic diffuse field HRTF, taken from a combination of the ISO 226 and
-ISO 389-7 standards. You can also select the raw ISO 226 free field reference with `config -r iso226`.
+ISO 389-7 standards. You can also select a free field reference with `config -r free`.
 (Diffuse field and free field refer to slightly different ways of handling the fact that HRTFs depend
 on the direction from which sound enters your ear. Free field considers only sound from directly in front
 of your head, while diffuse field averages over all directions.)

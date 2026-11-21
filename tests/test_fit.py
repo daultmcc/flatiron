@@ -24,7 +24,7 @@ def bump(fc, fwhm_oct, height):
 
 def test_reference_shapes(tmp_path):
     assert np.allclose(reference("none", G), 0)
-    e = reference("iso226", G)
+    e = reference("free", G)
     assert abs(e.mean()) < 1e-9
     assert e[np.argmin(abs(G - 3500))] > e[np.argmin(abs(G - 1000))]  # ear-gain region sounds louder
     csv = tmp_path / "ref.csv"
