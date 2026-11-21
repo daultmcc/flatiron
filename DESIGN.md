@@ -1135,6 +1135,29 @@ Tested on all five profiles (`soundsticks` only in the last row) as a possible c
 
 Not adopted.
 
+### Treble pitch bias (2026-11-21)
+
+Re-tested as a possible cause of the loudness-threshold gap's excess ("Threshold-anchored reference": the gap rises about 10.7 dB more from 1–4 to 8–12.5 kHz than ISO 226's growth from threshold to 60 phon allows). Each headphone profile's own sessions (Sundara without its pooled SundaraTone), both ears, with the noise and $\tau_\text{seat}$ held at each fit's values, and the bias added to the probit's argument as $\gamma\,F(\bar f)\,g(|\Delta|)\operatorname{sign}\Delta$, where $\Delta$ is the pair's separation in octaves (positive: A is higher), $\bar f$ its geometric centre, $g$ a separation shape and $F$ a frequency dependence. $\gamma$ is fitted by the evidence, shared over the eight headphone ears.
+
+| $g(\lvert\Delta\rvert)$ | $F$ | $\gamma$ (dB) | $\Delta \log \mathrm{ML}$ | Treble excess change |
+| --- | --- | --- | --- | --- |
+| 1 (step) | constant | +0.12 ± 0.08 | +1.3 | −1.0 dB |
+| 1 (step) | ramp, 0 below 4 kHz, 1 above 8 | +0.89 ± 0.19 | +10.9 | −2.4 |
+| $\min(\lvert\Delta\rvert / 0.25, 1)$ | ramp 4–8 kHz | +2.33 ± 0.45 | +13.0 | −4.5 |
+| $\min(\lvert\Delta\rvert / 0.25, 1)$ | ramp 2–4 kHz | +1.32 ± 0.28 | +11.1 | −5.4 |
+| $\min(\lvert\Delta\rvert / 0.5, 1)$ | ramp 4–8 kHz | +5.3 ± 1.0 | +7.3 | −7.4 |
+| $(8\lvert\Delta\rvert)^{0.5}$ | ramp 4–8 kHz | +1.34 ± 0.27 | +12.0 | −5.2 |
+| $\sigma_t$ (a decision bias, in units of the trial's noise) | ramp 4–8 kHz | +0.44 ± 0.09 | +10.6 | −3.1 |
+| step, saturating 0.25, $\sigma_t$ | hats at 1, 2, 4, 8, 13 kHz | about 0 at 1–2 kHz, rising to the top | +12.5 to +16.5 (5 parameters) | −2.0 to −4.1 |
+
+- **The bias is real and in the treble only.** A constant bias finds little, as before; one that's absent below 2 to 4 kHz and present above gains 10 to 13 nats for one parameter. In 40 simulated listeners per truth without a bias (each profile's fitted curve and noise, its real trial design, responses resampled), the evidence gain stayed below 2.6 nats for these models (95% under 1.9), and $\gamma$ came out at +0.03 ± 0.19 (step ramp) and +0.09 ± 0.42 (saturating ramp). A truth three times rougher than the fit (smoothness SD × 3), to test whether over-smoothing a rising treble looks like a bias, moved $\gamma$ by +0.05 to +0.1 only.
+- **The listener's, not the headphones'.** Fitted per ear, the saturating ramp's $\gamma$ was +1.7 to +3.1 dB on every one of the eight headphone ears (each ±1.0 to 1.9). On `soundsticks` it was +1.3 and −1.7 (±1.5 and 1.8).
+- **What it looks like in the trials.** Against the fit without a bias, above 3 kHz the higher of two bands was called louder 51 more times than predicted in pairs under 0.2 octave apart (z +1.8 and +2.6 in 3–6 and above 9 kHz), and 11 fewer in pairs 0.45 to 0.9 octave apart above 9 kHz (z −2.1): chained short steps make the treble rise more than the direct long comparisons do.
+- **It explains part of the gap.** At the evidence's best, the best-supported shapes lower the loudness curves' treble excess by 3 to 5 dB of the 10.7. Shapes whose bias keeps growing to 0.35 octave or beyond can be scaled to explain all of it at no cost in evidence, but they approach a bias proportional to the separation, which is the same as a tilt of $L$ and can't be told from one ("What makes it testable"); their own evidence is lower (+7 at 0.5 octave, +2 at 0.75).
+- **What would settle it.** The longest pairs are 0.8 octave apart. Trials between bands 1 to 2 octaves apart (say 2–3 kHz against 8–13 kHz), compared with the chained short ones, would pin down how the bias grows with separation, and with it how much of the gap is the method's rather than the listener's hearing. The ISO 226 contours come from comparisons with 1 kHz, not from chains of neighbours.
+
+Not built (scratch scripts, not kept).
+
 ## Soft rejection
 
 On `ft1`, `hd560` and pooled `sundara`, comparing the fit with and without treble noise ($r$). The table gives the largest target difference between the two per ear, averaged over six ears on default settings, with "no gate" accepting every narrow lobe.
