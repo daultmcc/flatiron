@@ -12,7 +12,11 @@ whether the error there crossed a multiple of that SD.
 
 The stop looks only inside [f_lo, f_hi]. The target goes on fading beyond them,
 where no filter can be centred, so an error there might never close, and the fit
-would spend its whole budget trying. The least squares still covers that region.
+would spend its whole budget trying. The least squares still covers that region,
+and a guard band beyond the grid (up to GUARD_OCT, within 20 Hz to 20 kHz) with
+a target of 0: without it, a filter's skirt beyond the measured range costs
+nothing, and a fit can leave a shelf there (seen: a +12 dB Q 0.7 bell at the top
+edge, cancelled by narrow cuts inside the grid, left +6 dB at 16 to 18 kHz).
 SDs are used only to report chi².
 """
 
@@ -22,6 +26,25 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from flatiron.audio.biquad import PeakingFilter, bw_oct_to_q, peaking_db_fast
+
+
+GUARD_OCT = 1.0  # zero-target guard band beyond each end of the fit's grid
+AUDIBLE = (20.0, 20000.0)
+
+
+def guarded(freqs, target, guard_oct: float = GUARD_OCT):
+    """freqs and target extended by a guard band of zeros beyond each end, at
+    the grid's own (log) step (freqs is a log grid)."""
+    freqs, target = np.asarray(freqs, float), np.asarray(target, float)
+    if guard_oct <= 0 or freqs.size < 2:
+        return freqs, target
+    step = np.log2(freqs[1] / freqs[0])
+    room_lo = min(guard_oct, max(np.log2(freqs[0] / AUDIBLE[0]), 0.0))
+    room_hi = min(guard_oct, max(np.log2(AUDIBLE[1] / freqs[-1]), 0.0))
+    lo_n, hi_n = int(np.floor(room_lo / step + 1e-9)), int(np.floor(room_hi / step + 1e-9))
+    below = freqs[0] * 2.0 ** (-step * np.arange(lo_n, 0, -1))
+    above = freqs[-1] * 2.0 ** (step * np.arange(1, hi_n + 1))
+    return np.concatenate([below, freqs, above]), np.concatenate([np.zeros(lo_n), target, np.zeros(hi_n)])
 
 
 @dataclass(frozen=True)
@@ -102,20 +125,23 @@ def _max_err(filters, freqs, target, bounds: FilterBounds):
 
 
 def fit_filters(freqs, target, sd, budget: int, bounds: FilterBounds = FilterBounds(),
-                tol_db: float = 0.5, min_gain_db: float = 0.5) -> FilterFit:
+                tol_db: float = 0.5, min_gain_db: float = 0.5, guard_oct: float = GUARD_OCT) -> FilterFit:
     """sd: only for the chi² reported. Largest error first, so if the budget runs
-    out, what's left uncorrected is the smallest."""
+    out, what's left uncorrected is the smallest. The least squares also covers
+    a guard band of zeros beyond the grid (guard_oct; 0: none); the response
+    and chi² are on freqs."""
     freqs, target, sd = (np.asarray(v, float) for v in (freqs, target, sd))
+    xf, xt = guarded(freqs, target, guard_oct)
     filters: list[PeakingFilter] = []
     while len(filters) < budget and _max_err(filters, freqs, target, bounds) > tol_db:
-        err = target - response(filters, freqs)
-        filters = _refit(filters + [_initial_guess(freqs, err, bounds)], freqs, target, bounds)
+        err = xt - response(filters, xf)
+        filters = _refit(filters + [_initial_guess(xf, err, bounds)], xf, xt, bounds)
     # Drop negligible filters, then refit what's left.
     while filters:
         small = [f for f in filters if abs(f.gain_db) < min_gain_db]
         if not small:
             break
-        filters = _refit([f for f in filters if f not in small], freqs, target, bounds)
+        filters = _refit([f for f in filters if f not in small], xf, xt, bounds)
     c = _chi2(filters, freqs, target, sd)
     contrib = [_chi2([g for g in filters if g is not f], freqs, target, sd) - c for f in filters]
     order = np.argsort([f.fc for f in filters])

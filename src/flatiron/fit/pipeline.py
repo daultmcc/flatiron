@@ -511,6 +511,16 @@ def _found(g, T, cov_T, groups, settings: CorrectionSettings, own_R=None) -> lis
     return feats
 
 
+def _core_reaches(f: Feature, g, T, f_lo: float, f_hi: float) -> bool:
+    """Whether any of a feature's half-height core is inside [f_lo, f_hi]. A
+    lobe that straddles an end keeps its part inside (the taper fades the rest);
+    testing its extreme instead would drop all of a lobe whose peak is beyond
+    the range, however much of it is inside."""
+    seg = np.abs(T[f.span] if f.residual is None else f.residual)
+    core = g[f.span][seg >= 0.5 * seg.max()]
+    return bool(core.max() >= f_lo and core.min() <= f_hi)
+
+
 def _group_ids(fit: ProbitFit) -> list:
     """The session id behind each group with trials, where it's known (None where not)."""
     ks = np.flatnonzero(fit.group_trials)
@@ -647,7 +657,7 @@ def correct_ear(ear: str, fit: ProbitFit, settings: CorrectionSettings = Correct
     feats = _found(g, T, cov_T, groups, settings, R if pointwise else None)
 
     for f in feats:
-        if f.accepted and not settings.f_lo <= f.fc <= settings.f_hi:
+        if f.accepted and not _core_reaches(f, g, T, settings.f_lo, settings.f_hi):
             f.accepted = False
             f.reason = "outside the correction range"
     if settings.veto and not pointwise:

@@ -308,11 +308,37 @@ class ProfileFit:
 
 # -- per-profile fit settings (`flatiron config`) ----------------------------
 
+def data_range(profile: Profile) -> tuple[float, float] | None:
+    """The ends of the grid the fit uses (the newest fitted session's, the
+    narrower over the ears), or None with no sessions (or a broken selection)."""
+    try:
+        sessions = select_sessions(profile, profile_session_ids(profile))
+    except ValueError:
+        return None
+    grids = {}
+    for s in sessions:  # as Profile.history picks them: the newest per ear
+        grids.update({e: g for e, g in s.grid.items() if len(g)})
+    if not grids:
+        return None
+    return max(float(g[0]) for g in grids.values()), min(float(g[-1]) for g in grids.values())
+
+
+def covered_range(profile: Profile) -> tuple[float, float]:
+    """What the profile's data cover: its measured range, narrowed to the fit's
+    grid where its sessions don't reach that far (they were measured before the
+    range was widened). The correction range's default sits inside this."""
+    lo, hi = profile.measured
+    d = data_range(profile)
+    return (lo, hi) if d is None else (max(lo, d[0]), min(hi, d[1]))
+
+
 def default_settings(profile: Profile) -> CorrectionSettings:
-    """The profile's defaults: the correction range follows its measured range."""
+    """The profile's defaults: the correction range follows what its data
+    cover (covered_range), so a widened measured range moves it only once
+    there are trials there."""
     from flatiron.fit.pipeline import corrected_default
 
-    lo, hi = corrected_default(profile.measured)
+    lo, hi = corrected_default(covered_range(profile))
     return CorrectionSettings(f_lo=lo, f_hi=hi)
 
 

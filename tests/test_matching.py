@@ -207,3 +207,21 @@ def test_correction_range_near_the_measured_edge_warns(tmp_path, monkeypatch, ca
     assert main(["config", "--default-max-measured", "9k"]) == 0
     out = capsys.readouterr().out
     assert "HD 600: Warning: max-corrected 10k is outside max-measured 9k" in out
+
+
+def test_default_correction_range_follows_what_the_sessions_cover(tmp_path):
+    """Sessions measured to 15 kHz, before the listener's range went to 16.5 kHz:
+    the default correction range sits inside the data, not the new range."""
+    import json
+
+    from flatiron.fit.run import covered_range, default_settings
+
+    (tmp_path / "listener.json").write_text(json.dumps({"label": "x", "slug": "x", "measured": {"hi": 16500.0}}))
+    prof = Profile.open("p", root=tmp_path)
+    assert prof.measured == (850.0, 16500.0)
+    assert default_settings(prof).f_hi == pytest.approx(14400)  # no sessions yet: the measured range
+    s = prof.new_session()
+    s.grid = {e: log_grid(850, 15000).tolist() for e in ("L", "R")}
+    prof.save(s)
+    assert covered_range(prof) == pytest.approx((850, 15000))
+    assert default_settings(prof).f_hi == pytest.approx(13100)

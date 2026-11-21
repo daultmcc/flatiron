@@ -1091,21 +1091,25 @@ def _margin_warnings(prof, prefix: str = "") -> list[str]:
     """Warnings for a correction range set explicitly too near (or past) the
     measured range's ends: the baseline and taper need room there."""
     from flatiron.fit.pipeline import CORRECTED_MARGIN_OCT, CORRECTED_WARN_OCT
-    from flatiron.fit.run import profile_settings
+    from flatiron.fit.run import covered_range, profile_settings
 
     own = prof.read().get("settings") or {}
     st = profile_settings(prof)
-    lo, hi = prof.measured
+    lo, hi = covered_range(prof)
+    nominal = prof.measured
     out = []
-    for f, name, measured, inside in (("f_lo", "min", lo, np.log2(st.f_lo / lo)),
-                                      ("f_hi", "max", hi, np.log2(hi / st.f_hi))):
+    for f, name, end, n, inside in (("f_lo", "min", lo, nominal[0], np.log2(st.f_lo / lo)),
+                                    ("f_hi", "max", hi, nominal[1], np.log2(hi / st.f_hi))):
         if f not in own or inside >= CORRECTED_WARN_OCT - 1e-9:
             continue
         where = (f"is only {inside:.2f} octave inside" if inside > 1e-9 else
                  "is at" if inside > -1e-9 else "is outside")
-        out.append(f"{prefix}Warning: {name}-corrected {KHZ[1](getattr(st, f))} {where} {name}-measured "
-                   f"{KHZ[1](measured)}; keep it at least {CORRECTED_WARN_OCT:g} octave inside, so the baseline and "
-                   f"taper have room (the default is {CORRECTED_MARGIN_OCT:g}; --reset {name}-corrected follows it).")
+        what = (f"{name}-measured {KHZ[1](end)}" if end == n else
+                f"the {'bottom' if name == 'min' else 'top'} of the measured data, {KHZ[1](end)} "
+                f"(the sessions don't reach {name}-measured {KHZ[1](n)})")
+        out.append(f"{prefix}Warning: {name}-corrected {KHZ[1](getattr(st, f))} {where} {what}; keep it at least "
+                   f"{CORRECTED_WARN_OCT:g} octave inside, so the baseline and taper have room (the default is "
+                   f"{CORRECTED_MARGIN_OCT:g}; --reset {name}-corrected follows it).")
     return out
 
 

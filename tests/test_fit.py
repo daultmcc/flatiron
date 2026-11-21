@@ -235,6 +235,17 @@ def test_filter_fit_respects_budget_and_bounds():
     assert all(1000 <= x.fc <= 14000 and 0.7 <= x.q <= 16 for x in ff.filters)
 
 
+def test_filter_fit_guard_band_keeps_skirts_out_of_the_unmeasured_treble():
+    """Beyond the grid the target is 0, but without the guard band nothing there
+    costs anything, and a wide filter at the top edge leaves a shelf above it."""
+    f = log_grid(850, 15000, 1 / 96)
+    t = -8.6 * np.exp(-0.5 * (np.log2(f / 14400) / (0.4 / 2.355)) ** 2) * taper(f, 976, 14400, 0.2, np.log2(15000 / 14400))
+    above = np.geomspace(15000, 20000, 40)
+    spill = {go: np.abs(response(fit_filters(f, t, np.ones(f.size), 20, FilterBounds(976, 14400), 0.5,
+                                             guard_oct=go).filters, above)).max() for go in (0.0, 1.0)}
+    assert spill[1.0] < 1.0 and spill[1.0] < 0.5 * spill[0.0]
+
+
 def test_preamp():
     assert preamp_db([PeakingFilter(1000, -4, 2)]) == pytest.approx(-0.5)
     assert preamp_db([PeakingFilter(1000, 3, 2)]) == pytest.approx(-3.5, abs=0.01)
@@ -613,6 +624,37 @@ def test_filter_fit_stops_when_only_the_fade_is_out_of_reach():
     fade[f < 12000] = -8.0 * np.exp(-0.5 * ((np.log2(f[f < 12000]) - np.log2(12000)) / 0.15) ** 2)
     ff = fit_filters(f, fade, np.ones(f.size), budget=20, bounds=FilterBounds(), tol_db=1.0)
     assert len(ff.filters) < 8 and not ff.budget_bound
+
+
+def test_a_lobe_cut_off_by_the_grid_end_is_judged_by_its_extent():
+    """Its half-height width is only a lower bound there: a broad excess rising
+    into the top of the range isn't a narrow peak at the edge."""
+    g = log_grid(850, 15000, 1 / 24)
+    x = np.log2(g)
+    cov = np.eye(g.size) * 0.5**2
+    rising = 12 * np.clip((x - np.log2(9000)) / np.log2(15000 / 9000), 0, 1) ** 2
+    (f,) = find_features(g, rising, cov, narrow_max_oct=0.5)
+    assert f.width_oct < 0.5 and f.kind == BROAD
+    edge_peak = np.where(g >= 12800, 8 * np.exp(-0.5 * (np.log2(g / 15000) / (0.12 / 2.355)) ** 2), 0.0)
+    (f,) = find_features(g, edge_peak, cov, narrow_max_oct=0.5)
+    assert f.kind == NARROW
+
+
+def test_a_feature_straddling_the_range_end_keeps_its_part_inside():
+    """Its extreme is beyond f_hi, but its half-height core reaches inside: that
+    part is corrected (the taper fades the rest). One wholly beyond is dropped."""
+    g = log_grid(850, 15000, 1 / 24)
+    x = np.log2(g)
+    st = CorrectionSettings(reference="none", consistency=False, f_hi=13100)
+    out = {}
+    for fc, w in ((13600, 0.25), (14600, 0.12)):
+        L = 6 * np.exp(-0.5 * ((x - np.log2(fc)) / (w / 2.355)) ** 2)
+        c = correct_ear("L", ProbitFit(g, L, np.eye(g.size) * 0.5**2, 1.0, 0.5, 0.02, 100, 0.0, True), st)
+        f = max(c.features, key=lambda f: abs(f.peak_db))
+        assert f.kind == NARROW and f.fc > st.f_hi
+        out[fc] = (f.accepted, float(np.abs(c.target).max()))
+    assert out[13600][0] and out[13600][1] > 3
+    assert not out[14600][0] and out[14600][1] == 0
 
 
 def _many_features():

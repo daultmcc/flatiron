@@ -113,6 +113,17 @@ def _half_width(x, r, lo, hi, k):
     return edge(1) - edge(-1)
 
 
+def _cut_off_wide(x, r, lo, hi, k, narrow_max_oct) -> bool:
+    """A lobe that runs off an end of the grid while still above half height:
+    its half-height width is only a lower bound (the rest of it, perhaps its
+    real peak, is beyond what was measured). It's called broad if the lobe
+    spans the narrow limit, so a broad excess rising into the top of the range
+    isn't taken for a narrow peak at the edge."""
+    half = abs(r[k]) / 2
+    at_end = (lo == 0 and abs(r[0]) > half) or (hi == r.size - 1 and abs(r[-1]) > half)
+    return at_end and x[hi] - x[lo] >= narrow_max_oct
+
+
 def _centre_and_width(x, r, lo, hi):
     """(Hz, octaves). Weighting by the excess over half height, so a point joins or
     leaves with no weight, keeps the centre continuous."""
@@ -145,7 +156,7 @@ def find_features(grid, r, cov, k=2.0, k_broad=2.5, narrow_max_oct=1 / 3, soft_w
         mean, msd = _mean_stats(x, r, cov, lo, hi)
         seg_z = np.abs(r[lo:hi + 1]) / sd[lo:hi + 1]
         pair_z = float(np.minimum(seg_z[:-1], seg_z[1:]).max()) if hi > lo else 0.0
-        kind = NARROW if width < narrow_max_oct else BROAD
+        kind = NARROW if width < narrow_max_oct and not _cut_off_wide(x, r, lo, hi, k_pk, narrow_max_oct) else BROAD
         f = Feature(lo, hi, float(grid[k_pk]), float(r[k_pk]), float(width), kind,
                     pair_z if kind == NARROW else abs(mean) / msd, mean, msd, run=n)
         f.centre_hz, f.eq_width_oct = _centre_and_width(x, r, lo, hi)
