@@ -16,8 +16,8 @@ the lapse rate (from the probe trials, clearly audible ones), σ the
 psychometric function's spread. T̄ averages T over the stimulus spectrum, as
 the perceptual model does.
 
-T has the perceptual model's curvature prior, centred on the shape of the
-ISO 226 threshold (held constant above 12.5 kHz), so a curve with little data
+T has the perceptual model's curvature prior, centred on the shape of
+ISO 389-7's free-field threshold (to 18 kHz), so a curve with little data
 looks like a threshold rather than a straight line; and a loose prior on its
 spread about its own mean (no pull on its level). (T, c) are the posterior
 mode by Fisher scoring, with Laplace error bars. γ and λ are Beta posterior
@@ -34,7 +34,7 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy.special import log_ndtr, ndtr
 
-from flatiron import EARS, iso226
+from flatiron import EARS, iso389_7
 from flatiron.model.grid import log_grid, second_difference
 from flatiron.model.probit import band_matrix
 
@@ -132,7 +132,8 @@ class ThresholdFit:
 
 
 def prior_shape(grid: np.ndarray) -> np.ndarray:
-    return iso226.threshold(np.minimum(grid, iso226.F[-1]))
+    """ISO 389-7's free-field threshold (to 18 kHz; ISO 226's below 125 Hz)."""
+    return iso389_7.threshold(grid)
 
 
 def _prior(grid: np.ndarray, n_sessions: int) -> tuple[np.ndarray, np.ndarray]:

@@ -52,7 +52,7 @@ RIPPLE_ELL_OCT = 0.1
 RIPPLE_RANGE_DB = (0.05, 10.0)
 MIN_THRESHOLD_TRIALS = 150  # a profile's threshold trials before it counts
 GAP_CACHE_KEEP = 200
-VERSION = "2"
+VERSION = "3"  # 3: the threshold prior follows ISO 389-7
 
 
 def gap_knots(lo: float, hi: float) -> tuple:
