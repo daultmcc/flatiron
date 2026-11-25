@@ -37,6 +37,7 @@ flatiron profiles new HD600
 
 # perform the listening trials
 flatiron measure HD600
+flatiron measure --threshold HD600
 
 # view a report of the measured response
 flatiron report HD600
@@ -44,6 +45,11 @@ flatiron report HD600
 # generate a corrective EQ preset
 flatiron export HD600 --target easyeffects -o HD600.json
 ```
+Before measurement, you may also want to adjust the upper end of the measured frequency
+range with `flatiron config --default-max-measured <N>k`.
+This value should be set to the highest frequency you can hear clearly at reasonable volume, probably about 1 kHz below the
+absolute upper threshold of your hearing, which can be determined by a tone sweep (e.g.
+with `flatiron tone`). The default is `15k`.
 
 ### Profiles and listeners
 
@@ -53,63 +59,52 @@ if only a single listener exists then the listener can be
 omitted, as in the examples above. By default there is a single listener called `default`.
 If only a single profile exists it can be omitted as well.
 A listener should correspond to a single individual who is performing the tests; certain
-fitted parameters of the perceptual model are shared across profiles for the same listener.
+configuration options and
+fitted parameters of the perceptual model are shared across all profiles for the same listener.
 
 Profiles are managed with `flatiron profiles` and listeners with `flatiron listeners`.
 Running either command bare prints a list, and each has `new`, `rename`, and `delete` subcommands.
 
 ### Measurement
 
-`flatiron measure <PROFILE>` begins a measurement run for the specified profile. This consists
-of a number of _sessions_, which last 12 minutes by default, each of which in turn contains a
-number of _trials_. During each trial, two tones will be played at different frequencies, and
-you will be asked to indicate the louder of the two with the up and down arrow keys (or by clicking A or B). Spacebar will replay the tones.
-Between sessions you'll be instructed to reseat your headphones to identify placement-dependent
-features of the frequency response.
+`flatiron measure <PROFILE>` begins a measurement run for the specified profile. Measurements are
+divided into _sessions_ of fixed length, each of which contains a
+number of _trials_. During each trial, bursts of auditory stimulus will be played after which
+you'll be prompted for some kind of input, depending on the type of measurement chosen.
+In all cases, the stimulus can be replayed any number of times with spacebar before answering.
+An active session can be quit at any time with "Q" or "Esc" and your responses up to that point
+will still be saved.
 
-One profile can have any number of sessions and you can quit an active session at any time.
-Previous sessions can be listed (and deleted) using the `flatiron sessions` command.
+The default measurement type is the relative loudness test. Two tones will be played at different frequencies and
+volumes and you'll be asked to select the one that sounds louder. This is the primary method used
+to calculate the inferred frequency response, and is the only measurement type that is strictly
+necessary to generate a corrective EQ preset for a profile.
 
-Three stimulus types are available: white noise (`noise`), a warble tone (`warble`), and a pure sine
-wave (`tone`), which can be selected with the `--stimulus` flag of `measure`. The default is 12th-octave white noise
-(`noise:12`).
+The other primary type is the threshold test, which is selected with `--threshold`.
+In this case, only a single, very quiet tone will be played, and you'll be asked to
+select which of the two time intervals it occurred in. If you don't think you can hear any tone at all,
+you can skip with "N". This test has less resolution than the loudness test but it is better for fixing
+the broadband shape of the response, which makes comparisons to standardized references contours more
+reliable. This test is best done in a quiet environment.
+
+The final measurement type is the centering test, selected with `--centre`. A single stereo
+burst will be played and you'll be asked which side of the center line of your heard you perceived
+it as coming from. This can identify net channel imbalances in your headphones, which the other two
+test types are insensitive to, but Flatiron currently makes no attempt to correct such imbalances even if
+identified.
+
+For all three test types, multiple stimulus types are available, which can be chosen with the `--stimulus` flag:
+band-limited noise (`noise`), a warble tone (`warble`), and a pure sine
+wave (`tone`). The default is 12th-octave noise (`noise:12`), except for the centering test which
+uses full-octave noise (`noise:1`).
 
 If the `--sweep` flag is present, before the sessions a tone sweep will be played. You can mark
 regions where you hear a rise or fall in the volume and this will be used to narrow in on
 frequency regions of interest during the trials.
 
-As it learns how loud each frequency sounds to you, Flatiron adjusts the volume of each pair of
-tones so that all trials sound about equally loud, with the level you choose at the start of a run
-as the average (it's remembered for the profile, and `L` between sessions changes it). Quiet regions are raised by at most 12 dB (`--max-match-boost`), and
-`--no-match` turns this off. If the highest (or lowest) frequencies are hard for you to hear,
-narrow the range trials are drawn from for all your profiles with
-`flatiron config <LISTENER> --default-max-measured 12k` (or `--default-min-measured`), or for one
-profile with `flatiron config <PROFILE> --max-measured 12k`. The range that gets corrected follows it.
-
-About one trial in ten plays its two tones in different ears (`--cross-ear` sets the share, 0 to
-100%). These help pin down the difference between your left and right channels. Many people hear one
-ear as louder than it is when comparing across ears, so Flatiron estimates that bias for you, from all
-your profiles together, and leaves it out. `flatiron measure <PROFILE> --centre` runs a short session of
-another kind: a sound plays in both ears at once and you say whether it's left or right of centre,
-which measures the channel balance with no such bias. `flatiron config <PROFILE> --no-cross-ear-fit`
-leaves all of this out of the fit.
-
-`flatiron measure <PROFILE> --threshold` runs a session of a third kind: very quiet sounds at the
-edge of hearing, where you say which of two intervals had the sound, or that you heard neither.
-On their own these help with the channel balance. With `flatiron config <PROFILE> --threshold-fit`
-they also anchor the standard references (`diffuse` and `free`) at your threshold of hearing:
-many people's loudness judgements in the treble don't follow the standard equal-loudness contours,
-which can make corrections against those references cut far too much treble. Flatiron estimates
-how your loudness and threshold differ from all your profiles with threshold data (150 trials or so
-in one profile is enough to start), so a profile without its own threshold sessions benefits too.
-For a consensus reference, `--consensus-broad diffuse` takes the broad shape from the anchored
-diffuse field instead of the average of your headphones. `flatiron report` shows your loudness and
-threshold curves side by side.
-
-300-400 trials is enough for a very basic measurement and 1000 should give reasonably accurate
-results. That may sound like a lot, but even 1000 trials should take less than an hour. If you find
-it taking longer than that you may be overthinking your answers. The fit accounts for a degree of
-error so it's better just to answer quickly.
+300-400 loudness trials is enough for a basic measurement and 1000 should give reasonably accurate
+results. Individual trials should go quickly; the fit assumes an element of error and randomness in
+your respones, so it isn't necessary to overthink your responses. 
 
 ### Reports
 
@@ -159,7 +154,7 @@ The same loudness judgement trial methodology can be used with speakers, to furt
 personalized target curve. A speaker preset can be created with `flatiron profiles new --kind
 speaker --channel <L|R>`. The behavior of `measure` for speaker profiles is slightly different,
 with shorter sessions ("blocks") that ask you to plug a specific ear with an ear plug and change the position
-of your head between each.
+of your head between each. Only the loudness test type is currently supported for speakers.
 
 ## Theory
 
